@@ -88,7 +88,7 @@ export async function POST(req: Request) {
         is_simulation: true,
         is_active: true,
       };
-    }).filter(Boolean);
+    }).filter((o): o is NonNullable<typeof o> => o !== null);
 
     if (outages.length === 0) {
       return NextResponse.json({ error: "No valid outage coordinates in snapshot" }, { status: 422 });
