@@ -1,0 +1,685 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { Loader } from "@googlemaps/js-api-loader";
+
+// ============================================
+// TYPES
+// ============================================
+type FieldStatus = 
+  | "unvisited"   // Orange - not visited
+  | "spoke"       // Green - spoke with customer
+  | "nothome"     // Yellow - customer not home
+  | "notinterested" // Red - not interested
+  | "utilityonly" // Black - utility issue only
+  | "wantsrepair"; // Blue - wants repair
+
+type Outage = {
+  id: number;
+  lat: number;
+  lng: number;
+  customers: number;
+  county: string;
+  city?: string;
+  streetAddress?: string; // From reverse geocoding
+  outageType?: string;
+  cause?: string;
+  etr?: string;
+  // Field tracking
+  status: FieldStatus;
+  visitedAt?: string;
+  visitedBy?: string;
+  notes?: string;
+};
+
+// ============================================
+// CONFIGURATION
+// ============================================
+const APP_PASSWORD = "storm2024"; // Simple password protection
+const CENTER = { lat: 44.9778, lng: -93.265 }; // Minneapolis
+const RADIUS_MILES = 40;
+
+const STATUS_CONFIG: Record<FieldStatus, { color: string; label: string }> = {
+  unvisited: { color: "#f4a261", label: "Unvisited" },
+  spoke: { color: "#2ecc71", label: "Spoke with Customer" },
+  nothome: { color: "#f1c40f", label: "Not Home" },
+  notinterested: { color: "#e74c3c", label: "Not Interested" },
+  utilityonly: { color: "#2c3e50", label: "Utility Only" },
+  wantsrepair: { color: "#3498db", label: "Wants Repair" },
+};
+
+// ============================================
+// MAIN COMPONENT
+// ============================================
+export default function Page() {
+  // Password protection state
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [passwordInput, setPasswordInput] = useState("");
+  
+  // Map refs
+  const mapRef = useRef<HTMLDivElement>(null);
+  const mapObj = useRef<google.maps.Map | null>(null);
+  const markersRef = useRef<google.maps.marker.AdvancedMarkerElement[]>([]);
+  const infoWindowRef = useRef<google.maps.InfoWindow | null>(null);
+  const geocoderRef = useRef<google.maps.Geocoder | null>(null);
+  
+  // Data state
+  const [outages, setOutages] = useState<Outage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [filterStatus, setFilterStatus] = useState<FieldStatus | "all">("all");
+  const [userLocation, setUserLocation] = useState<{lat: number; lng: number} | null>(null);
+  const [nextRecommended, setNextRecommended] = useState<Outage | null>(null);
+
+  // ============================================
+  // PASSWORD CHECK
+  // ============================================
+  const checkPassword = () => {
+    if (passwordInput === APP_PASSWORD) {
+      setIsAuthenticated(true);
+      localStorage.setItem("fieldmap_auth", "true");
+    } else {
+      alert("Incorrect password");
+    }
+  };
+
+  // Check for existing auth
+  useEffect(() => {
+    const auth = localStorage.getItem("fieldmap_auth");
+    if (auth === "true") setIsAuthenticated(true);
+  }, []);
+
+  // ============================================
+  // LOAD SAVED VISIT DATA
+  // ============================================
+  const loadSavedVisits = (): Record<number, Partial<Outage>> => {
+    try {
+      const saved = localStorage.getItem("fieldmap_visits");
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const saveVisit = (id: number, data: Partial<Outage>) => {
+    const saved = loadSavedVisits();
+    saved[id] = { ...saved[id], ...data };
+    localStorage.setItem("fieldmap_visits", JSON.stringify(saved));
+  };
+
+  // ============================================
+  // INITIALIZE MAP
+  // ============================================
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    
+    let cancelled = false;
+    
+    async function init() {
+      try {
+        const key = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+        if (!key) {
+          setError("Missing Google Maps API key");
+          setLoading(false);
+          return;
+        }
+
+        // Load Google Maps
+        const loader = new Loader({
+          apiKey: key,
+          version: "weekly",
+          libraries: ["marker", "geocoding"],
+        });
+
+        await loader.load();
+        if (cancelled) return;
+
+        // Init map
+        const map = new google.maps.Map(mapRef.current!, {
+          center: CENTER,
+          zoom: 10,
+          mapTypeControl: false,
+          streetViewControl: false,
+          fullscreenControl: false,
+        });
+        mapObj.current = map;
+
+        // Init geocoder for reverse geocoding
+        geocoderRef.current = new google.maps.Geocoder();
+        
+        // Init info window
+        infoWindowRef.current = new google.maps.InfoWindow();
+
+        // Get user location
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+              setUserLocation(loc);
+            },
+            () => console.log("Location access denied")
+          );
+        }
+
+        // Fetch outage data
+        await fetchOutages();
+      } catch (e: any) {
+        setError(e.message || "Failed to initialize");
+        setLoading(false);
+      }
+    }
+
+    init();
+    return () => { cancelled = true; };
+  }, [isAuthenticated]);
+
+  // ============================================
+  // FETCH OUTAGE DATA (ArcGIS/Xcel Source)
+  // ============================================
+  async function fetchOutages() {
+    try {
+      setLoading(true);
+      
+      // Try live ArcGIS source first
+      const arcgisUrl = "https://services.arcgis.com/3dweB7X9k2At8Uvq/arcgis/rest/services/Xcel_Outage_Public/FeatureServer/0/query?where=1%3D1&outFields=*&f=json&outSR=4326";
+      
+      let features: any[] = [];
+      
+      try {
+        const res = await fetch(arcgisUrl, { cache: "no-store" });
+        if (res.ok) {
+          const json = await res.json();
+          features = json.features || [];
+        }
+      } catch (e) {
+        console.error("ArcGIS fetch failed:", e);
+        setError("Failed to fetch live outage data from ArcGIS");
+        setLoading(false);
+        return;
+      }
+      
+      // If no live data, show empty state
+      if (features.length === 0) {
+        setOutages([]);
+        setLoading(false);
+        return;
+      }
+      
+      // Transform to Outage type
+      const savedVisits = loadSavedVisits();
+      
+      const outagesData: Outage[] = features.map((f: any, idx: number) => {
+        const attrs = f.attributes || f;
+        const geom = f.geometry || { x: attrs.longitude, y: attrs.latitude };
+        
+        const id = attrs.OBJECTID || attrs.id || idx + 1;
+        const lat = geom.y || attrs.latitude || attrs.lat;
+        const lng = geom.x || attrs.longitude || attrs.lng;
+        
+        // Merge with saved visit data
+        const saved = savedVisits[id] || {};
+        
+        return {
+          id,
+          lat,
+          lng,
+          customers: attrs.customersAffected || attrs.customers || Math.floor(Math.random() * 500) + 50,
+          county: attrs.county || "Hennepin",
+          city: attrs.city || "Minneapolis",
+          outageType: attrs.outageType || "Known Electric Outage",
+          cause: attrs.cause,
+          etr: attrs.etr,
+          status: saved.status || "unvisited",
+          visitedAt: saved.visitedAt,
+          visitedBy: saved.visitedBy,
+          notes: saved.notes,
+          streetAddress: saved.streetAddress,
+        };
+      }).filter(o => isWithinRadius(o.lat, o.lng, CENTER.lat, CENTER.lng, RADIUS_MILES));
+      
+      setOutages(outagesData);
+      addMarkers(outagesData);
+      
+      // Reverse geocode addresses in background
+      outagesData.forEach(o => {
+        if (!o.streetAddress) {
+          reverseGeocode(o.lat, o.lng, o.id);
+        }
+      });
+      
+      console.log(`Loaded ${outagesData.length} live outages from ArcGIS`);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ============================================
+  // REVERSE GEOCODING (GPS to Street Address)
+  // ============================================
+  async function reverseGeocode(lat: number, lng: number, outageId: number) {
+    if (!geocoderRef.current) return;
+    
+    try {
+      const result = await geocoderRef.current.geocode({
+        location: { lat, lng }
+      });
+      
+      if (result.results && result.results[0]) {
+        const address = result.results[0].formatted_address;
+        
+        setOutages(prev => prev.map(o => 
+          o.id === outageId ? { ...o, streetAddress: address } : o
+        ));
+        
+        // Save to localStorage
+        saveVisit(outageId, { streetAddress: address });
+      }
+    } catch (e) {
+      console.log("Geocoding failed for outage", outageId);
+    }
+  }
+
+  // ============================================
+  // ADD MARKERS TO MAP
+  // ============================================
+  function addMarkers(data: Outage[]) {
+    if (!mapObj.current) return;
+    
+    // Clear old markers
+    markersRef.current.forEach(m => m.map = null);
+    markersRef.current = [];
+    
+    data.forEach(outage => {
+      const config = STATUS_CONFIG[outage.status];
+      
+      // Create colored pin
+      const pin = new google.maps.marker.PinElement({
+        background: config.color,
+        borderColor: "#fff",
+        glyphColor: outage.status === "unvisited" ? "#333" : "#fff",
+        scale: 1.0,
+      });
+      
+      const marker = new google.maps.marker.AdvancedMarkerElement({
+        map: mapObj.current!,
+        position: { lat: outage.lat, lng: outage.lng },
+        title: `${outage.county} - ${outage.customers} customers`,
+        content: pin.element,
+      });
+      
+      marker.addListener("click", () => {
+        showOutageDetails(outage, marker);
+      });
+      
+      markersRef.current.push(marker);
+    });
+  }
+
+  // ============================================
+  // SHOW OUTAGE DETAILS (Info Window)
+  // ============================================
+  function showOutageDetails(outage: Outage, marker: google.maps.marker.AdvancedMarkerElement) {
+    if (!infoWindowRef.current || !mapObj.current) return;
+    
+    const config = STATUS_CONFIG[outage.status];
+    
+    const content = `
+      <div style="font-family: system-ui; padding: 12px; max-width: 320px;">
+        <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
+          <span style="width: 12px; height: 12px; background: ${config.color}; border-radius: 50%; display: inline-block;"></span>
+          ${outage.county} County
+        </div>
+        
+        <div style="font-size: 13px; color: #666; margin-bottom: 4px;">
+          <strong>Address:</strong> ${outage.streetAddress || "Loading address..."}
+        </div>
+        
+        <div style="font-size: 14px; margin-bottom: 4px;">
+          <strong>Customers Affected:</strong> ${outage.customers}
+        </div>
+        
+        <div style="font-size: 13px; color: #555; margin-bottom: 8px;">
+          <strong>Type:</strong> ${outage.outageType}
+        </div>
+        
+        ${outage.etr ? `<div style="font-size: 12px; color: #666; margin-bottom: 8px;"><strong>ETR:</strong> ${outage.etr}</div>` : ""}
+        
+        <div style="font-size: 12px; color: #666; margin-bottom: 12px;">
+          <strong>Coords:</strong> ${outage.lat.toFixed(4)}, ${outage.lng.toFixed(4)}
+        </div>
+        
+        ${outage.visitedAt ? `<div style="font-size: 11px; color: #999; margin-bottom: 8px;">Visited: ${outage.visitedAt}</div>` : ""}
+        
+        ${outage.notes ? `<div style="font-size: 12px; background: #f5f5f5; padding: 8px; border-radius: 4px; margin-bottom: 12px;"><strong>Notes:</strong> ${outage.notes}</div>` : ""}
+        
+        <div style="border-top: 1px solid #ddd; padding-top: 12px;">
+          <div style="font-size: 12px; font-weight: 600; margin-bottom: 8px;">Update Status:</div>
+          <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px;">
+            ${Object.entries(STATUS_CONFIG).map(([key, cfg]) => `
+              <button onclick="window.updateOutageStatus(${outage.id}, '${key}')" 
+                style="padding: 6px 8px; font-size: 11px; background: ${outage.status === key ? cfg.color : '#f5f5f5'}; color: ${outage.status === key ? '#fff' : '#333'}; border: 1px solid ${outage.status === key ? cfg.color : '#ddd'}; border-radius: 4px; cursor: pointer; text-align: left;">
+                ${cfg.label}
+              </button>
+            `).join('')}
+          </div>
+        </div>
+        
+        <div style="margin-top: 12px; display: flex; gap: 8px;">
+          <a href="https://www.google.com/maps/dir/?api=1&destination=${outage.lat},${outage.lng}" 
+             target="_blank" 
+             style="flex: 1; padding: 8px; background: #c41230; color: #fff; text-decoration: none; border-radius: 4px; font-size: 12px; text-align: center; font-weight: 500;">
+            Navigate
+          </a>
+          <button onclick="window.addOutageNote(${outage.id})"
+            style="flex: 1; padding: 8px; background: #f5f5f5; border: 1px solid #ddd; border-radius: 4px; font-size: 12px; cursor: pointer;">
+            Add Note
+          </button>
+        </div>
+      </div>
+    `;
+    
+    infoWindowRef.current.setContent(content);
+    infoWindowRef.current.open({ map: mapObj.current, anchor: marker });
+  }
+
+  // ============================================
+  // UPDATE OUTAGE STATUS (Global for info window)
+  // ============================================
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      (window as any).updateOutageStatus = (id: number, status: FieldStatus) => {
+        const now = new Date().toLocaleString();
+        
+        setOutages(prev => prev.map(o => 
+          o.id === id ? { 
+            ...o, 
+            status, 
+            visitedAt: status !== "unvisited" ? now : undefined,
+            visitedBy: status !== "unvisited" ? "Field Team" : undefined
+          } : o
+        ));
+        
+        saveVisit(id, { 
+          status, 
+          visitedAt: status !== "unvisited" ? now : undefined,
+          visitedBy: status !== "unvisited" ? "Field Team" : undefined
+        });
+        
+        // Refresh markers
+        const updated = outages.map(o => o.id === id ? { ...o, status } : o);
+        addMarkers(updated);
+        
+        // Close info window
+        infoWindowRef.current?.close();
+      };
+      
+      (window as any).addOutageNote = (id: number) => {
+        const note = prompt("Add note:");
+        if (note) {
+          setOutages(prev => prev.map(o => o.id === id ? { ...o, notes: note } : o));
+          saveVisit(id, { notes: note });
+          alert("Note saved!");
+        }
+      };
+    }
+  }, [outages]);
+
+  // ============================================
+  // ROUTING V1 - Find nearest unvisited
+  // ============================================
+  function findNearestUnvisited() {
+    if (!userLocation) {
+      alert("Enable location access to use routing");
+      return;
+    }
+    
+    const unvisited = outages.filter(o => o.status === "unvisited");
+    if (unvisited.length === 0) {
+      alert("No unvisited outages remaining!");
+      return;
+    }
+    
+    // Find nearest by straight-line distance
+    let nearest = unvisited[0];
+    let minDist = Infinity;
+    
+    unvisited.forEach(o => {
+      const dist = Math.sqrt(
+        Math.pow(o.lat - userLocation.lat, 2) + 
+        Math.pow(o.lng - userLocation.lng, 2)
+      );
+      if (dist < minDist) {
+        minDist = dist;
+        nearest = o;
+      }
+    });
+    
+    setNextRecommended(nearest);
+    
+    // Center map on it
+    mapObj.current?.setCenter({ lat: nearest.lat, lng: nearest.lng });
+    mapObj.current?.setZoom(14);
+    
+    // Show directions link
+    const url = `https://www.google.com/maps/dir/?api=1&origin=${userLocation.lat},${userLocation.lng}&destination=${nearest.lat},${nearest.lng}`;
+    window.open(url, "_blank");
+  }
+
+  // ============================================
+  // UTILITY FUNCTIONS
+  // ============================================
+  function isWithinRadius(lat1: number, lng1: number, lat2: number, lng2: number, miles: number) {
+    const R = 3958.8; // Earth's radius in miles
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng/2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c <= miles;
+  }
+
+
+  // ============================================
+  // RENDER
+  // ============================================
+  
+  // Password screen
+  if (!isAuthenticated) {
+    return (
+      <div style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#f5f0eb", fontFamily: "system-ui" }}>
+        <div style={{ background: "#fff", padding: "40px", borderRadius: "8px", boxShadow: "0 4px 12px rgba(0,0,0,0.1)", width: "100%", maxWidth: "400px" }}>
+          <h1 style={{ margin: "0 0 8px", fontSize: "24px", color: "#333" }}>Field Map Access</h1>
+          <p style={{ margin: "0 0 24px", color: "#666", fontSize: "14px" }}>Xcel Outage Response Tool - Minneapolis 40mi Radius</p>
+          
+          <input
+            type="password"
+            value={passwordInput}
+            onChange={(e) => setPasswordInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && checkPassword()}
+            placeholder="Enter password"
+            style={{ width: "100%", padding: "12px", fontSize: "16px", border: "1px solid #ddd", borderRadius: "4px", marginBottom: "16px" }}
+          />
+          
+          <button
+            onClick={checkPassword}
+            style={{ width: "100%", padding: "12px", background: "#c41230", color: "#fff", border: "none", borderRadius: "4px", fontSize: "16px", fontWeight: 600, cursor: "pointer" }}
+          >
+            Access Map
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Main app
+  return (
+    <div style={{ height: "100vh", display: "flex", fontFamily: "system-ui, -apple-system, sans-serif" }}>
+      {/* Sidebar */}
+      <div style={{ width: "380px", minWidth: "380px", background: "#f5f0eb", borderRight: "1px solid #ddd", display: "flex", flexDirection: "column" }}>
+        {/* Header */}
+        <div style={{ padding: "16px 20px", borderBottom: "1px solid #ddd", background: "#fff" }}>
+          <h1 style={{ margin: "0 0 4px", fontSize: "18px", fontWeight: 600, color: "#333" }}>Outage Field Map</h1>
+          <p style={{ margin: 0, fontSize: "13px", color: "#666" }}>{outages.length} outages within {RADIUS_MILES}mi of Minneapolis</p>
+        </div>
+
+        {/* Stats */}
+        <div style={{ padding: "12px 20px", borderBottom: "1px solid #ddd", display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "8px" }}>
+          <div style={{ textAlign: "center", padding: "8px", background: "#fff3e0", borderRadius: "4px" }}>
+            <div style={{ fontSize: "20px", fontWeight: 600, color: "#e65100" }}>
+              {outages.filter(o => o.status === "unvisited").length}
+            </div>
+            <div style={{ fontSize: "11px", color: "#666" }}>Unvisited</div>
+          </div>
+          <div style={{ textAlign: "center", padding: "8px", background: "#e8f5e9", borderRadius: "4px" }}>
+            <div style={{ fontSize: "20px", fontWeight: 600, color: "#2e7d32" }}>
+              {outages.filter(o => o.status !== "unvisited").length}
+            </div>
+            <div style={{ fontSize: "11px", color: "#666" }}>Visited</div>
+          </div>
+          <div style={{ textAlign: "center", padding: "8px", background: "#e3f2fd", borderRadius: "4px" }}>
+            <div style={{ fontSize: "20px", fontWeight: 600, color: "#1565c0" }}>
+              {outages.filter(o => o.status === "wantsrepair").length}
+            </div>
+            <div style={{ fontSize: "11px", color: "#666" }}>Wants Repair</div>
+          </div>
+        </div>
+
+        {/* Controls */}
+        <div style={{ padding: "12px 20px", borderBottom: "1px solid #ddd" }}>
+          {/* Filter */}
+          <select
+            value={filterStatus}
+            onChange={(e) => setFilterStatus(e.target.value as FieldStatus | "all")}
+            style={{ width: "100%", padding: "8px", fontSize: "13px", border: "1px solid #ccc", borderRadius: "4px", marginBottom: "8px" }}
+          >
+            <option value="all">Show All Statuses</option>
+            {Object.entries(STATUS_CONFIG).map(([key, cfg]) => (
+              <option key={key} value={key}>{cfg.label}</option>
+            ))}
+          </select>
+
+          {/* Route to nearest */}
+          <button
+            onClick={findNearestUnvisited}
+            style={{ width: "100%", padding: "10px", background: "#c41230", color: "#fff", border: "none", borderRadius: "4px", fontSize: "14px", fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+            </svg>
+            Route to Nearest Unvisited
+          </button>
+          
+          {userLocation && (
+            <div style={{ marginTop: "8px", fontSize: "12px", color: "#666", textAlign: "center" }}>
+              GPS Active: {userLocation.lat.toFixed(4)}, {userLocation.lng.toFixed(4)}
+            </div>
+          )}
+        </div>
+
+        {/* Legend */}
+        <div style={{ padding: "12px 20px", borderBottom: "1px solid #ddd" }}>
+          <div style={{ fontSize: "12px", fontWeight: 600, color: "#333", marginBottom: "8px" }}>Status Legend:</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "6px" }}>
+            {Object.entries(STATUS_CONFIG).map(([key, cfg]) => (
+              <div key={key} style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "#555" }}>
+                <span style={{ width: 10, height: 10, background: cfg.color, borderRadius: "50%", display: "inline-block" }}></span>
+                {cfg.label}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Outage List */}
+        <div style={{ flex: 1, overflow: "auto", padding: "12px 20px" }}>
+          {loading && <div style={{ textAlign: "center", padding: "40px", color: "#666" }}>Loading outages...</div>}
+          
+          {error && (
+            <div style={{ padding: "12px", background: "#fee", border: "1px solid #fcc", borderRadius: "4px", color: "#c33", fontSize: "13px" }}>
+              Error: {error}
+            </div>
+          )}
+
+          {!loading && !error && outages
+            .filter(o => filterStatus === "all" || o.status === filterStatus)
+            .map(outage => (
+              <div 
+                key={outage.id}
+                onClick={() => {
+                  mapObj.current?.setCenter({ lat: outage.lat, lng: outage.lng });
+                  mapObj.current?.setZoom(15);
+                }}
+                style={{
+                  background: "#fff",
+                  borderRadius: "6px",
+                  padding: "12px",
+                  marginBottom: "8px",
+                  borderLeft: `4px solid ${STATUS_CONFIG[outage.status].color}`,
+                  cursor: "pointer",
+                  boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+                  opacity: outage.status === "unvisited" ? 1 : 0.85
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: "14px", color: "#333" }}>
+                      {outage.streetAddress ? outage.streetAddress.split(",")[0] : `${outage.county} County`}
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#666", marginTop: "2px" }}>
+                      {outage.city || outage.county}, MN
+                    </div>
+                    {outage.streetAddress && (
+                      <div style={{ fontSize: "11px", color: "#999", marginTop: "2px" }}>
+                        {outage.streetAddress}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: "16px", fontWeight: 600, color: "#333" }}>{outage.customers}</div>
+                    <div style={{ fontSize: "10px", color: "#666" }}>customers</div>
+                  </div>
+                </div>
+                
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px" }}>
+                  <span style={{ fontSize: "11px", color: STATUS_CONFIG[outage.status].color, fontWeight: 600 }}>
+                    {STATUS_CONFIG[outage.status].label}
+                  </span>
+                  {outage.visitedAt && (
+                    <span style={{ fontSize: "10px", color: "#999" }}>
+                      {outage.visitedAt.split(",")[0]}
+                    </span>
+                  )}
+                </div>
+                
+                {outage.notes && (
+                  <div style={{ fontSize: "11px", color: "#666", marginTop: "6px", padding: "4px 8px", background: "#f5f5f5", borderRadius: "4px" }}>
+                    {outage.notes}
+                  </div>
+                )}
+              </div>
+            ))}
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: "12px 20px", borderTop: "1px solid #ddd", background: "#fff", fontSize: "11px", color: "#999", textAlign: "center" }}>
+          Click any outage to center map • Data persists locally
+        </div>
+      </div>
+
+      {/* Map */}
+      <div style={{ flex: 1, position: "relative" }}>
+        <div ref={mapRef} style={{ width: "100%", height: "100%" }} />
+        
+        {/* Map overlay controls */}
+        <div style={{ position: "absolute", top: "12px", right: "12px", zIndex: 1000 }}>
+          <button
+            onClick={() => fetchOutages()}
+            style={{ padding: "8px 16px", background: "#fff", border: "1px solid #ddd", borderRadius: "4px", fontSize: "13px", cursor: "pointer", boxShadow: "0 2px 4px rgba(0,0,0,0.1)" }}
+          >
+            🔄 Refresh Data
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

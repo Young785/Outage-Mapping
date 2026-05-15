@@ -1,0 +1,245 @@
+
+Stable map + local environment
+React/Next.js web app, Mapbox or Leaflet base
+layer, hosted environment with CI pipeline, password
+protection.
+1.2
+Xcel ArcGIS outage fetch
+Scheduled pull from Xcel's ArcGIS REST endpoint.
+All metadata preserved: ID, type, cause, customer
+count, estimated restore time, geometry.
+Foundation
+Data
+1.3
+Reverse geocoding + caching
+GPS coordinates converted to readable addresses
+via Google Maps or Nominatim. Results cached —
+no repeat API calls per coordinate.
+1.4
+Clickable outage markers
+Color-coded pins on map. Click opens full metadata
+panel — address, outage type, customer count,
+restore estimate, current status.
+Data
+UX
+1.5
+Field investigation form
+Structured form per marker: fault type, cause
+confirmed, damage description, photos (optional),
+action taken, time logged.
+UX
+1.6
+Marker color / status system
+Unvisited → Investigated → In-progress → Resolved.
+Colors update live. Status written to database,
+survives refresh.
+Core
+1.7
+Persistence after refresh
+All outage data, field updates, tech positions, and job
+statuses stored in Postgres/Supabase. Full state
+restored on reload.
+Core
+1.8
+Technician markers + status
+Each tech appears on map. Green =
+available/hunting, Red = working, Yellow = paused.
+Status affects routing eligibility.
+Dispatch
+1.9
+Manual office job entry
+Office enters jobs: customer name, address, phone,
+job type, priority, notes. Jobs appear on map and
+enter the same queue as outage markers.
+Dispatch
+1.10
+Unified job queue
+Single queue merging outage markers + office jobs.
+Sortable by priority score, distance, estimated value.
+Confirmed opportunities override general hunting.
+Dispatch
+1.11
+Route to nearest
+"Go here" button opens turn-by-turn in Google Maps
+or Waze. Single-stop routing from the tech's current
+location.
+Routing
+1.12
+Closest available tech routing
+Office clicks a job — system finds closest
+green-status tech and flags the assignment. Manual
+confirm before dispatch.
+Routing
+1.13
+Basic priority scoring
+Score = customer count x urgency weight + office job
+flag + density bonus + time since reported.
+Configurable weights via admin panel.
+Core
+1.14
+Territory assignment logic
+Define territory zones by polygon or zip code. Techs
+assigned home territories. Routing respects territory
+unless override is triggered.
+Dispatch
+1.15
+Storm simulation / test mode
+Toggle activates synthetic data: fake outage clusters,
+simulated tech positions, mock office jobs, time-lapse
+status changes. Full routing runs on test data.
+1.16
+Simple password protection
+Office login vs tech login with different views and
+permissions. JWT auth — no SSO required in Phase
+1.
+Testing
+Security
+1.17
+Handoff documentation
+README, environment setup guide, data schema
+docs, API key management guide, Phase 2
+extension notes.
+
+
+
+
+before you provide me the pricing I wanted to make sure that we also incorporate a few things as well in case xcels ArcGIS map changes I want to make sure that we can adapt to the inputs and plan that something there may change as well. I would also like to consider adding a toggle switch to also incorporate this map with Connexus another utility provider in my area, https://experience.arcgis.com/experience/3ef36487143d4dc28dad813f667a40d9/page/Page
+
+ ✅ 1. Build a Data Adapter Layer (NON-NEGOTIABLE)
+
+Do NOT let your frontend depend directly on Xcel’s format.
+
+Instead:
+
+Xcel ArcGIS → YOUR API (/api/outages) → Your App
+
+Your API should:
+
+fetch Xcel data
+normalize it into YOUR format
+handle missing fields safely
+
+Example:
+
+function normalizeXcelData(raw) {
+  return {
+    id: raw.attributes.OBJECTID ?? null,
+    customers: raw.attributes.CUSTOMERS ?? 0,
+    lat: raw.geometry?.y ?? null,
+    lng: raw.geometry?.x ?? null,
+    cause: raw.attributes.CAUSE ?? "UNKNOWN",
+  };
+}
+
+👉 If Xcel changes, you fix ONE place.
+
+✅ 2. Store Raw Snapshots
+
+Every time you fetch data:
+
+store raw response (at least temporarily)
+store normalized version
+
+Why this matters:
+
+debugging when things break
+training AI later
+replaying storms
+fallback if API goes down
+✅ 3. Add Fallback Mode
+
+If Xcel fails:
+
+The app should still work with:
+
+last known snapshot
+test mode data
+manual job entry
+
+👉 Your app should degrade gracefully, not die.
+
+✅ 4. Error Monitoring (simple version)
+
+Your API should detect:
+
+failed fetch
+empty data
+schema mismatch
+
+And log something like:
+
+Xcel data fetch failed
+Xcel schema mismatch detected
+
+Even basic logging is enough.
+
+✅ 5. Do NOT Over-Couple to Xcel
+
+Your system should treat Xcel as:
+
+one input source, not the system
+
+Because over time you may add:
+
+customer call data
+your own historical outage patterns
+weather data
+insurance claim zones
+your own “known problem areas”
+
+
+
+
+New required
+Current issues in Tech View:
+
+1. Door hanger status is wrong
+   When marking “left door hanger,” it is showing as “temp power installed.” That needs to be corrected.
+
+2. Remove “door hanger” as a lead source
+   I think lead source should only be:
+
+* Call-in
+* ArcGIS outage, new or old
+* Self-generated
+
+Door hanger should be an action/status, not a lead source. We usually only leave door hangers on self-generated leads or ArcGIS outage leads.
+
+3. Show door hanger visually on the marker
+   Instead of making door hanger a separate lead source, please show it visually by adding a square/border around the existing marker:
+
+* Diamond with square/border = self-generated lead where door hanger was left
+* Round ArcGIS marker with square/border = ArcGIS lead where door hanger was left
+
+4. Completed jobs should leave the active job queue
+   When I mark a job as complete, it currently remains in the job queue. Completed jobs should not stay in the active queue.
+
+5. Click marker to open investigation
+   I would like the ability to click a dot/marker and directly open the job investigation screen for that lead.
+
+6. Remove map clutter
+   The map is showing too many landmarks, restaurants, waypoints, and other unrelated map items. Please either remove these from the map style or add a toggle to hide/show them. Default should be clean/simple.
+
+7. Clarify Outages tab vs Job Queue tab
+   Right now, the Outages tab and Job Queue tab appear to be showing basically the same list. Please explain the current difference.
+
+My expectation:
+
+* Outages tab = all outage/map leads, especially ArcGIS outage data and general map opportunities.
+* Job Queue = actionable work queue only.
+
+Job Queue should include only:
+
+* Call-ins
+* Self-generated leads
+* ArcGIS leads that are marked sold, started, complete, temp power installed, or return for grounding
+
+8. Missing cities in Outages
+   Under the Outages tab, many locations are missing city names. Please fix the location/city display where possible.
+
+9. Routing should probably live inside the outage map
+   I am concerned that having routing in a separate window will become confusing when there are thousands of dots on the map, especially during storm chaos and 14-hour workdays.
+
+My preference is that routing should be inside the outage map view, not a separate window, unless there is a very strong reason not to do that.
+
+The whole tool needs to be extremely usable and streamlined in the field.

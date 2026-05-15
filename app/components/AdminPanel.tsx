@@ -1,0 +1,580 @@
+"use client";
+import { useState, useEffect, useCallback } from "react";
+
+type Weights = {
+  customers_multiplier: number;
+  urgency_multiplier: number;
+  office_job_bonus: number;
+  density_bonus: number;
+  time_weight: number;
+  confirmed_opportunity_bonus: number;
+  // §9 new scoring fields
+  line_drop_bonus: number;
+  line_drop_power_bonus: number;
+  wants_to_proceed_bonus: number;
+  honey_hole_bonus: number;
+};
+
+type Settings = {
+  simulation_mode: boolean;
+  active_sources: string[];
+  connexus_enabled: boolean;
+  fetch_interval_minutes: number;
+};
+
+type Props = {
+  token: string;
+  /** Called after any save so page.tsx can sync activeSources and refetch outages */
+  onSettingsChanged?: (activeSources: string[], simulationMode: boolean) => void;
+};
+
+export default function AdminPanel({ token, onSettingsChanged }: Props) {
+  const [weights, setWeights] = useState<Weights>({
+    customers_multiplier: 1.0,
+    urgency_multiplier: 1.5,
+    office_job_bonus: 50,
+    density_bonus: 20,
+    time_weight: 0.1,
+    confirmed_opportunity_bonus: 100,
+    line_drop_bonus: 60,
+    line_drop_power_bonus: 40,
+    wants_to_proceed_bonus: 80,
+    honey_hole_bonus: 50,
+  });
+  // Synthetic outage generation state
+  const [synthCount, setSynthCount] = useState<10 | 25 | 50 | 100>(25);
+  const [synthType, setSynthType]   = useState<"mixed" | "clustered" | "sparse" | "honey_hole">("mixed");
+  const [genRunning, setGenRunning] = useState(false);
+
+  // Storm event state
+  type StormEvent = { id: string; name: string; started_at: string; ended_at: string | null; notes: string | null };
+  const [stormEvents, setStormEvents] = useState<StormEvent[]>([]);
+  const [activeEvent, setActiveEvent] = useState<StormEvent | null>(null);
+  const [newEventName, setNewEventName] = useState("");
+  const [stormLoading, setStormLoading] = useState(false);
+
+  // Snapshot-to-simulation state
+  type Snapshot = { id: string; fetched_at: string; normalized_count: number; source: string };
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [snapLoading, setSnapLoading] = useState(false);
+  const [loadingSnap, setLoadingSnap] = useState<string | null>(null);
+  const [settings, setSettings] = useState<Settings>({
+    simulation_mode: false,
+    active_sources: ["xcel"],
+    connexus_enabled: false,
+    fetch_interval_minutes: 15,
+  });
+  const [loading, setLoading]   = useState(true);
+  const [saving, setSaving]     = useState(false);
+  const [message, setMessage]   = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  // ── Load current settings ─────────────────────────────────────────────────
+  async function loadAdmin() {
+    try {
+      const res  = await fetch("/api/admin", { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      if (data.weights)  setWeights(data.weights);
+      if (data.settings) setSettings((prev) => ({ ...prev, ...data.settings }));
+    } catch {}
+    setLoading(false);
+  }
+
+  const loadStormEvents = useCallback(async () => {
+    setStormLoading(true);
+    try {
+      const res = await fetch("/api/storm-events", { headers: { Authorization: `Bearer ${token}` } });
+      const d = await res.json();
+      const list: StormEvent[] = d.events ?? [];
+      setStormEvents(list);
+      setActiveEvent(list.find((e) => !e.ended_at) ?? null);
+    } catch {}
+    setStormLoading(false);
+  }, [token]);
+
+  const loadSnapshots = useCallback(async () => {
+    setSnapLoading(true);
+    try {
+      const res = await fetch("/api/snapshots?limit=10", { headers: { Authorization: `Bearer ${token}` } });
+      const d = await res.json();
+      setSnapshots(d.snapshots ?? []);
+    } catch {}
+    setSnapLoading(false);
+  }, [token]);
+
+  useEffect(() => { loadAdmin(); loadStormEvents(); loadSnapshots(); }, []);
+
+  // ── Save priority weights ─────────────────────────────────────────────────
+  async function saveWeights() {
+    setSaving(true); setMessage(null);
+    try {
+      const res = await fetch("/api/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ type: "weights", data: weights }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      setMessage({ type: "success", text: "Priority weights saved." });
+    } catch (err: any) { setMessage({ type: "error", text: err.message }); }
+    setSaving(false);
+  }
+
+  // ── Save data-source settings (NOT simulation — handled separately) ────────
+  async function saveSourceSettings() {
+    setSaving(true); setMessage(null);
+    try {
+      const payload = {
+        active_sources: settings.active_sources,
+        connexus_enabled: settings.connexus_enabled,
+        fetch_interval_minutes: settings.fetch_interval_minutes,
+      };
+      const res = await fetch("/api/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ type: "settings", data: payload }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      setMessage({ type: "success", text: "Settings saved. Refreshing outages…" });
+      onSettingsChanged?.(settings.active_sources, settings.simulation_mode);
+    } catch (err: any) { setMessage({ type: "error", text: err.message }); }
+    setSaving(false);
+  }
+
+  // ── Toggle simulation mode (uses /api/simulation for scenario activation) ─
+  async function applySimulation() {
+    const enable = settings.simulation_mode;
+    setSaving(true); setMessage(null);
+    try {
+      const res = await fetch("/api/simulation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ enable }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      setMessage({
+        type: "success",
+        text: enable ? "Simulation mode ON — synthetic storm data active." : "Simulation mode OFF — live data restored.",
+      });
+      onSettingsChanged?.(settings.active_sources, enable);
+    } catch (err: any) { setMessage({ type: "error", text: err.message }); }
+    setSaving(false);
+  }
+
+  // ── Storm event management ────────────────────────────────────────────────
+  async function startStormEvent() {
+    if (!newEventName.trim()) return;
+    setStormLoading(true); setMessage(null);
+    try {
+      const res = await fetch("/api/storm-events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: "start", name: newEventName }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      setNewEventName("");
+      await loadStormEvents();
+      setMessage({ type: "success", text: `Storm event "${newEventName}" started.` });
+    } catch (err: any) { setMessage({ type: "error", text: err.message }); }
+    setStormLoading(false);
+  }
+
+  async function endStormEvent(id: string, name: string) {
+    setStormLoading(true); setMessage(null);
+    try {
+      const res = await fetch("/api/storm-events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: "end", id }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      await loadStormEvents();
+      setMessage({ type: "success", text: `Storm event "${name}" ended.` });
+    } catch (err: any) { setMessage({ type: "error", text: err.message }); }
+    setStormLoading(false);
+  }
+
+  // ── Load snapshot into test mode ──────────────────────────────────────────
+  async function loadSnapshotIntoSim(snapshotId: string) {
+    setLoadingSnap(snapshotId); setMessage(null);
+    try {
+      const res = await fetch("/api/simulation/load-snapshot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ snapshotId }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      setMessage({ type: "success", text: `Loaded ${d.loaded} outages from snapshot. Activate simulation mode to view them.` });
+      onSettingsChanged?.(settings.active_sources, true);
+    } catch (err: any) { setMessage({ type: "error", text: err.message }); }
+    setLoadingSnap(null);
+  }
+
+  // ── Generate synthetic outages ────────────────────────────────────────────
+  async function generateSyntheticOutages() {
+    setGenRunning(true); setMessage(null);
+    try {
+      const res = await fetch("/api/simulation/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ count: synthCount, type: synthType }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      setMessage({ type: "success", text: `Generated ${d.created} synthetic outages (${synthType}). Activate simulation to see them.` });
+    } catch (err: any) { setMessage({ type: "error", text: err.message }); }
+    setGenRunning(false);
+  }
+
+  // ── Styles ────────────────────────────────────────────────────────────────
+  const fieldStyle: React.CSSProperties = {
+    width: "100%", padding: "9px 12px", fontSize: "14px",
+    border: "1px solid #e5e7eb", borderRadius: "8px", outline: "none",
+  };
+  const labelStyle: React.CSSProperties = {
+    fontSize: "13px", fontWeight: 600, color: "#374151",
+    marginBottom: "6px", display: "block",
+  };
+  const sectionStyle: React.CSSProperties = {
+    background: "#fff", borderRadius: "12px", padding: "20px",
+    marginBottom: "20px", border: "1px solid #e5e7eb",
+  };
+  const saveBtn = (color = "#0d9488"): React.CSSProperties => ({
+    marginTop: "16px", padding: "10px 20px", background: saving ? "#9ca3af" : color,
+    color: "#fff", border: "none", borderRadius: "8px", fontSize: "14px",
+    fontWeight: 600, cursor: saving ? "default" : "pointer",
+  });
+
+  if (loading) return <div style={{ textAlign: "center", padding: "40px", color: "#6b7280" }}>Loading admin settings…</div>;
+
+  return (
+    <div>
+      {message && (
+        <div style={{ padding: "12px 16px", background: message.type === "success" ? "#d1fae5" : "#fee2e2", color: message.type === "success" ? "#065f46" : "#dc2626", borderRadius: "8px", marginBottom: "16px", fontSize: "14px" }}>
+          {message.text}
+        </div>
+      )}
+
+      {/* ── Data Sources ────────────────────────────────────────────── */}
+      <div style={sectionStyle}>
+        <h3 style={{ margin: "0 0 16px", fontSize: "16px", fontWeight: 700, color: "#1f2937" }}>Data Sources</h3>
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+
+          {/* Xcel */}
+          <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px", background: "#f9fafb", borderRadius: "8px", cursor: "pointer", border: settings.active_sources.includes("xcel") ? "2px solid #0d9488" : "1px solid #e5e7eb" }}>
+            <div>
+              <div style={{ fontWeight: 600, color: "#1f2937" }}>Xcel Energy (ArcGIS)</div>
+              <div style={{ fontSize: "12px", color: "#6b7280" }}>Live outage data from Xcel's ArcGIS REST endpoint</div>
+            </div>
+            <input
+              type="checkbox"
+              checked={settings.active_sources.includes("xcel")}
+              onChange={(e) => {
+                const sources = e.target.checked
+                  ? [...settings.active_sources, "xcel"]
+                  : settings.active_sources.filter((s) => s !== "xcel");
+                setSettings({ ...settings, active_sources: sources });
+              }}
+              style={{ width: "18px", height: "18px", cursor: "pointer", accentColor: "#0d9488" }}
+            />
+          </label>
+
+          {/* Connexus */}
+          <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px", background: "#f9fafb", borderRadius: "8px", cursor: "pointer", border: settings.connexus_enabled ? "2px solid #0d9488" : "1px solid #e5e7eb" }}>
+            <div>
+              <div style={{ fontWeight: 600, color: "#1f2937" }}>
+                Connexus Energy (ArcGIS)
+                {!settings.connexus_enabled && (
+                  <span style={{ marginLeft: "8px", padding: "2px 6px", background: "#fef3c7", color: "#92400e", borderRadius: "4px", fontSize: "11px" }}>
+                    Requires CONNEXUS_ARCGIS_URL in .env
+                  </span>
+                )}
+              </div>
+              <div style={{ fontSize: "12px", color: "#6b7280" }}>
+                Toggle Connexus outages alongside Xcel.
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              checked={settings.connexus_enabled}
+              onChange={(e) => {
+                setSettings({
+                  ...settings,
+                  connexus_enabled: e.target.checked,
+                  active_sources: e.target.checked
+                    ? [...new Set([...settings.active_sources, "connexus"])]
+                    : settings.active_sources.filter((s) => s !== "connexus"),
+                });
+              }}
+              style={{ width: "18px", height: "18px", cursor: "pointer", accentColor: "#0d9488" }}
+            />
+          </label>
+        </div>
+
+        <div style={{ marginTop: "12px" }}>
+          <label style={labelStyle}>Fetch Interval (minutes)</label>
+          <input
+            type="number" min={5} max={60}
+            value={settings.fetch_interval_minutes}
+            onChange={(e) => setSettings({ ...settings, fetch_interval_minutes: parseInt(e.target.value) || 15 })}
+            style={{ ...fieldStyle, maxWidth: "120px" }}
+          />
+        </div>
+        <button onClick={saveSourceSettings} disabled={saving} style={saveBtn()}>
+          {saving ? "Saving…" : "Save & Apply"}
+        </button>
+      </div>
+
+      {/* ── Priority Weights ─────────────────────────────────────────── */}
+      <div style={sectionStyle}>
+        <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: 700, color: "#1f2937" }}>Priority Scoring Weights</h3>
+        <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#6b7280" }}>
+          Score = (customers × multiplier) + (urgency × weight) + office_bonus + density_bonus + (hours × time_weight) + confirmed_bonus
+        </p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "16px" }}>
+          {([
+            { key: "customers_multiplier",       label: "Customers Multiplier" },
+            { key: "urgency_multiplier",          label: "Urgency Multiplier" },
+            { key: "office_job_bonus",            label: "Office Job Bonus" },
+            { key: "density_bonus",               label: "Density Bonus (per nearby outage)" },
+            { key: "time_weight",                 label: "Time Weight (per hour)" },
+            { key: "confirmed_opportunity_bonus", label: "Confirmed Opportunity Bonus" },
+            { key: "wants_to_proceed_bonus",      label: "Wants-to-Proceed Bonus" },
+            { key: "honey_hole_bonus",            label: "Honey Hole Bonus (multi-customer)" },
+            { key: "line_drop_bonus",             label: "Line Drop Present Bonus" },
+            { key: "line_drop_power_bonus",       label: "Line Drop w/ Power Bonus" },
+          ] as { key: keyof Weights; label: string }[]).map(({ key, label }) => (
+            <div key={key}>
+              <label style={labelStyle}>{label}</label>
+              <input
+                type="number" step="0.1"
+                value={weights[key]}
+                onChange={(e) => setWeights({ ...weights, [key]: parseFloat(e.target.value) || 0 })}
+                style={fieldStyle}
+              />
+            </div>
+          ))}
+        </div>
+        <button onClick={saveWeights} disabled={saving} style={saveBtn()}>
+          {saving ? "Saving…" : "Save Weights"}
+        </button>
+      </div>
+
+      {/* ── Storm Simulation Mode ─────────────────────────────────────── */}
+      <div style={sectionStyle}>
+        <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: 700, color: "#1f2937" }}>Storm Simulation Mode</h3>
+        <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#6b7280" }}>
+          Replace live outage data with a synthetic storm scenario for testing routing, dispatch, and priority logic.
+        </p>
+
+        {/* Visual toggle */}
+        <label
+          style={{ display: "flex", alignItems: "center", gap: "12px", padding: "14px", background: settings.simulation_mode ? "#fff7ed" : "#f9fafb", border: `1px solid ${settings.simulation_mode ? "#fed7aa" : "#e5e7eb"}`, borderRadius: "8px", cursor: "pointer" }}
+          onClick={() => setSettings((prev) => ({ ...prev, simulation_mode: !prev.simulation_mode }))}
+        >
+          {/* Track */}
+          <div style={{ width: "44px", height: "24px", background: settings.simulation_mode ? "#f97316" : "#d1d5db", borderRadius: "12px", position: "relative", transition: "background 0.2s", flexShrink: 0 }}>
+            <div style={{ width: "20px", height: "20px", background: "#fff", borderRadius: "50%", position: "absolute", top: "2px", left: settings.simulation_mode ? "22px" : "2px", transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
+          </div>
+          <div>
+            <div style={{ fontWeight: 600, color: "#1f2937" }}>
+              {settings.simulation_mode ? "Simulation ON (unsaved)" : "Simulation OFF"}
+            </div>
+            <div style={{ fontSize: "12px", color: "#6b7280" }}>
+              {settings.simulation_mode
+                ? "Click 'Apply Simulation' to activate synthetic storm data."
+                : "Live data is active. Toggle to test with synthetic outage clusters."}
+            </div>
+          </div>
+        </label>
+
+        <button
+          onClick={applySimulation}
+          disabled={saving}
+          style={{ ...saveBtn(settings.simulation_mode ? "#f97316" : "#6b7280"), marginTop: "12px" }}
+        >
+          {saving ? "Applying…" : settings.simulation_mode ? "Apply Simulation" : "Apply (Turn Off Simulation)"}
+        </button>
+      </div>
+
+      {/* ── Synthetic Outage Generator ─────────────────────────────── */}
+      <div style={sectionStyle}>
+        <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: 700, color: "#1f2937" }}>Synthetic Outage Generator</h3>
+        <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#6b7280" }}>
+          Generate a synthetic storm dataset for simulation. This does <strong>not</strong> affect live data.
+        </p>
+
+        <div style={{ display: "flex", gap: "16px", flexWrap: "wrap", marginBottom: "14px" }}>
+          {/* Count buttons */}
+          <div>
+            <label style={labelStyle}>Outage Count</label>
+            <div style={{ display: "flex", gap: "6px" }}>
+              {([10, 25, 50, 100] as const).map((n) => (
+                <button
+                  key={n}
+                  onClick={() => setSynthCount(n)}
+                  style={{
+                    padding: "7px 16px",
+                    border: `1px solid ${synthCount === n ? "#0d9488" : "#e5e7eb"}`,
+                    borderRadius: "8px",
+                    background: synthCount === n ? "#ccfbf1" : "#fff",
+                    color: synthCount === n ? "#0d9488" : "#6b7280",
+                    fontWeight: synthCount === n ? 700 : 400,
+                    fontSize: "14px",
+                    cursor: "pointer",
+                  }}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Type buttons */}
+          <div>
+            <label style={labelStyle}>Scenario Type</label>
+            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+              {([
+                { value: "mixed",      label: "Mixed" },
+                { value: "clustered",  label: "Clustered" },
+                { value: "sparse",     label: "Sparse" },
+                { value: "honey_hole", label: "Honey Hole" },
+              ] as const).map((t) => (
+                <button
+                  key={t.value}
+                  onClick={() => setSynthType(t.value)}
+                  style={{
+                    padding: "7px 16px",
+                    border: `1px solid ${synthType === t.value ? "#7c3aed" : "#e5e7eb"}`,
+                    borderRadius: "8px",
+                    background: synthType === t.value ? "#ede9fe" : "#fff",
+                    color: synthType === t.value ? "#7c3aed" : "#6b7280",
+                    fontWeight: synthType === t.value ? 700 : 400,
+                    fontSize: "14px",
+                    cursor: "pointer",
+                  }}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <button
+          onClick={generateSyntheticOutages}
+          disabled={genRunning}
+          style={{ ...saveBtn("#7c3aed"), margin: 0 }}
+        >
+          {genRunning ? "Generating…" : `Generate ${synthCount} ${synthType} outages`}
+        </button>
+      </div>
+
+      {/* ── Load Saved Snapshot into Test Mode ──────────────────────── */}
+      <div style={sectionStyle}>
+        <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: 700, color: "#1f2937" }}>Load Real Snapshot into Test Mode</h3>
+        <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#6b7280" }}>
+          Replay a saved Xcel outage snapshot as simulation data — full interaction, no live impact.
+        </p>
+        {snapLoading ? (
+          <div style={{ color: "#9ca3af", fontSize: "13px" }}>Loading snapshots…</div>
+        ) : snapshots.length === 0 ? (
+          <div style={{ color: "#9ca3af", fontSize: "13px" }}>No snapshots available yet. Snapshots are saved automatically when outages are fetched.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            {snapshots.map((snap) => (
+              <div key={snap.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", background: "#f9fafb", borderRadius: "8px", border: "1px solid #e5e7eb" }}>
+                <div>
+                  <div style={{ fontWeight: 600, color: "#1f2937", fontSize: "13px" }}>
+                    {new Date(snap.fetched_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                  </div>
+                  <div style={{ fontSize: "11px", color: "#6b7280" }}>
+                    {snap.normalized_count} outages · {snap.source}
+                  </div>
+                </div>
+                <button
+                  onClick={() => loadSnapshotIntoSim(snap.id)}
+                  disabled={loadingSnap === snap.id}
+                  style={{ padding: "7px 14px", background: loadingSnap === snap.id ? "#9ca3af" : "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: loadingSnap === snap.id ? "default" : "pointer" }}
+                >
+                  {loadingSnap === snap.id ? "Loading…" : "Load into Test"}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <button onClick={loadSnapshots} style={{ marginTop: "12px", padding: "7px 14px", background: "#fff", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "12px", color: "#6b7280", cursor: "pointer" }}>
+          Refresh Snapshots
+        </button>
+      </div>
+
+      {/* ── Storm Event Sessions ─────────────────────────────────────── */}
+      <div style={sectionStyle}>
+        <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: 700, color: "#1f2937" }}>Storm Event Sessions</h3>
+        <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#6b7280" }}>
+          Track storm response sessions for historical analysis and future AI routing improvement.
+        </p>
+
+        {/* Active event banner */}
+        {activeEvent && (
+          <div style={{ padding: "12px 14px", background: "#fef3c7", border: "1px solid #fbbf24", borderRadius: "8px", marginBottom: "16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ fontWeight: 700, color: "#92400e", fontSize: "14px" }}>ACTIVE: {activeEvent.name}</div>
+              <div style={{ fontSize: "12px", color: "#78350f" }}>
+                Started {new Date(activeEvent.started_at).toLocaleString()}
+              </div>
+            </div>
+            <button
+              onClick={() => endStormEvent(activeEvent.id, activeEvent.name)}
+              disabled={stormLoading}
+              style={{ padding: "8px 16px", background: "#ef4444", color: "#fff", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: stormLoading ? "default" : "pointer" }}
+            >
+              End Event
+            </button>
+          </div>
+        )}
+
+        {/* Start new event */}
+        {!activeEvent && (
+          <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
+            <input
+              type="text"
+              value={newEventName}
+              onChange={(e) => setNewEventName(e.target.value)}
+              placeholder="Event name (e.g. June 2026 Derecho)"
+              style={{ flex: 1, padding: "9px 12px", fontSize: "14px", border: "1px solid #e5e7eb", borderRadius: "8px", outline: "none" }}
+            />
+            <button
+              onClick={startStormEvent}
+              disabled={stormLoading || !newEventName.trim()}
+              style={{ padding: "9px 18px", background: stormLoading || !newEventName.trim() ? "#9ca3af" : "#0d9488", color: "#fff", border: "none", borderRadius: "8px", fontSize: "14px", fontWeight: 600, cursor: stormLoading || !newEventName.trim() ? "default" : "pointer" }}
+            >
+              {stormLoading ? "Starting…" : "Start Session"}
+            </button>
+          </div>
+        )}
+
+        {/* Past events */}
+        {stormEvents.filter((e) => e.ended_at).length > 0 && (
+          <div>
+            <div style={{ fontSize: "12px", fontWeight: 600, color: "#6b7280", marginBottom: "8px", textTransform: "uppercase" }}>Past Events</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              {stormEvents.filter((e) => e.ended_at).map((e) => (
+                <div key={e.id} style={{ padding: "10px 14px", background: "#f9fafb", borderRadius: "8px", border: "1px solid #e5e7eb" }}>
+                  <div style={{ fontWeight: 600, color: "#1f2937", fontSize: "13px" }}>{e.name}</div>
+                  <div style={{ fontSize: "11px", color: "#9ca3af" }}>
+                    {new Date(e.started_at).toLocaleDateString()} → {new Date(e.ended_at!).toLocaleDateString()}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,1042 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { Loader } from "@googlemaps/js-api-loader";
+
+type VisitStatus = "unvisited" | "assigned" | "in-progress" | "visited" | "needs-followup" | "complete";
+
+type Outage = {
+  id: number | null;
+  city: string | null;
+  county: string | null;
+  customers: number | null;
+  outageImpact: string | null;
+  outageType: string | null;
+  crewStatus: string | null;
+  cause: string | null;
+  etr: number | null;
+  lat: number | null;
+  lng: number | null;
+  milesFromDowntown: number;
+  estimatedRestorationTime?: string | null;
+  timeOff?: string | null;
+  comments?: string | null;
+  // Field ops tracking
+  assignedTo?: string | null;
+  visitStatus?: VisitStatus;
+  visitNotes?: string;
+  visitTime?: string;
+  priority?: number; // 1-5, for routing order
+};
+
+type ApiResponse = {
+  count: number;
+  radiusMiles: number;
+  fetchedAt: string;
+  features: Outage[];
+};
+
+type ViewMode = "all" | "county" | "state";
+
+const TECHNICIANS = ["Unassigned", "Team Alpha", "Team Bravo", "Team Charlie", "Team Delta", "Team Echo"];
+
+const STATUS_COLORS: Record<VisitStatus, string> = {
+  "unvisited": "#f4a261", // orange
+  "assigned": "#3498db",   // blue
+  "in-progress": "#9b59b6", // purple
+  "visited": "#2ecc71",    // green
+  "needs-followup": "#e74c3c", // red
+  "complete": "#27ae60"    // dark green
+};
+
+export default function Page() {
+  const mapRef = useRef<HTMLDivElement | null>(null);
+  const mapObj = useRef<google.maps.Map | null>(null);
+  const markersRef = useRef<google.maps.marker.AdvancedMarkerElement[]>([]);
+  const infoRef = useRef<google.maps.InfoWindow | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const autocompleteRef = useRef<google.maps.places.Autocomplete | null>(null);
+
+  const [outages, setOutages] = useState<Outage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>("all");
+  const [updateOnMove, setUpdateOnMove] = useState(false);
+  const [selectedOutageId, setSelectedOutageId] = useState<number | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<string>("");
+  
+  // Field ops state
+  const [filterTechnician, setFilterTechnician] = useState<string>("All");
+  const [filterStatus, setFilterStatus] = useState<VisitStatus | "all">("all");
+  const [showRoutingPanel, setShowRoutingPanel] = useState(false);
+  const [routeForTech, setRouteForTech] = useState<string>("");
+  const [optimizedRoute, setOptimizedRoute] = useState<Outage[]>([]);
+
+  // Initialize Google Maps
+  useEffect(() => {
+    let cancelled = false;
+
+    async function initMap() {
+      try {
+        const key = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+        if (!key) {
+          setError("Missing NEXT_PUBLIC_GOOGLE_MAPS_API_KEY");
+          setLoading(false);
+          return;
+        }
+        if (!mapRef.current) return;
+
+        const loader = new Loader({
+          apiKey: key,
+          version: "weekly",
+          libraries: ["marker", "places"],
+        });
+
+        await loader.load();
+        await loader.importLibrary("marker");
+
+        if (cancelled) return;
+
+        // Center on Minneapolis, MN
+        const map = new google.maps.Map(mapRef.current, {
+          center: { lat: 44.9778, lng: -93.265 },
+          zoom: 10,
+          mapTypeControl: false,
+          streetViewControl: false,
+          fullscreenControl: false,
+          zoomControl: false,
+        });
+
+        mapObj.current = map;
+        infoRef.current = new google.maps.InfoWindow();
+
+        // Initialize autocomplete
+        if (searchInputRef.current) {
+          autocompleteRef.current = new google.maps.places.Autocomplete(
+            searchInputRef.current,
+            { types: ["geocode"] }
+          );
+          autocompleteRef.current.addListener("place_changed", () => {
+            const place = autocompleteRef.current?.getPlace();
+            if (place?.geometry?.location) {
+              map.setCenter(place.geometry.location);
+              map.setZoom(12);
+            }
+          });
+        }
+
+        // Listen for map bounds changes
+        if (updateOnMove) {
+          map.addListener("idle", () => {
+            filterOutagesByViewport();
+          });
+        }
+
+        await fetchOutages();
+      } catch (e: any) {
+        console.error(e);
+        setError(e?.message ?? "Failed to load map");
+        setLoading(false);
+      }
+    }
+
+    initMap();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Fetch outages
+  async function fetchOutages() {
+    try {
+      setLoading(true);
+      const res = await fetch("/api/outages", { cache: "no-store" });
+      const data = (await res.json()) as ApiResponse;
+      
+      // Transform data to match Xcel format
+      const transformed = data.features.map(o => ({
+        ...o,
+        estimatedRestorationTime: o.etr 
+          ? new Date(o.etr).toLocaleString('en-US', { 
+              hour: 'numeric', 
+              minute: '2-digit',
+              month: 'numeric',
+              day: 'numeric',
+              year: 'numeric'
+            })
+          : null,
+        timeOff: o.etr 
+          ? new Date(o.etr - 3600000).toLocaleString('en-US', {
+              hour: 'numeric',
+              minute: '2-digit',
+              month: 'numeric', 
+              day: 'numeric',
+              year: 'numeric'
+            })
+          : null,
+        comments: o.crewStatus || "The outage has been reported. Please continue to check back for additional updates regarding the restoration progress."
+      }));
+      
+      setOutages(transformed);
+      setLastUpdated(new Date(data.fetchedAt).toLocaleString());
+      addMarkersToMap(transformed);
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to fetch outages");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Add markers to map
+  function addMarkersToMap(data: Outage[]) {
+    if (!mapObj.current) return;
+
+    // Clear existing markers
+    markersRef.current.forEach(m => m.map = null);
+    markersRef.current = [];
+
+    data.forEach(o => {
+      if (o.lat == null || o.lng == null) return;
+
+      const statusColor = STATUS_COLORS[o.visitStatus || "unvisited"];
+      const isCompleted = o.visitStatus === "complete" || o.visitStatus === "visited";
+      
+      // Create pin element with custom colors
+      const pin = new google.maps.marker.PinElement({
+        background: statusColor,
+        borderColor: "#fff",
+        glyphColor: isCompleted ? "#fff" : "#333",
+        scale: o.priority ? 1.5 : 1.0, // Larger for routed items
+      });
+
+      const marker = new google.maps.marker.AdvancedMarkerElement({
+        map: mapObj.current!,
+        position: { lat: o.lat, lng: o.lng },
+        title: o.county ?? "Outage",
+        content: pin.element,
+      });
+
+      marker.addListener("click", () => {
+        setSelectedOutageId(o.id);
+        showInfoWindow(o, marker);
+      });
+
+      markersRef.current.push(marker);
+    });
+  }
+
+  // Show info window
+  function showInfoWindow(o: Outage, marker: google.maps.marker.AdvancedMarkerElement) {
+    if (!infoRef.current || !mapObj.current) return;
+
+    const statusColor = STATUS_COLORS[o.visitStatus || "unvisited"];
+    const content = `
+      <div style="font-family: system-ui; padding: 8px; max-width: 280px;">
+        <div style="font-weight: 600; font-size: 14px; margin-bottom: 8px; color: #333; display: flex; justify-content: space-between; align-items: center;">
+          <span>${o.county ?? "Unknown"} • MN</span>
+          <span style="background: ${statusColor}; color: ${o.visitStatus === 'unvisited' ? '#333' : '#fff'}; font-size: 10px; padding: 2px 6px; border-radius: 3px; text-transform: uppercase;">${(o.visitStatus || 'unvisited').replace('-', ' ')}</span>
+        </div>
+        ${o.assignedTo ? `<div style="font-size: 11px; color: #1565c0; margin-bottom: 4px;"><strong>Assigned:</strong> ${o.assignedTo}</div>` : ''}
+        ${o.priority ? `<div style="font-size: 11px; color: #c41230; margin-bottom: 4px; font-weight: 600;">Stop #${o.priority}</div>` : ''}
+        <div style="font-size: 13px; margin-bottom: 4px;">
+          <strong>Customers Affected:</strong> ${o.customers ?? "?"}
+        </div>
+        <div style="font-size: 13px; margin-bottom: 4px;">
+          <strong>Type:</strong> ${o.outageType ?? "Known Electric Outage"}
+        </div>
+        ${o.estimatedRestorationTime ? `
+        <div style="font-size: 13px; margin-bottom: 4px;">
+          <strong>ETR:</strong> ${o.estimatedRestorationTime}
+        </div>` : ''}
+        ${o.visitNotes ? `<div style="font-size: 11px; color: #666; margin-top: 6px; padding: 4px; background: #f5f5f5; border-radius: 3px;"><strong>Notes:</strong> ${o.visitNotes}</div>` : ''}
+        <div style="font-size: 12px; color: #666; margin-top: 8px; line-height: 1.4;">
+          ${o.comments}
+        </div>
+      </div>
+    `;
+
+    infoRef.current.setContent(content);
+    infoRef.current.open({ map: mapObj.current, anchor: marker });
+  }
+
+  // Filter outages by viewport
+  function filterOutagesByViewport() {
+    if (!mapObj.current || !updateOnMove) return;
+    const bounds = mapObj.current.getBounds();
+    if (!bounds) return;
+    // Implementation would filter based on bounds
+  }
+
+  // Focus map on outage
+  function focusOnOutage(outage: Outage) {
+    if (!mapObj.current || outage.lat == null || outage.lng == null) return;
+    
+    mapObj.current.setCenter({ lat: outage.lat, lng: outage.lng });
+    mapObj.current.setZoom(12);
+    setSelectedOutageId(outage.id);
+
+    // Find and click the marker
+    const marker = markersRef.current.find(m => {
+      const pos = m.position;
+      return pos && (pos as google.maps.LatLngLiteral).lat === outage.lat && 
+             (pos as google.maps.LatLngLiteral).lng === outage.lng;
+    });
+    
+    if (marker) {
+      showInfoWindow(outage, marker);
+    }
+  }
+
+  // Use current location
+  function useCurrentLocation() {
+    if (!mapObj.current || !navigator.geolocation) return;
+    
+    navigator.geolocation.getCurrentPosition((pos) => {
+      mapObj.current?.setCenter({
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude
+      });
+      mapObj.current?.setZoom(12);
+    });
+  }
+
+  // Zoom controls
+  const zoomIn = () => mapObj.current?.setZoom((mapObj.current.getZoom() || 9) + 1);
+  const zoomOut = () => mapObj.current?.setZoom((mapObj.current.getZoom() || 9) - 1);
+
+  // Group outages by county for "By County" view
+  const groupedByCounty = outages.reduce((acc, o) => {
+    const county = o.county ?? "Unknown";
+    if (!acc[county]) acc[county] = [];
+    acc[county].push(o);
+    return acc;
+  }, {} as Record<string, Outage[]>);
+
+  const totalCustomers = outages.reduce((sum, o) => sum + (o.customers ?? 0), 0);
+  
+  // Filtered outages based on technician and status
+  const filteredOutages = outages.filter(o => {
+    if (filterTechnician !== "All" && o.assignedTo !== filterTechnician) return false;
+    if (filterStatus !== "all" && o.visitStatus !== filterStatus) return false;
+    return true;
+  });
+  
+  // Stats for dashboard
+  const stats = {
+    unvisited: outages.filter(o => !o.visitStatus || o.visitStatus === "unvisited").length,
+    assigned: outages.filter(o => o.visitStatus === "assigned").length,
+    inProgress: outages.filter(o => o.visitStatus === "in-progress").length,
+    visited: outages.filter(o => o.visitStatus === "visited" || o.visitStatus === "complete").length,
+    needsFollowup: outages.filter(o => o.visitStatus === "needs-followup").length,
+    byTeam: Object.fromEntries(TECHNICIANS.slice(1).map(t => [t, outages.filter(o => o.assignedTo === t).length]))
+  };
+
+  // Assign technician to outage
+  function assignTechnician(outageId: number | null, technician: string) {
+    setOutages(prev => prev.map(o => {
+      if (o.id === outageId) {
+        return { 
+          ...o, 
+          assignedTo: technician === "Unassigned" ? null : technician,
+          visitStatus: technician !== "Unassigned" && (!o.visitStatus || o.visitStatus === "unvisited") 
+            ? "assigned" 
+            : o.visitStatus
+        };
+      }
+      return o;
+    }));
+  }
+
+  // Update visit status
+  function updateStatus(outageId: number | null, status: VisitStatus, notes?: string) {
+    setOutages(prev => prev.map(o => {
+      if (o.id === outageId) {
+        return { 
+          ...o, 
+          visitStatus: status,
+          visitNotes: notes || o.visitNotes,
+          visitTime: status === "visited" || status === "complete" ? new Date().toLocaleString() : o.visitTime
+        };
+      }
+      return o;
+    }));
+  }
+
+  // Nearest neighbor route optimization
+  function calculateOptimalRoute(technician: string, startLat?: number, startLng?: number) {
+    const techOutages = outages.filter(o => 
+      o.assignedTo === technician && 
+      o.lat != null && 
+      o.lng != null &&
+      o.visitStatus !== "complete" &&
+      o.visitStatus !== "visited"
+    );
+    
+    if (techOutages.length === 0) {
+      setOptimizedRoute([]);
+      return;
+    }
+
+    // Simple nearest neighbor algorithm
+    const route: Outage[] = [];
+    const unvisited = [...techOutages];
+    
+    // Start from downtown Minneapolis or provided start point
+    let currentLat = startLat ?? 44.9778;
+    let currentLng = startLng ?? -93.265;
+    
+    while (unvisited.length > 0) {
+      // Find nearest
+      let nearestIdx = 0;
+      let minDist = Infinity;
+      
+      unvisited.forEach((o, idx) => {
+        if (o.lat != null && o.lng != null) {
+          const dist = Math.sqrt(
+            Math.pow(o.lat - currentLat, 2) + 
+            Math.pow(o.lng - currentLng, 2)
+          );
+          if (dist < minDist) {
+            minDist = dist;
+            nearestIdx = idx;
+          }
+        }
+      });
+      
+      const nearest = unvisited.splice(nearestIdx, 1)[0];
+      route.push(nearest);
+      currentLat = nearest.lat!;
+      currentLng = nearest.lng!;
+    }
+    
+    setOptimizedRoute(route);
+    
+    // Show route on map with priority numbers
+    route.forEach((o, idx) => {
+      o.priority = idx + 1;
+    });
+    
+    // Re-render markers with route info
+    addMarkersToMap(outages);
+  }
+
+  // Generate shareable route link (simple text format)
+  function generateRouteSheet(technician: string) {
+    const techOutages = outages.filter(o => o.assignedTo === technician);
+    const unvisited = techOutages.filter(o => o.visitStatus !== "complete" && o.visitStatus !== "visited");
+    
+    let sheet = `ROUTE SHEET - ${technician}\n`;
+    sheet += `Generated: ${new Date().toLocaleString()}\n\n`;
+    
+    unvisited.forEach((o, idx) => {
+      sheet += `Stop #${idx + 1}: ${o.county || o.city || 'Unknown'}\n`;
+      sheet += `  Customers: ${o.customers || '?'}\n`;
+      sheet += `  Location: ${o.lat?.toFixed(4)}, ${o.lng?.toFixed(4)}\n`;
+      sheet += `  Status: ${o.visitStatus || 'unvisited'}\n\n`;
+    });
+    
+    return sheet;
+  }
+
+  return (
+    <div style={{ height: "100vh", display: "flex", fontFamily: "system-ui, -apple-system, sans-serif" }}>
+      {/* Sidebar */}
+      <div style={{ 
+        width: "420px", 
+        minWidth: "420px",
+        backgroundColor: "#f5f0eb", 
+        display: "flex",
+        flexDirection: "column",
+        borderRight: "1px solid #ddd"
+      }}>
+        {/* Header */}
+        <div style={{ padding: "16px 20px", borderBottom: "1px solid #ddd" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+            <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 600, color: "#333" }}>Field Ops</h1>
+            <span style={{ fontSize: "13px", color: "#666" }}>
+              {lastUpdated || "..."}
+            </span>
+          </div>
+          <div style={{ fontSize: "14px", color: "#333", fontWeight: 500 }}>
+            <strong>{outages.length}</strong> outages | <strong>{totalCustomers.toLocaleString()}</strong> customers
+          </div>
+        </div>
+
+        {/* Quick Stats Dashboard */}
+        <div style={{ padding: "12px 20px", borderBottom: "1px solid #ddd", background: "#fff" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "8px", marginBottom: "8px" }}>
+            <div style={{ textAlign: "center", padding: "8px", background: "#fff3e0", borderRadius: "4px" }}>
+              <div style={{ fontSize: "18px", fontWeight: 600, color: "#e65100" }}>{stats.unvisited}</div>
+              <div style={{ fontSize: "11px", color: "#666" }}>Unvisited</div>
+            </div>
+            <div style={{ textAlign: "center", padding: "8px", background: "#e3f2fd", borderRadius: "4px" }}>
+              <div style={{ fontSize: "18px", fontWeight: 600, color: "#1565c0" }}>{stats.assigned}</div>
+              <div style={{ fontSize: "11px", color: "#666" }}>Assigned</div>
+            </div>
+            <div style={{ textAlign: "center", padding: "8px", background: "#e8f5e9", borderRadius: "4px" }}>
+              <div style={{ fontSize: "18px", fontWeight: 600, color: "#2e7d32" }}>{stats.visited}</div>
+              <div style={{ fontSize: "11px", color: "#666" }}>Done</div>
+            </div>
+          </div>
+          
+          {/* Team Workload */}
+          <div style={{ fontSize: "12px", color: "#555", marginTop: "8px" }}>
+            <strong>Team Load:</strong>{" "}
+            {Object.entries(stats.byTeam).map(([team, count]) => (
+              <span key={team} style={{ marginRight: "12px" }}>
+                {team.split(" ")[1]}: <strong>{count}</strong>
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {/* Filters */}
+        <div style={{ padding: "12px 20px", borderBottom: "1px solid #ddd", display: "flex", gap: "8px" }}>
+          <select 
+            value={filterTechnician}
+            onChange={(e) => setFilterTechnician(e.target.value)}
+            style={{ flex: 1, padding: "6px 8px", fontSize: "13px", border: "1px solid #ccc", borderRadius: "4px" }}
+          >
+            <option value="All">All Teams</option>
+            {TECHNICIANS.slice(1).map(t => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+          
+          <select 
+            value={filterStatus}
+            onChange={(e) => setFilterStatus(e.target.value as VisitStatus | "all")}
+            style={{ flex: 1, padding: "6px 8px", fontSize: "13px", border: "1px solid #ccc", borderRadius: "4px" }}
+          >
+            <option value="all">All Status</option>
+            <option value="unvisited">Unvisited</option>
+            <option value="assigned">Assigned</option>
+            <option value="in-progress">In Progress</option>
+            <option value="visited">Visited</option>
+            <option value="needs-followup">Needs Follow-up</option>
+            <option value="complete">Complete</option>
+          </select>
+        </div>
+
+        {/* Routing Panel Toggle */}
+        <div style={{ padding: "12px 20px", borderBottom: "1px solid #ddd" }}>
+          <button
+            onClick={() => setShowRoutingPanel(!showRoutingPanel)}
+            style={{
+              width: "100%",
+              padding: "8px 16px",
+              fontSize: "13px",
+              fontWeight: 600,
+              background: showRoutingPanel ? "#c41230" : "#fff",
+              color: showRoutingPanel ? "#fff" : "#333",
+              border: "1px solid #c41230",
+              borderRadius: "4px",
+              cursor: "pointer"
+            }}
+          >
+            {showRoutingPanel ? "▼ Hide Route Planner" : "▶ Show Route Planner"}
+          </button>
+          
+          {showRoutingPanel && (
+            <div style={{ marginTop: "12px", padding: "12px", background: "#fff", borderRadius: "4px", border: "1px solid #ddd" }}>
+              <select 
+                value={routeForTech}
+                onChange={(e) => setRouteForTech(e.target.value)}
+                style={{ width: "100%", padding: "6px 8px", fontSize: "13px", border: "1px solid #ccc", borderRadius: "4px", marginBottom: "8px" }}
+              >
+                <option value="">Select Team...</option>
+                {TECHNICIANS.slice(1).map(t => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+              
+              <button
+                onClick={() => routeForTech && calculateOptimalRoute(routeForTech)}
+                disabled={!routeForTech}
+                style={{
+                  width: "100%",
+                  padding: "8px",
+                  fontSize: "13px",
+                  background: routeForTech ? "#2e7d32" : "#ccc",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: "4px",
+                  cursor: routeForTech ? "pointer" : "not-allowed",
+                  marginBottom: "8px"
+                }}
+              >
+                Calculate Optimal Route
+              </button>
+              
+              {optimizedRoute.length > 0 && (
+                <div style={{ marginTop: "8px" }}>
+                  <div style={{ fontSize: "12px", fontWeight: 600, marginBottom: "4px" }}>
+                    Route: {optimizedRoute.length} stops
+                  </div>
+                  <button
+                    onClick={() => {
+                      const sheet = generateRouteSheet(routeForTech);
+                      navigator.clipboard.writeText(sheet);
+                      alert("Route sheet copied to clipboard!");
+                    }}
+                    style={{
+                      width: "100%",
+                      padding: "6px",
+                      fontSize: "12px",
+                      background: "#f5f5f5",
+                      border: "1px solid #ddd",
+                      borderRadius: "4px",
+                      cursor: "pointer"
+                    }}
+                  >
+                    Copy Route Sheet
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Filter tabs */}
+        <div style={{ display: "flex", padding: "12px 20px", gap: "8px", borderBottom: "1px solid #ddd" }}>
+          <button
+            onClick={() => setViewMode("all")}
+            style={{
+              padding: "6px 16px",
+              fontSize: "13px",
+              fontWeight: 500,
+              border: "1px solid #333",
+              borderRadius: "4px",
+              cursor: "pointer",
+              background: viewMode === "all" ? "#c41230" : "#fff",
+              color: viewMode === "all" ? "#fff" : "#333"
+            }}
+          >
+            List All
+          </button>
+          <button
+            onClick={() => setViewMode("county")}
+            style={{
+              padding: "6px 16px",
+              fontSize: "13px",
+              fontWeight: 500,
+              border: "1px solid #999",
+              borderRadius: "4px",
+              cursor: "pointer",
+              background: viewMode === "county" ? "#c41230" : "#fff",
+              color: viewMode === "county" ? "#fff" : "#333"
+            }}
+          >
+            By County
+          </button>
+          <button
+            onClick={() => setViewMode("state")}
+            style={{
+              padding: "6px 16px",
+              fontSize: "13px",
+              fontWeight: 500,
+              border: "1px solid #999",
+              borderRadius: "4px",
+              cursor: "pointer",
+              background: viewMode === "state" ? "#c41230" : "#fff",
+              color: viewMode === "state" ? "#fff" : "#333"
+            }}
+          >
+            By State
+          </button>
+        </div>
+
+        {/* Outage List */}
+        <div style={{ flex: 1, overflow: "auto", padding: "12px 20px" }}>
+          {loading && (
+            <div style={{ textAlign: "center", padding: "40px", color: "#666" }}>
+              Loading outages...
+            </div>
+          )}
+          
+          {error && (
+            <div style={{ padding: "16px", background: "#fee", border: "1px solid #fcc", borderRadius: "4px", color: "#c33" }}>
+              {error}
+            </div>
+          )}
+
+          {!loading && !error && outages.length === 0 && (
+            <div style={{ textAlign: "center", padding: "40px", color: "#666" }}>
+              No outages found
+            </div>
+          )}
+
+          {viewMode === "all" && filteredOutages.map((o, idx) => (
+            <OutageCard 
+              key={o.id ?? idx} 
+              outage={o} 
+              isSelected={selectedOutageId === o.id} 
+              onViewMap={() => focusOnOutage(o)}
+              onAssign={(tech) => assignTechnician(o.id, tech)}
+              onUpdateStatus={(status, notes) => updateStatus(o.id, status, notes)}
+            />
+          ))}
+
+          {viewMode === "county" && Object.entries(groupedByCounty).map(([county, countyOutages]) => {
+            const filtered = countyOutages.filter(o => {
+              if (filterTechnician !== "All" && o.assignedTo !== filterTechnician) return false;
+              if (filterStatus !== "all" && o.visitStatus !== filterStatus) return false;
+              return true;
+            });
+            if (filtered.length === 0) return null;
+            return (
+              <div key={county} style={{ marginBottom: "16px" }}>
+                <div style={{ fontWeight: 600, fontSize: "14px", color: "#333", marginBottom: "8px", paddingLeft: "4px" }}>
+                  {county} • MN ({filtered.length} outages)
+                </div>
+                {filtered.map((o, idx) => (
+                  <OutageCard 
+                    key={o.id ?? idx} 
+                    outage={o} 
+                    isSelected={selectedOutageId === o.id} 
+                    onViewMap={() => focusOnOutage(o)}
+                    onAssign={(tech) => assignTechnician(o.id, tech)}
+                    onUpdateStatus={(status, notes) => updateStatus(o.id, status, notes)}
+                  />
+                ))}
+              </div>
+            );
+          })}
+
+          {viewMode === "state" && (
+            <div style={{ textAlign: "center", padding: "40px", color: "#666" }}>
+              <OutageCard 
+                outage={filteredOutages[0]} 
+                isSelected={false} 
+                onViewMap={() => {}}
+                onAssign={() => {}}
+                onUpdateStatus={() => {}}
+              />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Map Area */}
+      <div style={{ flex: 1, position: "relative" }}>
+        {/* Search Box */}
+        <div style={{ 
+          position: "absolute", 
+          top: "12px", 
+          left: "12px", 
+          right: "12px",
+          zIndex: 1000,
+          display: "flex",
+          gap: "8px"
+        }}>
+          <div style={{ 
+            flex: 1,
+            background: "#fff", 
+            borderRadius: "4px", 
+            boxShadow: "0 2px 6px rgba(0,0,0,0.15)",
+            display: "flex",
+            alignItems: "center",
+            padding: "0 12px"
+          }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#666" strokeWidth="2">
+              <circle cx="11" cy="11" r="8" />
+              <path d="m21 21-4.3-4.3" />
+            </svg>
+            <input
+              ref={searchInputRef}
+              type="text"
+              placeholder="Search for an address or place"
+              style={{
+                flex: 1,
+                border: "none",
+                outline: "none",
+                padding: "12px",
+                fontSize: "14px",
+                background: "transparent"
+              }}
+            />
+          </div>
+          <button
+            onClick={useCurrentLocation}
+            style={{
+              background: "#fff",
+              border: "none",
+              borderRadius: "4px",
+              padding: "0 16px",
+              boxShadow: "0 2px 6px rgba(0,0,0,0.15)",
+              cursor: "pointer",
+              fontSize: "13px",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              color: "#333"
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c41230" strokeWidth="2">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
+            </svg>
+            Use current location
+          </button>
+          <button
+            style={{
+              background: "#fff",
+              border: "none",
+              borderRadius: "4px",
+              padding: "0 16px",
+              boxShadow: "0 2px 6px rgba(0,0,0,0.15)",
+              cursor: "pointer",
+              fontSize: "13px",
+              color: "#333"
+            }}
+          >
+            Legend
+          </button>
+        </div>
+
+        {/* Zoom Controls */}
+        <div style={{
+          position: "absolute",
+          left: "12px",
+          top: "80px",
+          zIndex: 1000,
+          display: "flex",
+          flexDirection: "column",
+          background: "#fff",
+          borderRadius: "4px",
+          boxShadow: "0 2px 6px rgba(0,0,0,0.15)",
+          overflow: "hidden"
+        }}>
+          <button
+            onClick={zoomIn}
+            style={{
+              width: "36px",
+              height: "36px",
+              border: "none",
+              borderBottom: "1px solid #ddd",
+              background: "#fff",
+              cursor: "pointer",
+              fontSize: "20px",
+              color: "#333",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center"
+            }}
+          >
+            +
+          </button>
+          <button
+            onClick={zoomOut}
+            style={{
+              width: "36px",
+              height: "36px",
+              border: "none",
+              background: "#fff",
+              cursor: "pointer",
+              fontSize: "20px",
+              color: "#333",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center"
+            }}
+          >
+            −
+          </button>
+        </div>
+
+        {/* Map */}
+        <div ref={mapRef} style={{ width: "100%", height: "100%" }} />
+      </div>
+    </div>
+  );
+}
+
+// Outage Card Component
+function OutageCard({ 
+  outage, 
+  isSelected, 
+  onViewMap, 
+  onAssign, 
+  onUpdateStatus 
+}: { 
+  outage: Outage; 
+  isSelected: boolean; 
+  onViewMap: () => void;
+  onAssign: (technician: string) => void;
+  onUpdateStatus: (status: VisitStatus, notes?: string) => void;
+}) {
+  const statusColor = STATUS_COLORS[outage.visitStatus || "unvisited"];
+  
+  return (
+    <div style={{
+      background: "#fff",
+      borderRadius: "4px",
+      marginBottom: "12px",
+      borderLeft: `4px solid ${statusColor}`,
+      boxShadow: isSelected ? "0 2px 8px rgba(196,18,48,0.3)" : "0 1px 3px rgba(0,0,0,0.1)",
+      overflow: "hidden",
+      opacity: outage.visitStatus === "complete" ? 0.7 : 1
+    }}>
+      {/* Priority badge for routed items */}
+      {outage.priority && (
+        <div style={{
+          background: "#c41230",
+          color: "#fff",
+          fontSize: "11px",
+          fontWeight: 600,
+          padding: "2px 8px",
+          display: "inline-block"
+        }}>
+          Stop #{outage.priority}
+        </div>
+      )}
+      
+      {/* Status badge */}
+      <div style={{
+        background: statusColor,
+        color: outage.visitStatus === "unvisited" ? "#333" : "#fff",
+        fontSize: "10px",
+        fontWeight: 600,
+        padding: "2px 8px",
+        textTransform: "uppercase",
+        display: "inline-block",
+        float: "right"
+      }}>
+        {(outage.visitStatus || "unvisited").replace("-", " ")}
+      </div>
+      
+      <div style={{ padding: "12px 16px 16px", clear: "both" }}>
+        {/* Header row */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px" }}>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: "14px", color: "#333", textTransform: "uppercase" }}>
+              {outage.county ?? "Unknown"} • MN
+            </div>
+            {outage.assignedTo && (
+              <div style={{ fontSize: "11px", color: "#1565c0", marginTop: "2px" }}>
+                Assigned: {outage.assignedTo}
+              </div>
+            )}
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: "20px", fontWeight: 600, color: "#333" }}>
+              {outage.customers ?? "?"}
+            </div>
+            <div style={{ fontSize: "10px", color: "#666", textTransform: "uppercase" }}>
+              Customers
+            </div>
+          </div>
+        </div>
+
+        {/* Assignment dropdown */}
+        <div style={{ marginBottom: "8px" }}>
+          <select
+            value={outage.assignedTo || "Unassigned"}
+            onChange={(e) => onAssign(e.target.value)}
+            style={{
+              width: "100%",
+              padding: "4px 8px",
+              fontSize: "12px",
+              border: "1px solid #ccc",
+              borderRadius: "4px",
+              background: outage.assignedTo ? "#e3f2fd" : "#fff"
+            }}
+          >
+            {TECHNICIANS.map(t => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Status quick buttons */}
+        <div style={{ display: "flex", gap: "4px", marginBottom: "8px", flexWrap: "wrap" }}>
+          {[
+            { key: "unvisited", label: "Unvisited", color: "#f4a261" },
+            { key: "in-progress", label: "In Progress", color: "#9b59b6" },
+            { key: "visited", label: "Done", color: "#2ecc71" },
+            { key: "needs-followup", label: "Follow-up", color: "#e74c3c" },
+            { key: "complete", label: "Complete", color: "#27ae60" }
+          ].map(({ key, label, color }) => (
+            <button
+              key={key}
+              onClick={() => onUpdateStatus(key as VisitStatus)}
+              style={{
+                padding: "2px 8px",
+                fontSize: "10px",
+                fontWeight: 500,
+                background: outage.visitStatus === key ? color : "#f5f5f5",
+                color: outage.visitStatus === key ? "#fff" : "#333",
+                border: "1px solid " + (outage.visitStatus === key ? color : "#ddd"),
+                borderRadius: "3px",
+                cursor: "pointer"
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Key info */}
+        {outage.estimatedRestorationTime && (
+          <div style={{ fontSize: "12px", color: "#333", marginBottom: "4px" }}>
+            <strong>ETR:</strong> {outage.estimatedRestorationTime}
+          </div>
+        )}
+
+        <div style={{ fontSize: "12px", color: "#555", marginBottom: "4px", lineHeight: 1.4 }}>
+          {outage.comments}
+        </div>
+
+        {outage.visitNotes && (
+          <div style={{ fontSize: "11px", color: "#666", marginTop: "6px", padding: "4px 8px", background: "#f5f5f5", borderRadius: "3px" }}>
+            <strong>Notes:</strong> {outage.visitNotes}
+          </div>
+        )}
+
+        {outage.visitTime && (
+          <div style={{ fontSize: "10px", color: "#999", marginTop: "4px" }}>
+            Last updated: {outage.visitTime}
+          </div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px" }}>
+          <button
+            onClick={onViewMap}
+            style={{
+              color: "#c41230",
+              fontSize: "12px",
+              fontWeight: 500,
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              padding: 0,
+              textDecoration: "underline"
+            }}
+          >
+            View on Map
+          </button>
+          
+          {/* Notes button */}
+          <button
+            onClick={() => {
+              const notes = prompt("Add/update notes:", outage.visitNotes || "");
+              if (notes !== null) onUpdateStatus(outage.visitStatus || "unvisited", notes);
+            }}
+            style={{
+              fontSize: "11px",
+              color: "#666",
+              border: "1px solid #ddd",
+              background: "#fff",
+              padding: "2px 8px",
+              borderRadius: "3px",
+              cursor: "pointer"
+            }}
+          >
+            📝 Notes
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
