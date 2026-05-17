@@ -50,6 +50,7 @@ const SERVICE_SETUP_OPTIONS = [
 
 // §6 — Follow-up status options
 const FOLLOW_UP_OPTIONS = [
+  { value: "opportunity", label: "Opportunity Found", marker: "opportunity" },
   { value: "sold", label: "Job Sold", marker: "sold" },
   { value: "job_started", label: "Job Started", marker: "job_started" },
   { value: "temp_power", label: "Temp Power Installed", marker: "temp_power" },
@@ -73,6 +74,7 @@ function deriveStatus(
   contactOutcome: string,
   customerIntent: string
 ): OutageStatus {
+  if (followUp === "opportunity") return "opportunity";
   if (followUp === "sold") return "sold";
   if (followUp === "job_started") return "job_started";
   if (followUp === "temp_power") return "temp_power";
@@ -215,7 +217,7 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
   const previewStatus = result ? deriveStatus(result, followUp, contactOutcome, customerIntent) : null;
 
   const STATUS_PREVIEW_COLORS: Record<string, string> = {
-    no_opportunity: "#111827", opportunity: "#f97316", door_hanger: "#f97316",
+    no_opportunity: "#111827", opportunity: "#f97316", door_hanger: "#ec4899",
     wants_to_proceed: "#22c55e", customer_thinking: "#9ca3af", sold: "#ffffff", job_started: "#22c55e",
     completed: "#2563eb", temp_power: "#facc15", grounding: "#facc15", investigating: "#3b82f6",
   };

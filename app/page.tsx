@@ -59,6 +59,7 @@ type Outage = {
   externalJobStatus?: string | null;
   priorityScore?: number;
   isSimulation?: boolean;
+  isNew?: boolean;
 };
 
 type Tech = {
@@ -86,7 +87,7 @@ const STATUS_CONFIG: Record<OutageStatus, { color: string; strokeColor: string; 
   investigating:    { color: "#a855f7",  strokeColor: "#7e22ce", bg: "#faf5ff",  label: "Investigating" },
   no_opportunity:   { color: "#111827",  strokeColor: "#111827", bg: "#f3f4f6",  label: "Declined / Dead" },
   opportunity:      { color: "#ffffff",  strokeColor: "#f97316", bg: "#fff7ed",  label: "Opportunity Found" },
-  door_hanger:      { color: "#f97316",  strokeColor: "#eab308", bg: "#fefce8",  label: "Door Hanger" },
+  door_hanger:      { color: "#ec4899",  strokeColor: "#be185d", bg: "#fdf2f8",  label: "Door Hanger Left" },
   wants_to_proceed: { color: "#f97316",  strokeColor: "#22c55e", bg: "#f0fdf4",  label: "Wants to Proceed" },
   customer_thinking:{ color: "#9ca3af",  strokeColor: "#6b7280", bg: "#f3f4f6",  label: "Customer Thinking" },
   sold:             { color: "#ffffff",  strokeColor: "#22c55e", bg: "#f0fdf4",  label: "Job Sold" },
@@ -249,6 +250,7 @@ export default function Page() {
           externalJobStatus: attrs.externalJobStatus ?? f.externalJobStatus ?? null,
           priorityScore: attrs.priorityScore ?? f.priorityScore ?? 0,
           isSimulation: data.isSimulation ?? false,
+          isNew: attrs.isNew ?? f.isNew ?? false,
         };
       }).filter(Boolean) as Outage[];
 
@@ -563,8 +565,12 @@ export default function Page() {
         ? Math.min(22, Math.max(14, 12 + Math.sqrt(outage.customers)))
         : 10;
 
-      // Door hanger visual indicator: add square border around existing marker
-      const hasDoorHanger = outage.status === "door_hanger";
+      // New (unseen) ArcGIS dot: white fill with red outline, high z-index
+      const isNewArcGIS = outage.isNew === true && (outage.source === "xcel" || outage.source === "connexus" || outage.source === "arcgis");
+
+      const fillColor = isNewArcGIS ? "#ffffff" : cfg.color;
+      const strokeColor = isNewArcGIS ? "#dc2626" : cfg.strokeColor;
+      const strokeWeight = isNewArcGIS ? 4 : (isHoneyHole ? 4 : 3);
 
       const marker = new google.maps.Marker({
         map: mapObj.current!,
@@ -572,16 +578,16 @@ export default function Page() {
         title: `${outage.city ?? outage.county} – ${outage.customers} customers`,
         icon: {
           path: markerPathForOutage(outage),
-          fillColor: cfg.color,
+          fillColor,
           fillOpacity: 1,
-          strokeColor: hasDoorHanger ? "#eab308" : cfg.strokeColor,
-          strokeWeight: hasDoorHanger ? 5 : (isHoneyHole ? 4 : 3),
+          strokeColor,
+          strokeWeight,
           scale: baseSize,
         },
         label: isHoneyHole
           ? { text: String(outage.customers), color: "#fff", fontSize: "10px", fontWeight: "700" }
           : undefined,
-        zIndex: outage.priorityScore ?? 0,
+        zIndex: isNewArcGIS ? 9999 : (outage.priorityScore ?? 0),
       });
 
       marker.addListener("click", () => {
@@ -1514,15 +1520,22 @@ export default function Page() {
                   Lead Source / Shape
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: "3px", marginBottom: "8px" }}>
-                  <div style={{ fontSize: "11px", color: "#374151" }}>● ArcGIS</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <span style={{ width: 12, height: 12, borderRadius: "50%", background: "#fff", border: "2px solid #dc2626", flexShrink: 0, display: "inline-block" }} />
+                    <span style={{ fontSize: "11px", color: "#374151" }}>ArcGIS (new — high priority)</span>
+                  </div>
+                  <div style={{ fontSize: "11px", color: "#374151" }}>● ArcGIS (visited)</div>
                   <div style={{ fontSize: "11px", color: "#374151" }}>▲ Office / Call-in</div>
-                  <div style={{ fontSize: "11px", color: "#374151" }}>■ Door hanger</div>
                   <div style={{ fontSize: "11px", color: "#374151" }}>◆ Self-generated</div>
                 </div>
                 <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "4px", paddingTop: "6px", fontWeight: 700, color: "#1f2937", marginBottom: "4px", fontSize: "12px" }}>
                   Status / Color
                 </div>
-                {Object.entries(STATUS_CONFIG).filter(([k]) => !["opportunity", "door_hanger", "wants_to_proceed"].includes(k)).map(([k, v]) => (
+                <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                  <div style={{ width: "12px", height: "12px", borderRadius: "50%", background: "#ffffff", border: "2px solid #dc2626", flexShrink: 0 }} />
+                  <span style={{ color: "#374151" }}>New ArcGIS (unseen)</span>
+                </div>
+                {Object.entries(STATUS_CONFIG).filter(([k]) => !["opportunity", "wants_to_proceed"].includes(k)).map(([k, v]) => (
                   <div key={k} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
                     <div style={{
                       width: "12px", height: "12px", borderRadius: "50%",

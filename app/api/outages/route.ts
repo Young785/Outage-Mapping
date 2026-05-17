@@ -268,12 +268,15 @@ export async function GET(req: Request) {
       },
       weights
     );
+    // isNew = true when this xcel/connexus dot has never been upserted to DB before
+    const isNew = !dbStatusMap[o.id] && (o.source === "xcel" || o.source === "connexus");
     return {
       ...o,
       // Prefer DB-cached address over ArcGIS data (adapter doesn't provide streetAddress)
       streetAddress: dbAddressMap[o.id] ?? null,
       status: (dbStatusMap[o.id] as any) ?? "unvisited",
-      priorityScore: score,
+      priorityScore: isNew ? Math.max(score + 50, score) : score,
+      isNew,
       milesFromCenter: haversineMiles(CENTER.lat, CENTER.lng, o.lat!, o.lng!),
       customerName: dbMetaMap[o.id]?.customer_name ?? null,
       customerPhone: dbMetaMap[o.id]?.customer_phone ?? null,
