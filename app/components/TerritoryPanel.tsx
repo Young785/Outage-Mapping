@@ -9,6 +9,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import ZipCodePicker from "./ZipCodePicker";
 
 type Territory = {
   id: string;
@@ -41,7 +42,7 @@ export default function TerritoryPanel({ token, role }: Props) {
   // Form state — create territory
   const [showForm, setShowForm] = useState(false);
   const [tName, setTName] = useState("");
-  const [tZips, setTZips] = useState("");
+  const [tZips, setTZips] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
   // Assign state
@@ -81,10 +82,10 @@ export default function TerritoryPanel({ token, role }: Props) {
     setSaving(true);
     setError(null);
     try {
-      const zipCodes = tZips
-        .split(/[\s,]+/)
-        .map((z) => z.trim())
-        .filter(Boolean);
+      const zipCodes = tZips.filter((z) => /^\d{5}$/.test(z));
+      if (zipCodes.length === 0) {
+        throw new Error("Add at least one valid 5-digit zip code");
+      }
       const res = await fetch("/api/territories", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -94,7 +95,7 @@ export default function TerritoryPanel({ token, role }: Props) {
       if (!res.ok) throw new Error(data.error);
       setSuccess(`Territory "${tName}" created`);
       setTName("");
-      setTZips("");
+      setTZips([]);
       setShowForm(false);
       load();
     } catch (err: any) {
@@ -178,14 +179,12 @@ export default function TerritoryPanel({ token, role }: Props) {
             </div>
             <div style={{ marginBottom: "16px" }}>
               <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "4px" }}>
-                Zip codes <span style={{ fontWeight: 400, color: "#6b7280" }}>(comma or space separated)</span>
+                Zip codes <span style={{ fontWeight: 400, color: "#6b7280" }}>(search and add)</span>
               </label>
-              <textarea
+              <ZipCodePicker
                 value={tZips}
-                onChange={(e) => setTZips(e.target.value)}
-                placeholder="80201, 80202, 80203"
-                rows={3}
-                style={{ width: "100%", padding: "10px 12px", border: "1px solid #d1d5db", borderRadius: "8px", fontSize: "14px", resize: "vertical", boxSizing: "border-box" }}
+                onChange={setTZips}
+                placeholder="Search zip code (e.g. 80201, Minneapolis)…"
               />
             </div>
             <div style={{ display: "flex", gap: "8px" }}>

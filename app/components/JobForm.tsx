@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import AddressFields, { type AddressValue } from "./AddressFields";
 
 type Props = {
   token: string;
@@ -15,12 +16,18 @@ const PRIORITY_OPTIONS = [
   { value: 4, label: "4 — Can Wait", desc: "Minor damage only", color: "#10b981", bg: "#ecfdf5" },
 ];
 
+const emptyAddress = (): AddressValue => ({
+  street: "",
+  city: "",
+  state: "",
+  zip: "",
+  lat: null,
+  lng: null,
+});
+
 export default function JobForm({ token, onClose, onCreated }: Props) {
   const [customerName, setCustomerName] = useState("");
-  const [street, setStreet] = useState("");
-  const [city, setCity] = useState("");
-  const [state, setState] = useState("");
-  const [zip, setZip] = useState("");
+  const [address, setAddress] = useState<AddressValue>(emptyAddress);
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerEmail, setCustomerEmail] = useState("");
   const [priority, setPriority] = useState(3);
@@ -33,14 +40,14 @@ export default function JobForm({ token, onClose, onCreated }: Props) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!street.trim() || !city.trim() || !state.trim() || !zip.trim()) {
-      setError("Street, City, State, and ZIP are required.");
+    if (!address.street.trim() || !address.city.trim() || !address.state.trim() || !address.zip.trim()) {
+      setError("Street, city, state, and ZIP are required.");
       return;
     }
     setSubmitting(true);
     setError(null);
 
-    const customerAddress = `${street.trim()}, ${city.trim()}, ${state.trim()} ${zip.trim()}`;
+    const customerAddress = `${address.street.trim()}, ${address.city.trim()}, ${address.state.trim()} ${address.zip.trim()}`;
 
     try {
       const res = await fetch("/api/jobs", {
@@ -52,12 +59,14 @@ export default function JobForm({ token, onClose, onCreated }: Props) {
         body: JSON.stringify({
           customerName,
           customerAddress,
-          street: street.trim(),
-          city: city.trim(),
-          state: state.trim(),
-          zip: zip.trim(),
+          street: address.street.trim(),
+          city: address.city.trim(),
+          state: address.state.trim(),
+          zip: address.zip.trim(),
           customerPhone,
           customerEmail,
+          customerLat: address.lat,
+          customerLng: address.lng,
           priority,
           lineDrop,
           powerOnLineDrop,
@@ -115,27 +124,10 @@ export default function JobForm({ token, onClose, onCreated }: Props) {
 
           <div style={{ marginBottom: "16px" }}>
             <label style={labelStyle}>Customer Name <span style={{ color: "#ef4444" }}>*</span></label>
-            <input type="text" value={customerName} onChange={(e) => setCustomerName(e.target.value)} required style={inputStyle} />
+            <input type="text" value={customerName} onChange={(e) => setCustomerName(e.target.value)} required style={inputStyle} placeholder="Full name or company" />
           </div>
 
-          <div style={{ marginBottom: "12px" }}>
-            <label style={labelStyle}>Street Address <span style={{ color: "#ef4444" }}>*</span></label>
-            <input type="text" value={street} onChange={(e) => setStreet(e.target.value)} placeholder="123 Main St" required style={inputStyle} />
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 80px 100px", gap: "10px", marginBottom: "16px" }}>
-            <div>
-              <label style={labelStyle}>City <span style={{ color: "#ef4444" }}>*</span></label>
-              <input type="text" value={city} onChange={(e) => setCity(e.target.value)} required style={inputStyle} />
-            </div>
-            <div>
-              <label style={labelStyle}>State <span style={{ color: "#ef4444" }}>*</span></label>
-              <input type="text" value={state} onChange={(e) => setState(e.target.value.toUpperCase())} maxLength={2} required style={inputStyle} />
-            </div>
-            <div>
-              <label style={labelStyle}>ZIP <span style={{ color: "#ef4444" }}>*</span></label>
-              <input type="text" value={zip} onChange={(e) => setZip(e.target.value)} required style={inputStyle} />
-            </div>
-          </div>
+          <AddressFields value={address} onChange={setAddress} enableMapPicker />
 
           <div style={{ marginBottom: "16px" }}>
             <label style={labelStyle}>Phone</label>
@@ -193,7 +185,7 @@ export default function JobForm({ token, onClose, onCreated }: Props) {
 
           <div style={{ marginBottom: "16px" }}>
             <label style={labelStyle}>Notes</label>
-            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} style={{ ...inputStyle, resize: "vertical" }} />
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} style={{ ...inputStyle, resize: "vertical" }} placeholder="Access instructions, special requirements…" />
           </div>
 
           <div style={{ display: "flex", gap: "12px" }}>

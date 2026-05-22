@@ -61,7 +61,6 @@ export async function POST(req: Request) {
       customerEmail,
       customerLat,
       customerLng,
-      jobType = "storm_response",
       priority = 2,
       notes,
       isConfirmedOpportunity = true,
@@ -101,10 +100,12 @@ export async function POST(req: Request) {
       }
     }
 
+    const officeJobType = "repair";
+
     const weights = await getWeights();
     const score = calculateScore({
       customers: 1,
-      outageType: jobType,
+      outageType: officeJobType,
       isOfficeJob: true,
       isConfirmedOpportunity,
       lineDrop,
@@ -127,7 +128,7 @@ export async function POST(req: Request) {
         customer_phone: customerPhone || null,
         customer_lat: lat || null,
         customer_lng: lng || null,
-        job_type: jobType,
+        job_type: officeJobType,
         priority: Math.min(4, Math.max(1, Number(priority))),
         notes: notesWithMeta || null,
         status: "pending",
