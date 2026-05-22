@@ -11,9 +11,11 @@
   "dependencies": {
     "@googlemaps/js-api-loader": "^1.16.8",
     "@supabase/supabase-js": "^2.104.1",
+    "dotenv": "^17.4.2",
     "next": "15.3.9",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "pg": "^8.20.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
   },
   "devDependencies": {
     "@types/google.maps": "^3.58.1",

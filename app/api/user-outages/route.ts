@@ -41,7 +41,7 @@ export async function POST(request: Request) {
   try {
     const db = getAdmin();
     const body = await request.json();
-    const { lat, lng, streetAddress, city, county, description, customers, source, userId, userName } = body;
+    const { lat, lng, streetAddress, city, county, description, customers, source, userId, userName, customerName, customerPhone, customerEmail } = body;
 
     if (!lat || !lng || !userId || !userName) {
       return NextResponse.json({ error: "Location (lat/lng) and user info are required" }, { status: 400 });
@@ -59,16 +59,27 @@ export async function POST(request: Request) {
       county: county || "Unknown",
       customers: Math.max(1, Number(customers || 1)),
       outage_type: "Self-generated Opportunity",
-      cause: description || "Field-reported opportunity",
+      cause: [description, customerEmail?.trim() && `email=${customerEmail.trim()}`].filter(Boolean).join(" · ") || "Field-reported opportunity",
       status: "unvisited",
       street_address: streetAddress || null,
       lead_source: "self_generated",
       first_seen_at: now,
       last_updated_at: now,
       is_active: true,
+      customer_name: customerName?.trim() || null,
+      customer_phone: customerPhone?.trim() || null,
     };
 
-    const droppableColumns = new Set(["lead_source", "first_seen_at", "last_updated_at", "is_active", "street_address", "outage_type"]);
+    const droppableColumns = new Set([
+      "lead_source",
+      "first_seen_at",
+      "last_updated_at",
+      "is_active",
+      "street_address",
+      "outage_type",
+      "customer_name",
+      "customer_phone",
+    ]);
     const sourceCandidates = [source || "self_generated", "user", "manual"];
     const dropped = new Set<string>();
 

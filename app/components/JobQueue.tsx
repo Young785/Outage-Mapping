@@ -209,7 +209,7 @@ export default function JobQueue({ token, role, userLocation, onNavigate, onShow
         <div style={{ textAlign: "center", padding: "48px", color: "#9ca3af", background: "#f9fafb", borderRadius: "12px" }}>
           <div style={{ fontSize: "36px", marginBottom: "8px" }}>✓</div>
           <div style={{ fontSize: "16px", fontWeight: 600, color: "#374151", marginBottom: "4px" }}>Queue is empty</div>
-          <div style={{ fontSize: "14px" }}>No active jobs or outages to dispatch</div>
+          <div style={{ fontSize: "14px" }}>No call-ins or sold jobs to dispatch</div>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>

@@ -25,21 +25,35 @@ type OutageStatus =
   | "grounding"
   | "completed";
 
-type Props = {
-  outage: Outage;
-  token: string | null;
-  onClose: () => void;
-  onSubmitted: (outageId: number | string, newStatus: string) => void;
-};
+type PrimaryOutcome = "" | "utility_only" | "no_damage" | "opportunity_found";
+type OpportunityAction =
+  | ""
+  | "door_hanger"
+  | "job_sold"
+  | "temp_power"
+  | "job_started"
+  | "return_grounding"
+  | "customer_thinking"
+  | "customer_declined"
+  | "verbal_quote";
+type PowerOption =
+  | ""
+  | "has_power"
+  | "no_power_on_drop"
+  | "no_power_no_drop"
+  | "neighborhood_dead"
+  | "honey_hole";
 
-// §6 — Investigation result options
-const INVESTIGATION_RESULTS = [
-  { value: "utility_only", label: "Utility issue only" },
-  { value: "no_damage", label: "No damage found" },
-  { value: "damage_found", label: "Damage found" },
+const JOB_SCOPE_OPTIONS = [
+  { value: "", label: "— Not specified —" },
+  { value: "temped_out", label: "Temped-out job" },
+  { value: "farm_box", label: "Farm box needed" },
+  { value: "panel_replace", label: "Panel replacement needed" },
+  { value: "relocate", label: "Relocate service" },
+  { value: "multi_family", label: "Multi-family service" },
+  { value: "return_trip", label: "Return trip required" },
 ] as const;
 
-// §6 — Service type is now Amperage + Service Setup (two dropdowns)
 const AMPERAGE_OPTIONS = ["100 amp", "150 amp", "200 amp"] as const;
 const SERVICE_SETUP_OPTIONS = [
   "Wall mount",
@@ -48,101 +62,134 @@ const SERVICE_SETUP_OPTIONS = [
   "Underground conversion",
 ] as const;
 
-// §6 — Follow-up status options
-const FOLLOW_UP_OPTIONS = [
-  { value: "opportunity", label: "Opportunity Found", marker: "opportunity" },
-  { value: "sold", label: "Job Sold", marker: "sold" },
-  { value: "job_started", label: "Job Started", marker: "job_started" },
-  { value: "temp_power", label: "Temp Power Installed", marker: "temp_power" },
-  { value: "return_grounding", label: "Return for Grounding", marker: "grounding" },
-  { value: "complete", label: "Job Completed", marker: "completed" },
-  { value: "customer_thinking", label: "Customer Thinking", marker: "customer_thinking" },
-] as const;
+type Props = {
+  outage: Outage;
+  token: string | null;
+  onClose: () => void;
+  onSubmitted: (outageId: number | string, newStatus: string) => void;
+};
 
-/** Derive the outage marker status from form answers.
- *  Status → marker color is driven by STATUS_CONFIG in page.tsx.
- *
- *  Customer Intent → Status mapping (per spec):
- *    Utility will fix       → customer_thinking (gray)
- *    Wait for insurance     → customer_thinking (gray)
- *    Get quotes             → customer_thinking (gray)
- *    Not interested         → no_opportunity   (black, declined)
- */
 function deriveStatus(
-  result: string,
-  followUp: string,
-  contactOutcome: string,
-  customerIntent: string
+  primary: PrimaryOutcome,
+  action: OpportunityAction,
+  thinkingIntent: string,
+  soldSub: "" | "temp_power",
+  startedSub: "" | "return_grounding"
 ): OutageStatus {
-  if (followUp === "opportunity") return "opportunity";
-  if (followUp === "sold") return "sold";
-  if (followUp === "job_started") return "job_started";
-  if (followUp === "temp_power") return "temp_power";
-  if (followUp === "return_grounding") return "grounding";
-  if (followUp === "complete") return "completed";
-  if (followUp === "customer_thinking") return "customer_thinking";
-  if (customerIntent === "not_interested") return "no_opportunity";
-  if (contactOutcome === "unavailable") return "door_hanger";
-  if (
-    customerIntent === "thinks_utility" ||
-    customerIntent === "wait_insurance" ||
-    customerIntent === "think_or_quotes"
-  ) {
+  if (primary === "utility_only" || primary === "no_damage") return "no_opportunity";
+  if (primary !== "opportunity_found") return "investigating";
+
+  if (action === "door_hanger") return "door_hanger";
+  if (action === "customer_declined") return "no_opportunity";
+  if (action === "verbal_quote") return "opportunity";
+  if (action === "job_sold") return soldSub === "temp_power" ? "temp_power" : "sold";
+  if (action === "job_started") return startedSub === "return_grounding" ? "grounding" : "job_started";
+  if (action === "customer_thinking") {
+    if (thinkingIntent === "wants_to_proceed") return "wants_to_proceed";
     return "customer_thinking";
   }
-  if (result === "damage_found") return "opportunity";
-  return "no_opportunity";
+  return "opportunity";
 }
 
 export default function InvestigationForm({ outage, token, onClose, onSubmitted }: Props) {
-  // §6 Section A — Investigation result
-  const [result, setResult] = useState("");
-
-  // §6 Section B — Damage / power details
-  const [customersAffected, setCustomersAffected] = useState(outage.customers ?? 1);
-  const [customerHasPower, setCustomerHasPower] = useState<boolean | null>(null);
-  const [lineDrop, setLineDrop] = useState(false);
-  const [powerOnLineDrop, setPowerOnLineDrop] = useState(false);
-  const [lineDropDamaged, setLineDropDamaged] = useState(false);
-  const [honeyHole, setHoneyHole] = useState(false);
-  const [honeyHoleHomes, setHoneyHoleHomes] = useState<number | "">("");
-
-  // §6 Section C — Service type (two dropdowns: Amperage + Setup)
+  const [primary, setPrimary] = useState<PrimaryOutcome>("");
+  const [action, setAction] = useState<OpportunityAction>("");
+  const [soldSub, setSoldSub] = useState<"" | "temp_power">("");
+  const [startedSub, setStartedSub] = useState<"" | "return_grounding">("");
+  const [thinkingIntent, setThinkingIntent] = useState<
+    "" | "thinks_utility" | "wait_insurance" | "think_or_quotes" | "wants_to_proceed"
+  >("");
+  const [power, setPower] = useState<PowerOption>("");
+  const [verbalPrice, setVerbalPrice] = useState("");
+  const [honeyHoleHomes, setHoneyHoleHomes] = useState<number | "">(
+    outage.customers > 1 ? outage.customers : ""
+  );
+  const [jobScope, setJobScope] = useState("");
+  const [multiFamily, setMultiFamily] = useState(false);
+  const [showOptional, setShowOptional] = useState(false);
   const [amperage, setAmperage] = useState("");
   const [serviceSetup, setServiceSetup] = useState("");
-  const serviceType = amperage && serviceSetup ? `${amperage} ${serviceSetup}`.toLowerCase() : "";
-
-  // §6 Section D — Follow-up
-  const [contactOutcome, setContactOutcome] = useState<"" | "unavailable" | "spoke_customer">("");
-  const [customerIntent, setCustomerIntent] = useState<
-    "" | "thinks_utility" | "wait_insurance" | "think_or_quotes" | "not_interested"
-  >("");
-  const [followUp, setFollowUp] = useState("");
-  const [farmBoxNeeded, setFarmBoxNeeded] = useState(false);
-  const [panelReplacementNeeded, setPanelReplacementNeeded] = useState(false);
-  const [difficultJob, setDifficultJob] = useState(false);
-  const [estimatedTimeHours, setEstimatedTimeHours] = useState<number | "">("");
-  const [techsRequired, setTechsRequired] = useState<number | "">("");
   const [notes, setNotes] = useState("");
-
+  const [techsRequired, setTechsRequired] = useState<number | "">("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const showDamageSection = result === "damage_found";
-  const showServiceSection = result === "damage_found";
+  const serviceType = amperage && serviceSetup ? `${amperage} ${serviceSetup}`.toLowerCase() : "";
+  const isOpportunity = primary === "opportunity_found";
+  const needsAction = isOpportunity && !action;
+  const needsThinking = action === "customer_thinking" && !thinkingIntent;
+  const canSubmit =
+    !!primary &&
+    (primary !== "opportunity_found" || (!!action && !needsThinking));
 
-  // Submit is allowed when EITHER Section A (investigation result) OR
-  // Section D (status / follow-up) is filled. Office jobs in particular often
-  // just need a status bump (e.g. → Job Sold) without re-running an A/B/C survey.
-  const canSubmit = !!result || !!followUp;
+  const customerHasPower =
+    power === "has_power" ? true : power === "" ? null : false;
+  const lineDrop = power === "no_power_on_drop" || power === "no_power_no_drop";
+  const powerOnLineDrop = power === "no_power_on_drop";
+  const lineDropDamaged = false;
+  const honeyHole = power === "honey_hole";
+  const neighborhoodDead = power === "neighborhood_dead";
+  const difficultJob = jobScope === "return_trip";
+  const farmBoxNeeded = jobScope === "farm_box";
+  const panelReplacementNeeded = jobScope === "panel_replace";
+
+  const investigationResult =
+    primary === "opportunity_found" ? "damage_found" : primary;
+
+  const followUpStatus =
+    action === "job_sold"
+      ? soldSub === "temp_power"
+        ? "temp_power"
+        : "sold"
+      : action === "job_started"
+        ? startedSub === "return_grounding"
+          ? "return_grounding"
+          : "job_started"
+        : action === "door_hanger"
+          ? "door_hanger"
+          : action === "customer_thinking"
+            ? "customer_thinking"
+            : action === "customer_declined"
+              ? "complete"
+              : action === "verbal_quote"
+                ? "opportunity"
+                : "";
+
+  const contactOutcome =
+    action === "door_hanger"
+      ? "unavailable"
+      : ["verbal_quote", "job_sold", "job_started", "customer_thinking", "customer_declined"].includes(action)
+        ? "spoke_customer"
+        : null;
+
+  const customerIntent =
+    action === "customer_thinking"
+      ? thinkingIntent
+      : action === "customer_declined"
+        ? "not_interested"
+        : null;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!canSubmit) { setError("Pick an Investigation Result (A) or a Status (D)."); return; }
+    if (!canSubmit) {
+      setError("Select an outcome" + (isOpportunity ? " and what happened at the door." : "."));
+      return;
+    }
     setSubmitting(true);
     setError(null);
 
-    const newStatus = deriveStatus(result, followUp, contactOutcome, customerIntent);
+    const newStatus = deriveStatus(primary, action, thinkingIntent, soldSub, startedSub);
+
+    const scopeNote = [
+      jobScope && `job_scope=${jobScope}`,
+      multiFamily && "multi_family=true",
+      neighborhoodDead && "neighborhood_dead=true",
+      verbalPrice.trim() && `verbal_price=${verbalPrice.trim()}`,
+    ]
+      .filter(Boolean)
+      .join("; ");
+
+    const fullNotes = [notes.trim(), scopeNote].filter(Boolean).join("\n");
 
     try {
       const res = await fetch(`/api/outages/${outage.id}/investigate`, {
@@ -152,24 +199,25 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          investigationResult: result,
-          customersAffected,
+          investigationResult,
+          customersAffected: honeyHole && honeyHoleHomes !== "" ? honeyHoleHomes : null,
           customerHasPower,
           lineDrop,
           powerOnLineDrop,
           lineDropDamaged,
           honeyHole,
           honeyHoleHomes: honeyHoleHomes === "" ? null : honeyHoleHomes,
-          serviceType,
-          contactOutcome: contactOutcome || null,
-          customerIntent: customerIntent || null,
-          followUpStatus: followUp,
+          serviceType: serviceType || null,
+          contactOutcome,
+          customerIntent,
+          followUpStatus,
           farmBoxNeeded,
           panelReplacementNeeded,
           difficultJob,
-          estimatedTimeHours: estimatedTimeHours === "" ? null : estimatedTimeHours,
+          estimatedTimeHours: null,
           techsRequired: techsRequired === "" ? null : techsRequired,
-          notes,
+          verbalPriceQuoted: verbalPrice.trim() || null,
+          notes: fullNotes || null,
           newStatus,
         }),
       });
@@ -181,357 +229,380 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
 
       onSubmitted(outage.id, newStatus);
       onClose();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Submission failed");
     } finally {
       setSubmitting(false);
     }
   }
 
   const inp: React.CSSProperties = {
-    width: "100%", padding: "9px 12px", fontSize: "14px",
-    border: "1px solid #e5e7eb", borderRadius: "8px", outline: "none", background: "#fff", boxSizing: "border-box",
-  };
-  const lbl: React.CSSProperties = {
-    display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px",
+    width: "100%",
+    padding: "10px 12px",
+    fontSize: "15px",
+    border: "1px solid #e5e7eb",
+    borderRadius: "8px",
+    outline: "none",
+    background: "#fff",
+    boxSizing: "border-box",
   };
   const sectionHead: React.CSSProperties = {
-    fontSize: "12px", fontWeight: 700, color: "#6b7280", textTransform: "uppercase",
-    letterSpacing: "0.06em", marginBottom: "10px", marginTop: "4px",
+    fontSize: "11px",
+    fontWeight: 700,
+    color: "#6b7280",
+    textTransform: "uppercase",
+    letterSpacing: "0.06em",
+    marginBottom: "8px",
+    marginTop: 0,
   };
 
-  function Checkbox({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
+  function BigRadio({
+    name,
+    value,
+    checked,
+    onChange,
+    label,
+    sub,
+  }: {
+    name: string;
+    value: string;
+    checked: boolean;
+    onChange: () => void;
+    label: string;
+    sub?: string;
+  }) {
     return (
-      <label style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer", marginBottom: "8px" }}>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "12px",
+          cursor: "pointer",
+          padding: "14px 16px",
+          borderRadius: "10px",
+          border: `2px solid ${checked ? "#0d9488" : "#e5e7eb"}`,
+          background: checked ? "#f0fdfa" : "#fff",
+          marginBottom: "8px",
+        }}
+      >
         <input
-          type="checkbox"
+          type="radio"
+          name={name}
           checked={checked}
-          onChange={(e) => onChange(e.target.checked)}
-          style={{ width: "17px", height: "17px", cursor: "pointer", accentColor: "#0d9488" }}
+          onChange={onChange}
+          style={{ width: "20px", height: "20px", accentColor: "#0d9488", flexShrink: 0 }}
         />
-        <span style={{ fontSize: "14px", color: "#374151" }}>{label}</span>
+        <div>
+          <div style={{ fontSize: "15px", fontWeight: 600, color: "#1f2937" }}>{label}</div>
+          {sub && <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px" }}>{sub}</div>}
+        </div>
       </label>
     );
   }
 
-  const previewStatus = result ? deriveStatus(result, followUp, contactOutcome, customerIntent) : null;
+  function Chip({
+    selected,
+    onClick,
+    label,
+  }: {
+    selected: boolean;
+    onClick: () => void;
+    label: string;
+  }) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        style={{
+          padding: "10px 14px",
+          borderRadius: "8px",
+          fontSize: "14px",
+          fontWeight: 600,
+          cursor: "pointer",
+          border: `2px solid ${selected ? "#0d9488" : "#e5e7eb"}`,
+          background: selected ? "#f0fdfa" : "#fff",
+          color: selected ? "#0d9488" : "#374151",
+          textAlign: "left",
+        }}
+      >
+        {label}
+      </button>
+    );
+  }
 
-  const STATUS_PREVIEW_COLORS: Record<string, string> = {
-    no_opportunity: "#111827", opportunity: "#f97316", door_hanger: "#ec4899",
-    wants_to_proceed: "#22c55e", customer_thinking: "#9ca3af", sold: "#ffffff", job_started: "#22c55e",
-    completed: "#2563eb", temp_power: "#facc15", grounding: "#facc15", investigating: "#3b82f6",
-  };
-  const STATUS_PREVIEW_LABELS: Record<string, string> = {
-    no_opportunity: "Dead / No Opportunity", opportunity: "Opportunity Found", door_hanger: "Door Hanger",
-    wants_to_proceed: "Wants to Proceed", customer_thinking: "Customer Thinking", sold: "Job Sold",
-    job_started: "Job Started", completed: "Completed", temp_power: "Temp Power",
-    grounding: "Return for Grounding", investigating: "Investigating",
+  const previewStatus = primary ? deriveStatus(primary, action, thinkingIntent, soldSub, startedSub) : null;
+  const STATUS_PREVIEW: Record<string, { color: string; label: string }> = {
+    no_opportunity: { color: "#111827", label: "Declined / No opportunity" },
+    opportunity: { color: "#f97316", label: "Opportunity" },
+    door_hanger: { color: "#ec4899", label: "Door hanger (square marker)" },
+    customer_thinking: { color: "#9ca3af", label: "Customer thinking" },
+    wants_to_proceed: { color: "#22c55e", label: "Wants to proceed → Job queue" },
+    sold: { color: "#22c55e", label: "Job sold → Job queue" },
+    job_started: { color: "#22c55e", label: "Job started" },
+    temp_power: { color: "#facc15", label: "Temp power installed" },
+    grounding: { color: "#facc15", label: "Return for grounding" },
+    investigating: { color: "#a855f7", label: "Investigating" },
   };
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000, padding: "16px" }}>
-      <div style={{ background: "#fff", borderRadius: "16px", maxWidth: "640px", width: "100%", maxHeight: "92vh", overflow: "auto", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.3)" }}>
-
-        {/* Header */}
-        <div style={{ padding: "18px 24px 14px", borderBottom: "1px solid #e5e7eb", display: "flex", justifyContent: "space-between", alignItems: "flex-start", position: "sticky", top: 0, background: "#fff", zIndex: 1 }}>
-          <div>
-            <h2 style={{ margin: "0 0 3px", fontSize: "17px", fontWeight: 700, color: "#1f2937" }}>Field Investigation</h2>
-            <p style={{ margin: 0, fontSize: "13px", color: "#6b7280" }}>
-              {outage.streetAddress?.split(",")[0] ?? outage.city ?? `Outage #${outage.id}`} · {outage.customers} Xcel customers
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.55)",
+        display: "flex",
+        alignItems: "flex-end",
+        justifyContent: "center",
+        zIndex: 2000,
+      }}
+    >
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: "16px 16px 0 0",
+          maxWidth: "520px",
+          width: "100%",
+          maxHeight: "92vh",
+          overflow: "auto",
+          boxShadow: "0 -8px 40px rgba(0,0,0,0.2)",
+        }}
+      >
+        <div
+          style={{
+            padding: "16px 20px 12px",
+            borderBottom: "1px solid #e5e7eb",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "flex-start",
+            position: "sticky",
+            top: 0,
+            background: "#fff",
+            zIndex: 1,
+          }}
+        >
+          <div style={{ minWidth: 0, paddingRight: "8px" }}>
+            <h2 style={{ margin: "0 0 2px", fontSize: "17px", fontWeight: 700 }}>Quick investigate</h2>
+            <p style={{ margin: 0, fontSize: "13px", color: "#6b7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {outage.streetAddress?.split(",")[0] ?? outage.city ?? `Outage #${outage.id}`}
             </p>
           </div>
-          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#6b7280", padding: "0 4px", lineHeight: 1 }}>×</button>
+          <button
+            type="button"
+            onClick={onClose}
+            style={{ background: "#f3f4f6", border: "none", borderRadius: "8px", width: "36px", height: "36px", fontSize: "20px", cursor: "pointer", color: "#374151", flexShrink: 0 }}
+          >
+            ×
+          </button>
         </div>
 
-        <form onSubmit={handleSubmit} style={{ padding: "20px 24px" }}>
+        <form onSubmit={handleSubmit} style={{ padding: "16px 20px 24px" }}>
           {error && (
-            <div style={{ padding: "12px", background: "#fee2e2", borderRadius: "8px", color: "#dc2626", fontSize: "14px", marginBottom: "16px" }}>
+            <div style={{ padding: "10px 12px", background: "#fee2e2", borderRadius: "8px", color: "#dc2626", fontSize: "14px", marginBottom: "12px" }}>
               {error}
             </div>
           )}
 
-          {/* Section A — Investigation Result */}
-          <div style={{ marginBottom: "20px" }}>
-            <p style={sectionHead}>A — Investigation Result</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-              {INVESTIGATION_RESULTS.map((opt) => (
-                <label key={opt.value} style={{
-                  display: "flex", alignItems: "center", gap: "10px", cursor: "pointer",
-                  padding: "10px 14px", borderRadius: "8px",
-                  border: `2px solid ${result === opt.value ? "#0d9488" : "#e5e7eb"}`,
-                  background: result === opt.value ? "#f0fdfa" : "#fff",
-                  transition: "all 0.1s",
-                }}>
+          <p style={sectionHead}>What did you find?</p>
+          <BigRadio
+            name="primary"
+            value="utility_only"
+            checked={primary === "utility_only"}
+            onChange={() => {
+              setPrimary("utility_only");
+              setAction("");
+            }}
+            label="Utility issue"
+            sub="Utility will handle it"
+          />
+          <BigRadio
+            name="primary"
+            value="no_damage"
+            checked={primary === "no_damage"}
+            onChange={() => {
+              setPrimary("no_damage");
+              setAction("");
+            }}
+            label="No damage found"
+          />
+          <BigRadio
+            name="primary"
+            value="opportunity_found"
+            checked={primary === "opportunity_found"}
+            onChange={() => setPrimary("opportunity_found")}
+            label="Opportunity found"
+            sub="Damage / sale possible"
+          />
+
+          {isOpportunity && (
+            <>
+              <p style={{ ...sectionHead, marginTop: "16px" }}>What happened?</p>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <Chip selected={action === "door_hanger"} onClick={() => { setAction("door_hanger"); setSoldSub(""); setStartedSub(""); }} label="Door hanger left" />
+                <Chip selected={action === "verbal_quote"} onClick={() => { setAction("verbal_quote"); setSoldSub(""); setStartedSub(""); }} label="Verbal price quoted" />
+                <Chip selected={action === "job_sold"} onClick={() => { setAction("job_sold"); setStartedSub(""); }} label="Job sold" />
+                {action === "job_sold" && (
+                  <div style={{ marginLeft: "12px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                    <Chip selected={soldSub === ""} onClick={() => setSoldSub("")} label="Sold (no temp yet)" />
+                    <Chip selected={soldSub === "temp_power"} onClick={() => setSoldSub("temp_power")} label="Temp power installed" />
+                  </div>
+                )}
+                <Chip selected={action === "job_started"} onClick={() => { setAction("job_started"); setSoldSub(""); }} label="Job started" />
+                {action === "job_started" && (
+                  <div style={{ marginLeft: "12px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                    <Chip selected={startedSub === ""} onClick={() => setStartedSub("")} label="In progress" />
+                    <Chip selected={startedSub === "return_grounding"} onClick={() => setStartedSub("return_grounding")} label="Return for grounding" />
+                  </div>
+                )}
+                <Chip selected={action === "customer_thinking"} onClick={() => { setAction("customer_thinking"); setSoldSub(""); setStartedSub(""); }} label="Customer thinking" />
+                {action === "customer_thinking" && (
+                  <div style={{ marginLeft: "12px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                    {[
+                      { v: "thinks_utility" as const, l: "Thinks utility will fix it" },
+                      { v: "wait_insurance" as const, l: "Wait for insurance" },
+                      { v: "think_or_quotes" as const, l: "Wants quotes / thinking" },
+                      { v: "wants_to_proceed" as const, l: "Wants to proceed now" },
+                    ].map((o) => (
+                      <Chip key={o.v} selected={thinkingIntent === o.v} onClick={() => setThinkingIntent(o.v)} label={o.l} />
+                    ))}
+                  </div>
+                )}
+                <Chip selected={action === "customer_declined"} onClick={() => { setAction("customer_declined"); setThinkingIntent(""); }} label="Customer declined" />
+              </div>
+
+              {action === "verbal_quote" && (
+                <div style={{ marginTop: "12px" }}>
+                  <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>
+                    Verbal price quoted ($)
+                  </label>
                   <input
-                    type="radio"
-                    name="result"
-                    value={opt.value}
-                    checked={result === opt.value}
-                    onChange={() => setResult(opt.value)}
-                    style={{ accentColor: "#0d9488" }}
+                    type="text"
+                    inputMode="decimal"
+                    value={verbalPrice}
+                    onChange={(e) => setVerbalPrice(e.target.value)}
+                    placeholder="e.g. 4500"
+                    style={inp}
                   />
-                  <span style={{ fontSize: "14px", color: "#1f2937" }}>{opt.label}</span>
-                </label>
-              ))}
-            </div>
-          </div>
-
-          {/* Section B — Damage / Power Details */}
-          {showDamageSection && (
-            <div style={{ marginBottom: "20px", padding: "16px", background: "#f9fafb", borderRadius: "10px", border: "1px solid #e5e7eb" }}>
-              <p style={sectionHead}>B — Damage & Power Details</p>
-
-              <div style={{ marginBottom: "14px" }}>
-                <label style={lbl}>Number of customers affected</label>
-                <input
-                  type="number"
-                  min={1}
-                  value={customersAffected}
-                  onChange={(e) => setCustomersAffected(parseInt(e.target.value) || 1)}
-                  style={{ ...inp, width: "140px" }}
-                />
-              </div>
-
-              <div style={{ marginBottom: "12px" }}>
-                <label style={lbl}>Customer power status</label>
-                <div style={{ display: "flex", gap: "8px" }}>
-                  {[{ v: true, l: "Has power" }, { v: false, l: "No power" }].map(({ v, l }) => (
-                    <button
-                      key={String(v)}
-                      type="button"
-                      onClick={() => {
-                        setCustomerHasPower(v);
-                        if (v === true) {
-                          // If customer has power, the "missing line drop" path is implied false.
-                          setLineDrop(false);
-                          setPowerOnLineDrop(false);
-                          setLineDropDamaged(false);
-                        }
-                      }}
-                      style={{
-                        padding: "8px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer",
-                        border: `2px solid ${customerHasPower === v ? "#0d9488" : "#e5e7eb"}`,
-                        background: customerHasPower === v ? "#f0fdfa" : "#fff",
-                        color: customerHasPower === v ? "#0d9488" : "#6b7280",
-                      }}
-                    >{l}</button>
-                  ))}
                 </div>
-              </div>
-
-              {/* Missing line drop only matters when there's no power.
-                  If there is no line drop, the property cannot have power (implied). */}
-              {customerHasPower === false && (
-                <>
-                  <Checkbox checked={lineDrop} onChange={setLineDrop} label="Missing line drop / coiled on pole" />
-                  {lineDrop && (
-                    <div style={{ marginLeft: "28px" }}>
-                      <Checkbox checked={powerOnLineDrop} onChange={setPowerOnLineDrop} label="Power on line drop" />
-                      <Checkbox checked={lineDropDamaged} onChange={setLineDropDamaged} label="Line drop damaged" />
-                    </div>
-                  )}
-                </>
               )}
-              <Checkbox checked={honeyHole} onChange={setHoneyHole} label="Honey hole" />
-              {honeyHole && (
-                <div style={{ marginLeft: "28px", marginTop: "8px" }}>
-                  <label style={lbl}>Number of homes affected</label>
+
+              <p style={{ ...sectionHead, marginTop: "16px" }}>Power status</p>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                {[
+                  { v: "has_power" as const, l: "Has power" },
+                  { v: "no_power_on_drop" as const, l: "No power — power on line drop" },
+                  { v: "no_power_no_drop" as const, l: "No power — no power on line drop" },
+                  { v: "neighborhood_dead" as const, l: "Neighborhood dead (whole area out)" },
+                  { v: "honey_hole" as const, l: "Honey hole (multiple homes)" },
+                ].map((o) => (
+                  <Chip key={o.v} selected={power === o.v} onClick={() => setPower(o.v)} label={o.l} />
+                ))}
+              </div>
+              {power === "honey_hole" && (
+                <div style={{ marginTop: "10px" }}>
+                  <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>
+                    Homes affected
+                  </label>
                   <input
                     type="number"
-                    min={1}
+                    min={2}
                     value={honeyHoleHomes}
                     onChange={(e) => setHoneyHoleHomes(e.target.value === "" ? "" : Number(e.target.value))}
-                    style={{ ...inp, width: "180px" }}
+                    style={{ ...inp, width: "120px" }}
                   />
                 </div>
               )}
-            </div>
-          )}
 
-          {/* Section C — Service Type: Amperage + Setup */}
-          {showServiceSection && (
-            <div style={{ marginBottom: "20px" }}>
-              <p style={sectionHead}>C — Service Type</p>
-              <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-                <div style={{ flex: 1, minWidth: "160px" }}>
-                  <label style={lbl}>Amperage</label>
-                  <select value={amperage} onChange={(e) => setAmperage(e.target.value)} style={inp}>
-                    <option value="">Select amperage...</option>
-                    {AMPERAGE_OPTIONS.map((a) => (
-                      <option key={a} value={a}>{a}</option>
-                    ))}
-                  </select>
-                </div>
-                <div style={{ flex: 1, minWidth: "180px" }}>
-                  <label style={lbl}>Service Setup</label>
-                  <select value={serviceSetup} onChange={(e) => setServiceSetup(e.target.value)} style={inp}>
-                    <option value="">Select setup...</option>
-                    {SERVICE_SETUP_OPTIONS.map((s) => (
-                      <option key={s} value={s}>{s}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {result === "damage_found" && (
-            <div style={{ marginBottom: "20px" }}>
-              <p style={sectionHead}>Contact Outcome</p>
-              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                {[
-                  { value: "unavailable", label: "Customer unavailable (door hanger left)" },
-                  { value: "spoke_customer", label: "Spoke with customer" },
-                ].map((opt) => (
-                  <label key={opt.value} style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer" }}>
-                    <input
-                      type="radio"
-                      name="contactOutcome"
-                      value={opt.value}
-                      checked={contactOutcome === opt.value}
-                      onChange={() => setContactOutcome(opt.value as "unavailable" | "spoke_customer")}
-                    />
-                    <span style={{ fontSize: "14px", color: "#1f2937" }}>{opt.label}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {contactOutcome === "spoke_customer" && (
-            <div style={{ marginBottom: "20px" }}>
-              <p style={sectionHead}>Customer Intent</p>
-              <p style={{ fontSize: "11px", color: "#6b7280", marginTop: "-6px", marginBottom: "10px" }}>
-                If the customer wants to move forward, set status under <b>D — Status</b> below (e.g. Job Sold).
-              </p>
-              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                {[
-                  { value: "thinks_utility", label: "Customer thinks utility will fix it" },
-                  { value: "wait_insurance", label: "Customer wants to wait for insurance" },
-                  { value: "think_or_quotes", label: "Customer wants to think about it / get quotes" },
-                  { value: "not_interested", label: "Customer not interested" },
-                ].map((opt) => (
-                  <label key={opt.value} style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer" }}>
-                    <input
-                      type="radio"
-                      name="customerIntent"
-                      value={opt.value}
-                      checked={customerIntent === opt.value}
-                      onChange={() => setCustomerIntent(opt.value as typeof customerIntent)}
-                    />
-                    <span style={{ fontSize: "14px", color: "#1f2937" }}>{opt.label}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {showServiceSection && (
-            <div style={{ marginBottom: "20px", padding: "16px", background: "#f9fafb", borderRadius: "10px", border: "1px solid #e5e7eb" }}>
-              <p style={sectionHead}>Equipment / Scope</p>
-              <Checkbox checked={farmBoxNeeded} onChange={setFarmBoxNeeded} label="Farm box needed" />
-              <Checkbox checked={panelReplacementNeeded} onChange={setPanelReplacementNeeded} label="Panel replacement needed" />
-            </div>
-          )}
-
-          {/* Section D — Follow-Up Status */}
-          <div style={{ marginBottom: "20px" }}>
-            <p style={sectionHead}>D — Status</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-              {FOLLOW_UP_OPTIONS.map((opt) => (
-                <label key={opt.value} style={{
-                  display: "flex", alignItems: "center", gap: "10px", cursor: "pointer",
-                  padding: "9px 14px", borderRadius: "8px",
-                  border: `2px solid ${followUp === opt.value ? "#0d9488" : "#e5e7eb"}`,
-                  background: followUp === opt.value ? "#f0fdfa" : "#fff",
-                  transition: "all 0.1s",
-                }}>
-                  <input
-                    type="radio"
-                    name="followUp"
-                    value={opt.value}
-                    checked={followUp === opt.value}
-                    onChange={() => setFollowUp(opt.value)}
-                    style={{ accentColor: "#0d9488" }}
-                  />
-                  <span style={{ fontSize: "14px", color: "#1f2937" }}>{opt.label}</span>
+              <div style={{ marginTop: "12px" }}>
+                <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>
+                  Job scope
                 </label>
-              ))}
-            </div>
-          </div>
-
-          <div style={{ marginBottom: "20px", padding: "16px", background: "#f9fafb", borderRadius: "10px", border: "1px solid #e5e7eb" }}>
-            <p style={sectionHead}>E — Job Difficulty</p>
-            <Checkbox checked={difficultJob} onChange={setDifficultJob} label="Difficult Job (Return trip)" />
-            <div style={{ display: "flex", gap: "10px", marginTop: "10px" }}>
-              <div style={{ flex: 1 }}>
-                <label style={lbl}>Estimated time (hours)</label>
-                <input
-                  type="number"
-                  min={0}
-                  step="0.5"
-                  value={estimatedTimeHours}
-                  onChange={(e) => setEstimatedTimeHours(e.target.value === "" ? "" : Number(e.target.value))}
-                  style={inp}
-                />
+                <select value={jobScope} onChange={(e) => setJobScope(e.target.value)} style={inp}>
+                  {JOB_SCOPE_OPTIONS.map((o) => (
+                    <option key={o.value || "none"} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+                <label style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "10px", cursor: "pointer" }}>
+                  <input type="checkbox" checked={multiFamily} onChange={(e) => setMultiFamily(e.target.checked)} style={{ width: "18px", height: "18px", accentColor: "#0d9488" }} />
+                  <span style={{ fontSize: "14px", color: "#374151" }}>Multi-family</span>
+                </label>
               </div>
-              <div style={{ width: "170px" }}>
-                <label style={lbl}>Technicians needed</label>
-                <input
-                  type="number"
-                  min={1}
-                  value={techsRequired}
-                  onChange={(e) => setTechsRequired(e.target.value === "" ? "" : Number(e.target.value))}
-                  style={inp}
-                />
-              </div>
-            </div>
-          </div>
+            </>
+          )}
 
-          {/* Notes */}
-          <div style={{ marginBottom: "20px" }}>
-            <label style={lbl}>Notes</label>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Additional notes, customer contact, access issues..."
-              rows={3}
-              style={{ ...inp, resize: "vertical" }}
-            />
-          </div>
+          <button
+            type="button"
+            onClick={() => setShowOptional(!showOptional)}
+            style={{
+              width: "100%",
+              marginTop: "16px",
+              padding: "10px",
+              background: "#f9fafb",
+              border: "1px solid #e5e7eb",
+              borderRadius: "8px",
+              fontSize: "13px",
+              fontWeight: 600,
+              color: "#6b7280",
+              cursor: "pointer",
+            }}
+          >
+            {showOptional ? "▲ Hide optional details" : "▼ Optional: service type, notes, photos"}
+          </button>
 
-          {/* Marker preview */}
-          {previewStatus && (
-            <div style={{ marginBottom: "20px", padding: "12px 16px", background: "#f9fafb", borderRadius: "8px", border: "1px solid #e5e7eb", display: "flex", alignItems: "center", gap: "10px" }}>
-              <div style={{ width: "14px", height: "14px", borderRadius: "50%", background: STATUS_PREVIEW_COLORS[previewStatus] ?? "#9ca3af", flexShrink: 0 }} />
-              <div>
-                <div style={{ fontSize: "12px", color: "#6b7280" }}>Marker will update to</div>
-                <div style={{ fontSize: "14px", fontWeight: 600, color: "#1f2937" }}>{STATUS_PREVIEW_LABELS[previewStatus] ?? previewStatus}</div>
+          {showOptional && (
+            <div style={{ marginTop: "12px", padding: "14px", background: "#f9fafb", borderRadius: "10px", border: "1px solid #e5e7eb" }}>
+              <p style={sectionHead}>Service (optional)</p>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
+                <select value={amperage} onChange={(e) => setAmperage(e.target.value)} style={{ ...inp, flex: 1, minWidth: "120px" }}>
+                  <option value="">Amperage…</option>
+                  {AMPERAGE_OPTIONS.map((a) => (
+                    <option key={a} value={a}>
+                      {a}
+                    </option>
+                  ))}
+                </select>
+                <select value={serviceSetup} onChange={(e) => setServiceSetup(e.target.value)} style={{ ...inp, flex: 1, minWidth: "140px" }}>
+                  <option value="">Setup…</option>
+                  {SERVICE_SETUP_OPTIONS.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
               </div>
+              <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>Notes</label>
+              <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} style={{ ...inp, resize: "vertical", marginBottom: "10px" }} placeholder="Access, materials…" />
+              <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>Technicians needed</label>
+              <input type="number" min={1} value={techsRequired} onChange={(e) => setTechsRequired(e.target.value === "" ? "" : Number(e.target.value))} style={{ ...inp, width: "100px" }} />
             </div>
           )}
 
-          <div style={{ display: "flex", gap: "12px" }}>
-            <button
-              type="button"
-              onClick={onClose}
-              style={{ flex: 1, padding: "12px", background: "#f3f4f6", border: "1px solid #e5e7eb", borderRadius: "8px", fontSize: "14px", fontWeight: 600, cursor: "pointer" }}
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={submitting || !canSubmit}
-              style={{
-                flex: 2, padding: "12px",
-                background: submitting || !canSubmit ? "#9ca3af" : "#0d9488",
-                color: "#fff", border: "none", borderRadius: "8px", fontSize: "14px", fontWeight: 600,
-                cursor: submitting || !canSubmit ? "not-allowed" : "pointer",
-              }}
-            >
-              {submitting ? "Submitting…" : "Submit Investigation"}
-            </button>
-          </div>
+          {previewStatus && (
+            <div style={{ marginTop: "14px", padding: "10px 14px", background: "#f0fdfa", borderRadius: "8px", display: "flex", alignItems: "center", gap: "10px" }}>
+              <div style={{ width: "12px", height: "12px", borderRadius: previewStatus === "door_hanger" ? "2px" : "50%", background: STATUS_PREVIEW[previewStatus]?.color ?? "#9ca3af" }} />
+              <span style={{ fontSize: "13px", fontWeight: 600, color: "#0f766e" }}>{STATUS_PREVIEW[previewStatus]?.label ?? previewStatus}</span>
+            </div>
+          )}
+
+          <button
+            type="submit"
+            disabled={submitting || !canSubmit}
+            style={{
+              width: "100%",
+              marginTop: "16px",
+              padding: "16px",
+              background: submitting || !canSubmit ? "#9ca3af" : "#0d9488",
+              color: "#fff",
+              border: "none",
+              borderRadius: "10px",
+              fontSize: "16px",
+              fontWeight: 700,
+              cursor: submitting || !canSubmit ? "not-allowed" : "pointer",
+            }}
+          >
+            {submitting ? "Saving…" : "Save & close"}
+          </button>
         </form>
       </div>
     </div>

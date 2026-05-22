@@ -51,10 +51,9 @@ export async function GET(req: Request) {
 
     if (jobsErr) return NextResponse.json({ error: jobsErr.message }, { status: 500 });
 
-    // Get active outages for job queue (actionable work only)
-    // Per requirement: Job Queue should include only Call-ins, Self-generated leads,
-    // and ArcGIS leads that are marked sold, started, complete, temp power installed, or return for grounding
-    const actionableStatuses = ["sold", "job_started", "completed", "temp_power", "grounding", "opportunity", "wants_to_proceed", "door_hanger"];
+    // Job queue = real dispatch work only (call-ins + sold/started/wants-to-proceed field leads).
+    // Unsold opportunities, door hangers, and utility/no-damage stay on map + Opportunities list.
+    const actionableStatuses = ["sold", "job_started", "temp_power", "grounding", "wants_to_proceed"];
     const outagesQuery = db
       .from("outages")
       .select("id, lat, lng, city, county, customers, outage_type, cause, etr, status, priority_score, street_address, source, first_seen_at, lead_source")

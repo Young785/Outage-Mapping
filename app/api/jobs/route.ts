@@ -53,28 +53,48 @@ export async function POST(req: Request) {
     const {
       customerName,
       customerAddress,
+      street,
+      city,
+      state,
+      zip,
       customerPhone,
+      customerEmail,
       customerLat,
       customerLng,
-      jobType = "repair",
+      jobType = "storm_response",
       priority = 2,
       notes,
       isConfirmedOpportunity = true,
       outageId,
       lineDrop = false,
       powerOnLineDrop = false,
+      neighborhoodDead = false,
     } = body;
 
-    if (!customerName || !customerAddress) {
-      return NextResponse.json({ error: "customerName and customerAddress are required" }, { status: 400 });
+    const composedAddress =
+      customerAddress?.trim() ||
+      (street && city && state && zip
+        ? `${street.trim()}, ${city.trim()}, ${state.trim()} ${zip.trim()}`
+        : "");
+
+    if (!customerName || !composedAddress) {
+      return NextResponse.json({ error: "customerName and address (street/city/state/zip) are required" }, { status: 400 });
     }
+
+    const notesWithMeta = [
+      notes?.trim(),
+      neighborhoodDead && "neighborhood_dead=true",
+      customerEmail?.trim() && `email=${customerEmail.trim()}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
 
     // Forward-geocode address → lat/lng so the job appears on the map and can be dispatched
     let lat = customerLat;
     let lng = customerLng;
-    if ((!lat || !lng) && customerAddress) {
+    if ((!lat || !lng) && composedAddress) {
       try {
-        const geo = await forwardGeocode(customerAddress);
+        const geo = await forwardGeocode(composedAddress);
         if (geo) { lat = geo.lat; lng = geo.lng; }
       } catch {
         // Non-fatal — job is still created without coordinates
@@ -103,13 +123,13 @@ export async function POST(req: Request) {
         source: "office",
         outage_id: outageId || null,
         customer_name: customerName,
-        customer_address: customerAddress,
+        customer_address: composedAddress,
         customer_phone: customerPhone || null,
         customer_lat: lat || null,
         customer_lng: lng || null,
         job_type: jobType,
         priority: Math.min(4, Math.max(1, Number(priority))),
-        notes: notes || null,
+        notes: notesWithMeta || null,
         status: "pending",
         is_confirmed_opportunity: isConfirmedOpportunity,
         priority_score: score,
@@ -127,13 +147,14 @@ export async function POST(req: Request) {
         source: "office",
         lat,
         lng,
-        city: null,
         county: "Unknown",
         customers: 1,
         outage_type: "Office Call-in Lead",
-        cause: notes || "Office-entered lead",
+        cause: notesWithMeta || "Office-entered lead",
         status: "unvisited",
-        street_address: customerAddress,
+        street_address: composedAddress,
+        city: city?.trim() || null,
+        state: state?.trim() || null,
         customer_name: customerName ?? null,
         customer_phone: customerPhone ?? null,
         lead_source: "office",

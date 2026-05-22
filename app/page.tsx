@@ -5,6 +5,7 @@ import { Loader } from "@googlemaps/js-api-loader";
 import InvestigationForm from "./components/InvestigationForm";
 import JobForm from "./components/JobForm";
 import JobQueue from "./components/JobQueue";
+import OpportunitiesList from "./components/OpportunitiesList";
 import TechPanel from "./components/TechPanel";
 import AdminPanel from "./components/AdminPanel";
 import ProfilePanel from "./components/ProfilePanel";
@@ -75,7 +76,7 @@ type Tech = {
   updatedAt?: string | null;
 };
 
-type Tab = "dashboard" | "map" | "outages" | "queue" | "techs" | "territories" | "admin" | "profile";
+type Tab = "dashboard" | "map" | "outages" | "opportunities" | "queue" | "techs" | "territories" | "admin" | "profile";
 
 // ── Config ───────────────────────────────────────────────────────────────────
 const CENTER = { lat: 44.9778, lng: -93.265 };
@@ -179,7 +180,11 @@ export default function Page() {
   const [reportLng, setReportLng] = useState<number | null>(null);
   const [reportedAddress, setReportedAddress] = useState<string | null>(null);
   const [reportDescription, setReportDescription] = useState("");
-  const [reportCustomers, setReportCustomers] = useState(1);
+  const [reportCustomerName, setReportCustomerName] = useState("");
+  const [reportCustomerPhone, setReportCustomerPhone] = useState("");
+  const [reportCustomerEmail, setReportCustomerEmail] = useState("");
+  const [hideCompletedOnMap, setHideCompletedOnMap] = useState(true);
+  const [hideDeclinedOnMap, setHideDeclinedOnMap] = useState(true);
   const [reportAddressEdit, setReportAddressEdit] = useState("");
   const [reportStreet, setReportStreet] = useState("");
   const [reportCity, setReportCity] = useState("");
@@ -417,7 +422,7 @@ export default function Page() {
   useEffect(() => {
     if (!mapObj.current || !mapReady) return;
     placeOutageMarkers(outages);
-  }, [outages, mapReady]);
+  }, [outages, mapReady, hideCompletedOnMap, hideDeclinedOnMap]);
 
   // ── Sync tech markers ────────────────────────────────────────────────────
   useEffect(() => {
@@ -525,36 +530,42 @@ export default function Page() {
   }
 
   function markerPathForOutage(outage: Outage): google.maps.SymbolPath | string {
-    // Shape is driven by source/leadSource. Color (status) is applied separately at render time.
-    // Office-created jobs ALWAYS triangle, regardless of status.
+    // Door hanger = square marker (any source)
+    if (outage.status === "door_hanger") {
+      return "M -1,-1 L 1,-1 1,1 -1,1 Z";
+    }
     if (
       outage.source === "office" ||
       outage.source === "crm" ||
       outage.source === "housecall" ||
       outage.leadSource === "office"
     ) {
-      return "M 0,-1.2 L 1.1,1.0 L -1.1,1.0 Z"; // triangle
+      return "M 0,-1.2 L 1.1,1.0 L -1.1,1.0 Z";
     }
-    // Tech-created opportunities ALWAYS diamond, regardless of status.
     if (
       outage.source === "self_generated" ||
       outage.source === "user_reported" ||
       outage.source === "user" ||
       outage.leadSource === "self_generated"
     ) {
-      return "M 0 -1 L 1 0 L 0 1 L -1 0 Z"; // diamond
+      return "M 0 -1 L 1 0 L 0 1 L -1 0 Z";
     }
-    return google.maps.SymbolPath.CIRCLE; // xcel/connexus default
+    return google.maps.SymbolPath.CIRCLE;
   }
 
   // ── Outage markers ───────────────────────────────────────────────────────
   function placeOutageMarkers(data: Outage[]) {
-    // Guard: Google Maps may not have loaded yet (e.g. user opened form before visiting map tab)
     if (typeof google === "undefined" || !mapObj.current) return;
     markersRef.current.forEach((m) => m.setMap(null));
     markersRef.current = [];
 
-    data.forEach((outage) => {
+    const visible = data.filter((o) => {
+      if (hideCompletedOnMap && o.status === "completed") return false;
+      if (hideDeclinedOnMap && o.status === "no_opportunity") return false;
+      return true;
+    });
+
+    visible.forEach((outage) => {
       const cfg = STATUS_CONFIG[outage.status as OutageStatus] ?? STATUS_CONFIG.unvisited;
 
       // Honey hole: opportunity with >1 customer → bigger marker + label
@@ -1000,7 +1011,10 @@ export default function Page() {
           streetAddress: streetForDb,
           city: reportCity.trim(),
           description: reportDescription,
-          customers: reportCustomers,
+          customers: 1,
+          customerName: reportCustomerName.trim() || null,
+          customerPhone: reportCustomerPhone.trim() || null,
+          customerEmail: reportCustomerEmail.trim() || null,
           source: "self_generated",
           userId: user.id, userName: user.name, userEmail: user.email,
         }),
@@ -1011,7 +1025,9 @@ export default function Page() {
           id: data?.outage?.id ?? `tmp-${Date.now()}`,
           lat: data?.outage?.lat ?? submitLat,
           lng: data?.outage?.lng ?? submitLng,
-          customers: data?.outage?.customers ?? reportCustomers,
+          customers: data?.outage?.customers ?? 1,
+          customerName: reportCustomerName.trim() || undefined,
+          customerPhone: reportCustomerPhone.trim() || undefined,
           county: "Unknown",
           city: reportCity || undefined,
           streetAddress: streetForDb,
@@ -1030,7 +1046,9 @@ export default function Page() {
         setReportState("");
         setReportZip("");
         setReportDescription("");
-        setReportCustomers(1);
+        setReportCustomerName("");
+        setReportCustomerPhone("");
+        setReportCustomerEmail("");
         // Optimistic add: render the diamond immediately so the tech sees it
         // even before the next /api/outages refresh completes.
         setOutages((prev) => {
@@ -1080,6 +1098,7 @@ export default function Page() {
     { id: "dashboard", label: "Dashboard", icon: "M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z" },
     { id: "map",       label: "Live Map",  icon: "M1 6l7-5 8 5-8 5-7-5zM1 17l7 4 8-4M1 11l7 4 8-4" },
     { id: "outages",   label: "Outages",   icon: "M13 2L3 14h9l-1 8 10-12h-9l1-8z" },
+    { id: "opportunities", label: "Opportunities", icon: "M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" },
     { id: "queue",     label: "Job Queue", icon: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2", officeOnly: false },
     { id: "techs",       label: "Techs",       icon: "M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75", officeOnly: true },
     { id: "territories", label: "Territories", icon: "M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7", officeOnly: true },
@@ -1310,6 +1329,11 @@ export default function Page() {
                   {outages.length}
                 </span>
               )}
+              {tab.id === "opportunities" && (
+                <span style={{ marginLeft: "auto", background: "#f97316", color: "#fff", padding: "1px 6px", borderRadius: "10px", fontSize: "11px" }}>
+                  {stats.opportunity + stats.doorHanger + stats.customerThinking}
+                </span>
+              )}
             </button>
           ))}
         </nav>
@@ -1387,9 +1411,19 @@ export default function Page() {
               </button>
             )}
             {activeTab === "map" && (
-              <button onClick={findNearest} style={btnCss("#0d9488")}>
-                {isMobile ? "→" : "Route to Nearest"}
-              </button>
+              <>
+                <label style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#6b7280", cursor: "pointer", whiteSpace: "nowrap" }}>
+                  <input type="checkbox" checked={hideCompletedOnMap} onChange={(e) => setHideCompletedOnMap(e.target.checked)} />
+                  Hide done
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#6b7280", cursor: "pointer", whiteSpace: "nowrap" }}>
+                  <input type="checkbox" checked={hideDeclinedOnMap} onChange={(e) => setHideDeclinedOnMap(e.target.checked)} />
+                  Hide declined
+                </label>
+                <button onClick={findNearest} style={btnCss("#0d9488")}>
+                  {isMobile ? "→" : "Route to Nearest"}
+                </button>
+              </>
             )}
             {lastUpdatedAt && !isMobile && (
               <span style={{ fontSize: "12px", color: "#9ca3af", alignSelf: "center", whiteSpace: "nowrap" }}>
@@ -1527,6 +1561,17 @@ export default function Page() {
                   <div style={{ fontSize: "11px", color: "#374151" }}>● ArcGIS (visited)</div>
                   <div style={{ fontSize: "11px", color: "#374151" }}>▲ Office / Call-in</div>
                   <div style={{ fontSize: "11px", color: "#374151" }}>◆ Self-generated</div>
+                  <div style={{ fontSize: "11px", color: "#374151" }}>■ Door hanger left</div>
+                </div>
+                <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "8px", paddingTop: "8px" }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "#374151", cursor: "pointer", marginBottom: "4px" }}>
+                    <input type="checkbox" checked={hideCompletedOnMap} onChange={(e) => setHideCompletedOnMap(e.target.checked)} />
+                    Hide completed
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "#374151", cursor: "pointer" }}>
+                    <input type="checkbox" checked={hideDeclinedOnMap} onChange={(e) => setHideDeclinedOnMap(e.target.checked)} />
+                    Hide declined
+                  </label>
                 </div>
                 <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "4px", paddingTop: "6px", fontWeight: 700, color: "#1f2937", marginBottom: "4px", fontSize: "12px" }}>
                   Status / Color
@@ -1710,6 +1755,26 @@ export default function Page() {
             </div>
           )}
 
+          {/* ── CONFIRMED OPPORTUNITIES ───────────────────────────────── */}
+          {activeTab === "opportunities" && (
+            <div>
+              <p style={{ fontSize: "14px", color: "#6b7280", marginBottom: "16px", lineHeight: 1.5 }}>
+                Leads you found in the field — not sold yet. Sold or &quot;wants to proceed&quot; jobs move to the Job Queue.
+              </p>
+              <OpportunitiesList
+                outages={outages}
+                onNavigate={(lat, lng, addr) => {
+                  navigateToLatLng(lat, lng, addr);
+                  gotoTab("map");
+                }}
+                onInvestigate={(o) => {
+                  setInvestigatingOutage(o as Outage);
+                  setShowInvestigation(true);
+                }}
+              />
+            </div>
+          )}
+
           {/* ── JOB QUEUE ─────────────────────────────────────────────── */}
           {activeTab === "queue" && token && (
             <JobQueue
@@ -1866,6 +1931,9 @@ export default function Page() {
                 setReportState("");
                 setReportZip("");
                 setReportDescription("");
+                setReportCustomerName("");
+                setReportCustomerPhone("");
+                setReportCustomerEmail("");
               }} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#6b7280" }}>×</button>
             </div>
             <div style={{ padding: "20px 24px 24px" }}>
@@ -1924,16 +1992,19 @@ export default function Page() {
                     </div>
                   </div>
 
-                  {/* Homes affected */}
-                  <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#374151", marginBottom: "4px" }}>Homes affected</label>
-                  <input
-                    type="number"
-                    min={1}
-                    value={reportCustomers}
-                    onChange={(e) => setReportCustomers(parseInt(e.target.value) || 1)}
-                    placeholder="1"
-                    style={{ width: "100%", padding: "10px 12px", fontSize: "14px", border: "1px solid #e5e7eb", borderRadius: "8px", marginBottom: "14px", outline: "none", fontFamily: "inherit", color: "#1f2937", background: "#fff", boxSizing: "border-box" }}
-                  />
+                  <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#374151", marginBottom: "4px" }}>Customer name <span style={{ color: "#9ca3af", fontWeight: 400 }}>(optional)</span></label>
+                  <input value={reportCustomerName} onChange={(e) => setReportCustomerName(e.target.value)} placeholder="Name" style={{ width: "100%", padding: "10px 12px", fontSize: "14px", border: "1px solid #e5e7eb", borderRadius: "8px", marginBottom: "12px", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} />
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "12px" }}>
+                    <div>
+                      <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#374151", marginBottom: "4px" }}>Phone</label>
+                      <input type="tel" value={reportCustomerPhone} onChange={(e) => setReportCustomerPhone(e.target.value)} style={{ width: "100%", padding: "10px 12px", fontSize: "14px", border: "1px solid #e5e7eb", borderRadius: "8px", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} />
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#374151", marginBottom: "4px" }}>Email</label>
+                      <input type="email" value={reportCustomerEmail} onChange={(e) => setReportCustomerEmail(e.target.value)} style={{ width: "100%", padding: "10px 12px", fontSize: "14px", border: "1px solid #e5e7eb", borderRadius: "8px", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} />
+                    </div>
+                  </div>
 
                   {/* Description */}
                   <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#374151", marginBottom: "4px" }}>Notes <span style={{ color: "#9ca3af", fontWeight: 400 }}>(optional)</span></label>

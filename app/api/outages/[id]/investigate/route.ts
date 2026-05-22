@@ -64,6 +64,7 @@ export async function POST(
       difficultJob,
       estimatedTimeHours,
       techsRequired,
+      verbalPriceQuoted,
       // Status override from the client (already derived)
       newStatus,
       notes,
@@ -216,6 +217,7 @@ export async function POST(
       estimatedTimeHours !== "" && estimatedTimeHours != null && `est_hours=${estimatedTimeHours}`,
       techsRequired !== "" && techsRequired != null && `techs=${techsRequired}`,
       newStatus && `derived_status=${newStatus}`,
+      verbalPriceQuoted && `verbal_price=${verbalPriceQuoted}`,
     ]
       .filter(Boolean)
       .join("; ");
