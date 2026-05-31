@@ -12,6 +12,7 @@ import ProfilePanel from "./components/ProfilePanel";
 import TerritoryPanel from "./components/TerritoryPanel";
 import SiteGuideDocs from "./components/SiteGuideDocs";
 import PageHelp from "./components/PageHelp";
+import SiteHelpLauncher from "./components/SiteHelpLauncher";
 import Link from "next/link";
 import { STATUS_CONFIG, getStatusConfig, statusBadgeStyle, type OutageStatus } from "@/lib/outage-status";
 
@@ -2186,7 +2187,7 @@ export default function Page() {
           {activeTab === "guide" && (
             <>
               <PageHelp pageId="guide" />
-              <SiteGuideDocs variant="embedded" />
+              <SiteGuideDocs variant="embedded" role={user.role} />
             </>
           )}
         </div>
@@ -2473,6 +2474,7 @@ export default function Page() {
           </div>
         </div>
       )}
+      <SiteHelpLauncher role={user.role} />
     </div>
   );
 }

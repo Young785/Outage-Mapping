@@ -74,10 +74,23 @@ function P({ children }: { children: React.ReactNode }) {
   return <p style={{ margin: "0 0 12px", fontSize: "15px", lineHeight: 1.7, color: "#334155" }}>{children}</p>;
 }
 
-type Props = { variant?: "full" | "embedded" };
+type Props = {
+  variant?: "full" | "embedded";
+  /** Setup / login / DB sections are admin-only when embedded in the app */
+  role?: "office" | "tech" | "admin" | "owner";
+};
 
-export default function SiteGuideDocs({ variant = "full" }: Props) {
-  const allIds = useMemo(() => GUIDE_NAV.flatMap((g) => g.items.map((i) => i.id)), []);
+function canViewSetup(role?: Props["role"]): boolean {
+  return role === "admin" || role === "owner";
+}
+
+export default function SiteGuideDocs({ variant = "full", role }: Props) {
+  const showSetup = canViewSetup(role);
+  const guideNav = useMemo(
+    () => (showSetup ? GUIDE_NAV : GUIDE_NAV.filter((g) => g.title !== "Login & Database")),
+    [showSetup]
+  );
+  const allIds = useMemo(() => guideNav.flatMap((g) => g.items.map((i) => i.id)), [guideNav]);
   const [activeId, setActiveId] = useState(allIds[0]);
 
   useEffect(() => {
@@ -128,7 +141,7 @@ export default function SiteGuideDocs({ variant = "full" }: Props) {
           overflowY: "auto",
           background: "#fafafa",
         }}>
-          {GUIDE_NAV.map((group) => (
+          {guideNav.map((group) => (
             <div key={group.title} style={{ marginBottom: "16px" }}>
               <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", marginBottom: "6px" }}>{group.title}</div>
               {group.items.map((item) => (
@@ -154,7 +167,7 @@ export default function SiteGuideDocs({ variant = "full" }: Props) {
         <main style={{ flex: 1, padding: variant === "full" ? "28px 40px 64px" : "16px 20px 32px", maxWidth: "780px", overflowY: "auto" }}>
           {variant === "embedded" && (
             <div style={{ marginBottom: "14px", padding: "10px 12px", background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: "8px", fontSize: "13px", color: "#0f766e", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-              <span>Step-by-step navigation, login, and local database setup.</span>
+              <span>{showSetup ? "Step-by-step navigation, login, and local database setup." : "Step-by-step navigation for your role."}</span>
               <Link href="/docs" target="_blank" rel="noopener noreferrer" style={{ fontWeight: 700, color: "#0d9488" }}>Platform docs →</Link>
             </div>
           )}
@@ -275,6 +288,8 @@ export default function SiteGuideDocs({ variant = "full" }: Props) {
             ]} />
           </Section>
 
+          {showSetup && (
+          <>
           <div style={{ borderTop: "2px solid #e5e7eb", marginTop: "48px", paddingTop: "24px" }}>
             <p style={{ fontSize: "12px", fontWeight: 700, color: "#0d9488", textTransform: "uppercase", letterSpacing: "0.06em" }}>Setup</p>
             <h2 style={{ margin: "8px 0 16px", fontSize: "26px", fontWeight: 800 }}>Login & Database</h2>
@@ -377,6 +392,8 @@ JWT_SECRET_PROD=...`}
             ]} />
             <p style={{ marginTop: "16px", fontSize: "13px", color: "#94a3b8" }}>See also: docs/LOGIN_AND_DATABASE.md and docs/NAVIGATION_GUIDE.md in the repo.</p>
           </Section>
+          </>
+          )}
         </main>
       </div>
     </div>

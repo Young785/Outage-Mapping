@@ -1,5 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
+import FieldTip, { LabelWithTip, SectionTitleWithTip } from "./FieldTip";
+import { ADMIN_FIELD_HELP, ADMIN_SECTION_HELP } from "@/lib/field-help";
 
 type Weights = {
   customers_multiplier: number;
@@ -433,13 +435,16 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
 
       {/* ── Data Sources ────────────────────────────────────────────── */}
       <div style={sectionStyle}>
-        <h3 style={{ margin: "0 0 16px", fontSize: "16px", fontWeight: 700, color: "#1f2937" }}>Data Sources</h3>
+        <SectionTitleWithTip title="Data Sources" tip={ADMIN_SECTION_HELP.dataSources} />
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
 
           {/* Xcel */}
           <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px", background: "#f9fafb", borderRadius: "8px", cursor: "pointer", border: settings.active_sources.includes("xcel") ? "2px solid #0d9488" : "1px solid #e5e7eb" }}>
             <div>
-              <div style={{ fontWeight: 600, color: "#1f2937" }}>Xcel Energy (ArcGIS)</div>
+              <div style={{ fontWeight: 600, color: "#1f2937", display: "flex", alignItems: "center" }}>
+                Xcel Energy (ArcGIS)
+                <FieldTip text={ADMIN_FIELD_HELP.xcel} />
+              </div>
               <div style={{ fontSize: "12px", color: "#6b7280" }}>Live outage data from Xcel's ArcGIS REST endpoint</div>
             </div>
             <input
@@ -458,8 +463,9 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
           {/* Connexus */}
           <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px", background: "#f9fafb", borderRadius: "8px", cursor: "pointer", border: settings.connexus_enabled ? "2px solid #0d9488" : "1px solid #e5e7eb" }}>
             <div>
-              <div style={{ fontWeight: 600, color: "#1f2937" }}>
+              <div style={{ fontWeight: 600, color: "#1f2937", display: "flex", alignItems: "center", flexWrap: "wrap" }}>
                 Connexus Energy (ArcGIS)
+                <FieldTip text={ADMIN_FIELD_HELP.connexus} />
                 {!settings.connexus_enabled && (
                   <span style={{ marginLeft: "8px", padding: "2px 6px", background: "#fef3c7", color: "#92400e", borderRadius: "4px", fontSize: "11px" }}>
                     Requires CONNEXUS_ARCGIS_URL in .env
@@ -488,7 +494,7 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
         </div>
 
         <div style={{ marginTop: "12px" }}>
-          <label style={labelStyle}>Fetch Interval (minutes)</label>
+          <label style={labelStyle}><LabelWithTip label="Fetch Interval (minutes)" tip={ADMIN_FIELD_HELP.fetchInterval} /></label>
           <input
             type="number" min={5} max={60}
             value={settings.fetch_interval_minutes}
@@ -501,9 +507,9 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
           <label style={labelStyle}>Storm Phase</label>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: "8px" }}>
             {[
-              { value: "phase_1" as const, label: "Phase 1", sub: "Hunting" },
-              { value: "phase_2" as const, label: "Phase 2", sub: "Dispatch" },
-              { value: "phase_3" as const, label: "Phase 3", sub: "Cleanup" },
+              { value: "phase_1" as const, label: "Phase 1", sub: "Hunting", tip: ADMIN_FIELD_HELP.stormPhase1 },
+              { value: "phase_2" as const, label: "Phase 2", sub: "Dispatch", tip: ADMIN_FIELD_HELP.stormPhase2 },
+              { value: "phase_3" as const, label: "Phase 3", sub: "Cleanup", tip: ADMIN_FIELD_HELP.stormPhase3 },
             ].map((phase) => (
               <button
                 key={phase.value}
@@ -515,9 +521,13 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
                   border: `1px solid ${settings.storm_phase === phase.value ? "#0d9488" : "#e5e7eb"}`,
                   background: settings.storm_phase === phase.value ? "#ccfbf1" : "#fff",
                   cursor: "pointer",
+                  position: "relative",
                 }}
               >
-                <div style={{ fontWeight: 700, color: settings.storm_phase === phase.value ? "#0f766e" : "#1f2937", fontSize: "12px" }}>{phase.label}</div>
+                <div style={{ fontWeight: 700, color: settings.storm_phase === phase.value ? "#0f766e" : "#1f2937", fontSize: "12px", display: "inline-flex", alignItems: "center" }}>
+                  {phase.label}
+                  <FieldTip text={phase.tip} />
+                </div>
                 <div style={{ color: "#6b7280", fontSize: "11px", marginTop: "2px" }}>{phase.sub}</div>
               </button>
             ))}
@@ -538,7 +548,10 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
           }}
         >
           <div>
-            <div style={{ fontWeight: 600, color: "#1f2937" }}>Temp-Out Mode</div>
+            <div style={{ fontWeight: 600, color: "#1f2937", display: "flex", alignItems: "center" }}>
+              Temp-Out Mode
+              <FieldTip text={ADMIN_FIELD_HELP.tempOutMode} />
+            </div>
             <div style={{ fontSize: "12px", color: "#6b7280" }}>When ON, crews secure customer + temporary power + return later</div>
           </div>
           <input
@@ -549,12 +562,13 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
           />
         </label>
         <div style={{ marginTop: "12px", padding: "12px", border: "1px solid #e5e7eb", borderRadius: "8px", background: "#f8fafc" }}>
-          <div style={{ fontWeight: 700, fontSize: "12px", color: "#334155", marginBottom: "8px", textTransform: "uppercase" }}>
+          <div style={{ fontWeight: 700, fontSize: "12px", color: "#334155", marginBottom: "8px", textTransform: "uppercase", display: "flex", alignItems: "center" }}>
             Dispatch Guardrails
+            <FieldTip text="Limits used when Assign recommends a tech — prevents overload and overtime-heavy dispatch." wide />
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: "8px" }}>
             <div>
-              <label style={labelStyle}>Max Jobs / Tech</label>
+              <label style={labelStyle}><LabelWithTip label="Max Jobs / Tech" tip={ADMIN_FIELD_HELP.maxJobsPerTech} /></label>
               <input
                 type="number"
                 min={1}
@@ -565,7 +579,7 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
               />
             </div>
             <div>
-              <label style={labelStyle}>Overtime Soft Limit (h)</label>
+              <label style={labelStyle}><LabelWithTip label="Overtime Soft Limit (h)" tip={ADMIN_FIELD_HELP.overtimeSoft} /></label>
               <input
                 type="number"
                 min={1}
@@ -576,7 +590,7 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
               />
             </div>
             <div>
-              <label style={labelStyle}>Overtime Hard Limit (h)</label>
+              <label style={labelStyle}><LabelWithTip label="Overtime Hard Limit (h)" tip={ADMIN_FIELD_HELP.overtimeHard} /></label>
               <input
                 type="number"
                 min={1}
@@ -598,25 +612,25 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
 
       {/* ── Priority Weights ─────────────────────────────────────────── */}
       <div style={sectionStyle}>
-        <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: 700, color: "#1f2937" }}>Priority Scoring Weights</h3>
+        <SectionTitleWithTip title="Priority Scoring Weights" tip={ADMIN_SECTION_HELP.priorityWeights} />
         <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#6b7280" }}>
           Score = (customers × multiplier) + (urgency × weight) + office_bonus + density_bonus + (hours × time_weight) + confirmed_bonus
         </p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "16px" }}>
           {([
-            { key: "customers_multiplier",       label: "Customers Multiplier" },
-            { key: "urgency_multiplier",          label: "Urgency Multiplier" },
-            { key: "office_job_bonus",            label: "Office Job Bonus" },
-            { key: "density_bonus",               label: "Density Bonus (per nearby outage)" },
-            { key: "time_weight",                 label: "Time Weight (per hour)" },
-            { key: "confirmed_opportunity_bonus", label: "Confirmed Opportunity Bonus" },
-            { key: "wants_to_proceed_bonus",      label: "Wants-to-Proceed Bonus" },
-            { key: "honey_hole_bonus",            label: "Honey Hole Bonus (multi-customer)" },
-            { key: "line_drop_bonus",             label: "Line Drop Present Bonus" },
-            { key: "line_drop_power_bonus",       label: "Line Drop w/ Power Bonus" },
-          ] as { key: keyof Weights; label: string }[]).map(({ key, label }) => (
+            { key: "customers_multiplier",       label: "Customers Multiplier", tip: ADMIN_FIELD_HELP.customersMultiplier },
+            { key: "urgency_multiplier",          label: "Urgency Multiplier", tip: ADMIN_FIELD_HELP.urgencyMultiplier },
+            { key: "office_job_bonus",            label: "Office Job Bonus", tip: ADMIN_FIELD_HELP.officeJobBonus },
+            { key: "density_bonus",               label: "Density Bonus (per nearby outage)", tip: ADMIN_FIELD_HELP.densityBonus },
+            { key: "time_weight",                 label: "Time Weight (per hour)", tip: ADMIN_FIELD_HELP.timeWeight },
+            { key: "confirmed_opportunity_bonus", label: "Confirmed Opportunity Bonus", tip: ADMIN_FIELD_HELP.confirmedOpportunityBonus },
+            { key: "wants_to_proceed_bonus",      label: "Wants-to-Proceed Bonus", tip: ADMIN_FIELD_HELP.wantsToProceedBonus },
+            { key: "honey_hole_bonus",            label: "Honey Hole Bonus (multi-customer)", tip: ADMIN_FIELD_HELP.honeyHoleBonus },
+            { key: "line_drop_bonus",             label: "Line Drop Present Bonus", tip: ADMIN_FIELD_HELP.lineDropBonus },
+            { key: "line_drop_power_bonus",       label: "Line Drop w/ Power Bonus", tip: ADMIN_FIELD_HELP.lineDropPowerBonus },
+          ] as { key: keyof Weights; label: string; tip: string }[]).map(({ key, label, tip }) => (
             <div key={key}>
-              <label style={labelStyle}>{label}</label>
+              <label style={labelStyle}><LabelWithTip label={label} tip={tip} /></label>
               <input
                 type="number" step="0.1"
                 value={weights[key]}
@@ -633,7 +647,7 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
 
       {/* ── Storm Simulation Mode ─────────────────────────────────────── */}
       <div style={sectionStyle}>
-        <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: 700, color: "#1f2937" }}>Storm Simulation Mode</h3>
+        <SectionTitleWithTip title="Storm Simulation Mode" tip={ADMIN_SECTION_HELP.simulation} />
         <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#6b7280" }}>
           Replace live outage data with a synthetic storm scenario for testing routing, dispatch, and priority logic.
         </p>
@@ -648,8 +662,9 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
             <div style={{ width: "20px", height: "20px", background: "#fff", borderRadius: "50%", position: "absolute", top: "2px", left: settings.simulation_mode ? "22px" : "2px", transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
           </div>
           <div>
-            <div style={{ fontWeight: 600, color: "#1f2937" }}>
+            <div style={{ fontWeight: 600, color: "#1f2937", display: "flex", alignItems: "center" }}>
               {settings.simulation_mode ? "Simulation ON (unsaved)" : "Simulation OFF"}
+              <FieldTip text={ADMIN_FIELD_HELP.simulationToggle} />
             </div>
             <div style={{ fontSize: "12px", color: "#6b7280" }}>
               {settings.simulation_mode
@@ -670,7 +685,7 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
 
       {/* ── Synthetic Outage Generator ─────────────────────────────── */}
       <div style={sectionStyle}>
-        <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: 700, color: "#1f2937" }}>Synthetic Outage Generator</h3>
+        <SectionTitleWithTip title="Synthetic Outage Generator" tip={ADMIN_SECTION_HELP.syntheticGenerator} />
         <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#6b7280" }}>
           Generate a synthetic storm dataset for simulation. This does <strong>not</strong> affect live data.
         </p>
@@ -678,7 +693,7 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
         <div style={{ display: "flex", gap: "16px", flexWrap: "wrap", marginBottom: "14px" }}>
           {/* Count buttons */}
           <div>
-            <label style={labelStyle}>Outage Count</label>
+            <label style={labelStyle}><LabelWithTip label="Outage Count" tip={ADMIN_FIELD_HELP.synthCount} /></label>
             <div style={{ display: "flex", gap: "6px" }}>
               {([10, 25, 50, 100] as const).map((n) => (
                 <button
@@ -703,7 +718,7 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
 
           {/* Type buttons */}
           <div>
-            <label style={labelStyle}>Scenario Type</label>
+            <label style={labelStyle}><LabelWithTip label="Scenario Type" tip={ADMIN_FIELD_HELP.synthType} /></label>
             <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
               {([
                 { value: "mixed",      label: "Mixed" },
@@ -743,7 +758,7 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
 
       {/* ── Load Saved Snapshot into Test Mode ──────────────────────── */}
       <div style={sectionStyle}>
-        <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: 700, color: "#1f2937" }}>Load Real Snapshot into Test Mode</h3>
+        <SectionTitleWithTip title="Load Real Snapshot into Test Mode" tip={ADMIN_SECTION_HELP.snapshots} />
         <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#6b7280" }}>
           Replay a saved Xcel outage snapshot as simulation data — full interaction, no live impact.
         </p>
@@ -781,7 +796,7 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
 
       {/* ── Storm Event Sessions ─────────────────────────────────────── */}
       <div style={sectionStyle}>
-        <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: 700, color: "#1f2937" }}>Storm Event Sessions</h3>
+        <SectionTitleWithTip title="Storm Event Sessions" tip={ADMIN_SECTION_HELP.stormEvents} />
         <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#6b7280" }}>
           Track storm response sessions for historical analysis and future AI routing improvement.
         </p>
@@ -813,6 +828,7 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
               value={newEventName}
               onChange={(e) => setNewEventName(e.target.value)}
               placeholder="Event name (e.g. June 2026 Derecho)"
+              title={ADMIN_FIELD_HELP.stormEventName}
               style={{ flex: 1, padding: "9px 12px", fontSize: "14px", border: "1px solid #e5e7eb", borderRadius: "8px", outline: "none" }}
             />
             <button
@@ -843,7 +859,10 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
         )}
 
         <div style={{ marginTop: "18px", borderTop: "1px solid #e5e7eb", paddingTop: "14px" }}>
-          <div style={{ fontSize: "12px", fontWeight: 700, color: "#6b7280", marginBottom: "8px", textTransform: "uppercase" }}>Map Cleanup</div>
+          <div style={{ fontSize: "12px", fontWeight: 700, color: "#6b7280", marginBottom: "8px", textTransform: "uppercase", display: "flex", alignItems: "center" }}>
+            Map Cleanup
+            <FieldTip text="Remove clutter from the active map between storms. Data stays in the database for exports." wide />
+          </div>
           <p style={{ margin: "0 0 10px", fontSize: "12px", color: "#6b7280" }}>
             Use these tools between storms to keep the active map clean without deleting history.
           </p>
@@ -851,6 +870,7 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
             <button
               onClick={sweepCompletedAndDeclined}
               disabled={stormLoading}
+              title={ADMIN_FIELD_HELP.sweepCompleted}
               style={{ padding: "8px 12px", background: "#2563eb", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: stormLoading ? "default" : "pointer" }}
             >
               Sweep Completed + Declined
@@ -858,6 +878,7 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
             <button
               onClick={() => archiveStaleDots(48)}
               disabled={stormLoading}
+              title={ADMIN_FIELD_HELP.archiveStale48}
               style={{ padding: "8px 12px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: stormLoading ? "default" : "pointer" }}
             >
               Archive Stale (48h)
@@ -865,6 +886,7 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
             <button
               onClick={() => archiveStaleDots(72)}
               disabled={stormLoading}
+              title={ADMIN_FIELD_HELP.archiveStale72}
               style={{ padding: "8px 12px", background: "#6b7280", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: stormLoading ? "default" : "pointer" }}
             >
               Archive Stale (72h)
@@ -875,7 +897,7 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
 
       {/* ── Data Storage & Exports ────────────────────────────────────── */}
       <div style={sectionStyle}>
-        <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: 700, color: "#1f2937" }}>Data Storage & Analytics</h3>
+        <SectionTitleWithTip title="Data Storage & Analytics" tip={ADMIN_SECTION_HELP.dataStorage} />
         <p style={{ margin: "0 0 14px", fontSize: "13px", color: "#6b7280" }}>
           Operational data is stored in Supabase Postgres and can be exported for routing analysis, inventory planning, and historical storm reviews.
         </p>
@@ -937,16 +959,16 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
             Export CSV
           </div>
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-            <button onClick={() => downloadExport("outages", 30)} style={{ padding: "8px 12px", background: "#0ea5e9", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
+            <button onClick={() => downloadExport("outages", 30)} title={ADMIN_FIELD_HELP.exportOutages} style={{ padding: "8px 12px", background: "#0ea5e9", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
               Outages (30d)
             </button>
-            <button onClick={() => downloadExport("jobs", 30)} style={{ padding: "8px 12px", background: "#0d9488", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
+            <button onClick={() => downloadExport("jobs", 30)} title={ADMIN_FIELD_HELP.exportJobs} style={{ padding: "8px 12px", background: "#0d9488", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
               Jobs (30d)
             </button>
-            <button onClick={() => downloadExport("investigations", 30)} style={{ padding: "8px 12px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
+            <button onClick={() => downloadExport("investigations", 30)} title={ADMIN_FIELD_HELP.exportInvestigations} style={{ padding: "8px 12px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
               Investigations (30d)
             </button>
-            <button onClick={() => downloadExport("outages", 90)} style={{ padding: "8px 12px", background: "#6b7280", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
+            <button onClick={() => downloadExport("outages", 90)} title={ADMIN_FIELD_HELP.exportOutages} style={{ padding: "8px 12px", background: "#6b7280", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
               Outages (90d)
             </button>
           </div>
