@@ -11,7 +11,7 @@
 import { NextResponse } from "next/server";
 import { fetchAndNormalize, getLastSnapshot } from "@/lib/adapters";
 import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
-import { calculateScore, getWeights, countNearby } from "@/lib/priority";
+import { calculateScore, calculateScoreBreakdown, getWeights, countNearby } from "@/lib/priority";
 import { reverseGeocode } from "@/lib/geocache";
 import { verifyJWT, extractBearerToken } from "@/lib/jwt";
 
@@ -256,15 +256,27 @@ export async function GET(req: Request) {
   }
 
   const enriched = filtered.map((o) => {
+    const densityNearby = countNearby(
+      o.lat!,
+      o.lng!,
+      filtered.filter((x) => x.id !== o.id).map((x) => ({ lat: x.lat!, lng: x.lng! }))
+    );
     const score = calculateScore(
       {
         customers: o.customers,
         outageType: o.outageType,
-        densityNearby: countNearby(
-          o.lat!,
-          o.lng!,
-          filtered.filter((x) => x.id !== o.id).map((x) => ({ lat: x.lat!, lng: x.lng! }))
-        ),
+        densityNearby,
+      },
+      weights
+    );
+    const baseStatus = (dbStatusMap[o.id] as any) ?? "unvisited";
+    const scoreBreakdown = calculateScoreBreakdown(
+      {
+        customers: o.customers,
+        outageType: o.outageType,
+        densityNearby,
+        outageStatus: baseStatus,
+        firstSeenAt: dbMetaMap[o.id]?.first_seen_at ?? undefined,
       },
       weights
     );
@@ -274,8 +286,9 @@ export async function GET(req: Request) {
       ...o,
       // Prefer DB-cached address over ArcGIS data (adapter doesn't provide streetAddress)
       streetAddress: dbAddressMap[o.id] ?? null,
-      status: (dbStatusMap[o.id] as any) ?? "unvisited",
+      status: baseStatus,
       priorityScore: isNew ? Math.max(score + 50, score) : score,
+      scoreBreakdown,
       isNew,
       milesFromCenter: haversineMiles(CENTER.lat, CENTER.lng, o.lat!, o.lng!),
       customerName: dbMetaMap[o.id]?.customer_name ?? null,
@@ -284,6 +297,10 @@ export async function GET(req: Request) {
       assignedTechName: dbMetaMap[o.id]?.assigned_tech_name ?? null,
       officeNotes: dbMetaMap[o.id]?.office_notes ?? null,
       externalJobStatus: dbMetaMap[o.id]?.external_job_status ?? null,
+      firstSeenAt: dbMetaMap[o.id]?.first_seen_at ?? null,
+      lastUpdatedAt: dbMetaMap[o.id]?.last_updated_at ?? null,
+      isStaleMarker: !!dbMetaMap[o.id]?.first_seen_at
+        && Date.now() - new Date(dbMetaMap[o.id].first_seen_at).getTime() > 48 * 60 * 60 * 1000,
     };
   });
 
@@ -306,6 +323,13 @@ export async function GET(req: Request) {
       streetAddress: o.street_address ?? null,
       status: o.status ?? "unvisited",
       priorityScore: o.priority_score ?? 0,
+      scoreBreakdown: calculateScoreBreakdown({
+        customers: o.customers ?? 1,
+        outageType: o.outage_type ?? "Office Lead",
+        isOfficeJob: o.source === "office",
+        outageStatus: o.status ?? "unvisited",
+        firstSeenAt: o.first_seen_at ?? undefined,
+      }, weights),
       milesFromCenter: haversineMiles(CENTER.lat, CENTER.lng, o.lat, o.lng),
       customerName: o.customer_name ?? null,
       customerPhone: o.customer_phone ?? null,
@@ -313,6 +337,10 @@ export async function GET(req: Request) {
       assignedTechName: o.assigned_tech_name ?? null,
       officeNotes: o.office_notes ?? null,
       externalJobStatus: o.external_job_status ?? null,
+      firstSeenAt: o.first_seen_at ?? null,
+      lastUpdatedAt: o.last_updated_at ?? null,
+      isStaleMarker: !!o.first_seen_at
+        && Date.now() - new Date(o.first_seen_at).getTime() > 48 * 60 * 60 * 1000,
     }));
 
   const allEnriched = [...enriched, ...officeItems];

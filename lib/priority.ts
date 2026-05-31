@@ -136,6 +136,71 @@ export function calculateScore(
   return Math.round(score * 100) / 100;
 }
 
+export function calculateScoreBreakdown(
+  opts: {
+    customers: number;
+    outageType?: string;
+    isOfficeJob?: boolean;
+    densityNearby?: number;
+    firstSeenAt?: string;
+    isConfirmedOpportunity?: boolean;
+    lineDrop?: boolean;
+    powerOnLineDrop?: boolean;
+    wantsToProceed?: boolean;
+    outageStatus?: string;
+  },
+  weights: PriorityWeights = DEFAULT_WEIGHTS
+): {
+  finalScore: number;
+  urgency: number;
+  parts: Record<string, number>;
+} {
+  const {
+    customers,
+    outageType = "",
+    isOfficeJob = false,
+    densityNearby = 0,
+    firstSeenAt,
+    isConfirmedOpportunity = false,
+    lineDrop = false,
+    powerOnLineDrop = false,
+    wantsToProceed = false,
+    outageStatus = "unvisited",
+  } = opts;
+
+  if (outageStatus === "no_opportunity" || outageStatus === "completed") {
+    return { finalScore: 0, urgency: 0, parts: { status_sink: -999 } };
+  }
+
+  const urgency = urgencyScore(outageType);
+  const hoursSinceReported = firstSeenAt
+    ? (Date.now() - new Date(firstSeenAt).getTime()) / 3_600_000
+    : 0;
+  const isHoneyHole = customers > 1 &&
+    ["opportunity", "wants_to_proceed", "door_hanger"].includes(outageStatus);
+
+  const parts: Record<string, number> = {
+    customers: customers * weights.customers_multiplier,
+    urgency: urgency * weights.urgency_multiplier,
+    office_bonus: isOfficeJob ? weights.office_job_bonus : 0,
+    density: densityNearby > 0 ? weights.density_bonus * Math.min(densityNearby, 5) : 0,
+    age_time: hoursSinceReported * weights.time_weight,
+    confirmed: (isConfirmedOpportunity || wantsToProceed) ? weights.confirmed_opportunity_bonus : 0,
+    wants_to_proceed: wantsToProceed ? weights.wants_to_proceed_bonus : 0,
+    line_drop: lineDrop ? weights.line_drop_bonus : 0,
+    line_drop_power: powerOnLineDrop ? weights.line_drop_power_bonus : 0,
+    honey_hole: isHoneyHole ? weights.honey_hole_bonus * Math.min(customers, 10) : 0,
+  };
+
+  let total = Object.values(parts).reduce((s, n) => s + n, 0);
+  if (outageStatus === "investigating") {
+    total *= 0.5;
+    parts.investigating_penalty = -Math.abs(total);
+  }
+  const finalScore = Math.round(total * 100) / 100;
+  return { finalScore, urgency, parts };
+}
+
 /** Haversine distance in miles */
 export function haversineMiles(
   lat1: number,

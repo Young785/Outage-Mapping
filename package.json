@@ -4,7 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:clean": "rm -rf .next && next dev",
+    "clean": "rm -rf .next",
     "build": "next build",
+    "build:clean": "rm -rf .next && next build",
     "start": "next start",
     "lint": "next lint"
   },
@@ -15,7 +18,8 @@
     "next": "15.3.9",
     "pg": "^8.20.0",
     "react": "^19.2.6",
-    "react-dom": "^19.2.6"
+    "react-dom": "^19.2.6",
+    "twilio": "^6.0.2"
   },
   "devDependencies": {
     "@types/google.maps": "^3.58.1",

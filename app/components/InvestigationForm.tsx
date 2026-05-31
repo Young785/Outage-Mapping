@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 type Outage = {
   id: number | string;
@@ -92,6 +92,7 @@ function deriveStatus(
 }
 
 export default function InvestigationForm({ outage, token, onClose, onSubmitted }: Props) {
+  const formRef = useRef<HTMLFormElement | null>(null);
   const [primary, setPrimary] = useState<PrimaryOutcome>("");
   const [action, setAction] = useState<OpportunityAction>("");
   const [soldSub, setSoldSub] = useState<"" | "temp_power">("");
@@ -116,7 +117,6 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
 
   const serviceType = amperage && serviceSetup ? `${amperage} ${serviceSetup}`.toLowerCase() : "";
   const isOpportunity = primary === "opportunity_found";
-  const needsAction = isOpportunity && !action;
   const needsThinking = action === "customer_thinking" && !thinkingIntent;
   const canSubmit =
     !!primary &&
@@ -330,6 +330,10 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
     );
   }
 
+  function quickSave() {
+    formRef.current?.requestSubmit();
+  }
+
   const previewStatus = primary ? deriveStatus(primary, action, thinkingIntent, soldSub, startedSub) : null;
   const STATUS_PREVIEW: Record<string, { color: string; label: string }> = {
     no_opportunity: { color: "#111827", label: "Declined / No opportunity" },
@@ -382,20 +386,34 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
         >
           <div style={{ minWidth: 0, paddingRight: "8px" }}>
             <h2 style={{ margin: "0 0 2px", fontSize: "17px", fontWeight: 700 }}>Quick investigate</h2>
-            <p style={{ margin: 0, fontSize: "13px", color: "#6b7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            <p style={{ margin: 0, fontSize: "12px", color: "#6b7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              Target: 10-20 second tagging
+            </p>
+            <p style={{ margin: "2px 0 0", fontSize: "13px", color: "#6b7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {outage.streetAddress?.split(",")[0] ?? outage.city ?? `Outage #${outage.id}`}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            style={{ background: "#f3f4f6", border: "none", borderRadius: "8px", width: "36px", height: "36px", fontSize: "20px", cursor: "pointer", color: "#374151", flexShrink: 0 }}
-          >
-            ×
-          </button>
+          <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+            {canSubmit && (
+              <button
+                type="button"
+                onClick={quickSave}
+                style={{ background: "#0d9488", color: "#fff", border: "none", borderRadius: "8px", height: "36px", padding: "0 10px", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}
+              >
+                Done
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              style={{ background: "#f3f4f6", border: "none", borderRadius: "8px", width: "36px", height: "36px", fontSize: "20px", cursor: "pointer", color: "#374151" }}
+            >
+              ×
+            </button>
+          </div>
         </div>
 
-        <form onSubmit={handleSubmit} style={{ padding: "16px 20px 24px" }}>
+        <form ref={formRef} onSubmit={handleSubmit} style={{ padding: "16px 20px 24px" }}>
           {error && (
             <div style={{ padding: "10px 12px", background: "#fee2e2", borderRadius: "8px", color: "#dc2626", fontSize: "14px", marginBottom: "12px" }}>
               {error}
@@ -436,7 +454,7 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
           {isOpportunity && (
             <>
               <p style={{ ...sectionHead, marginTop: "16px" }}>What happened?</p>
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "8px" }}>
                 <Chip selected={action === "door_hanger"} onClick={() => { setAction("door_hanger"); setSoldSub(""); setStartedSub(""); }} label="Door hanger left" />
                 <Chip selected={action === "verbal_quote"} onClick={() => { setAction("verbal_quote"); setSoldSub(""); setStartedSub(""); }} label="Verbal price quoted" />
                 <Chip selected={action === "job_sold"} onClick={() => { setAction("job_sold"); setStartedSub(""); }} label="Job sold" />
@@ -486,7 +504,7 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
               )}
 
               <p style={{ ...sectionHead, marginTop: "16px" }}>Power status</p>
-              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "6px" }}>
                 {[
                   { v: "has_power" as const, l: "Has power" },
                   { v: "no_power_on_drop" as const, l: "No power — power on line drop" },

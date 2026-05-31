@@ -2,19 +2,40 @@
  * GET /api/jobs/queue
  *
  * Unified job queue: merges outage markers + office jobs, sorted by priority.
- * Confirmed opportunities override general hunting jobs.
- * Supports: ?sort=priority|distance|value&techLat=...&techLng=...&techId=...
- * Returns estimatedMinutes (drive time) and inTerritory flag per item.
  */
 
 import { NextResponse } from "next/server";
 import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
 import { haversineMiles } from "@/lib/priority";
 
-/** Estimate drive time in minutes: straight-line × 1.3 road factor ÷ 35 mph avg */
+const ACTIVE_JOB_STATUSES = ["pending", "assigned", "in_progress"] as const;
+
+const OUTAGE_QUEUE_STATUSES = [
+  "sold",
+  "job_started",
+  "temp_power",
+  "grounding",
+  "wants_to_proceed",
+] as const;
+
+const OUTAGE_SELECT =
+  "id, lat, lng, city, county, customers, outage_type, cause, etr, status, priority_score, street_address, source, first_seen_at";
+
 function estimateDriveMinutes(miles: number | null): number | null {
   if (miles == null) return null;
   return Math.round((miles * 1.3) / 35 * 60);
+}
+
+function parseSimulationFlag(value: unknown): boolean {
+  if (value === true || value === "true") return true;
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value) === true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 export async function GET(req: Request) {
@@ -22,8 +43,7 @@ export async function GET(req: Request) {
   const sort = searchParams.get("sort") ?? "priority";
   const techLat = searchParams.get("techLat") ? parseFloat(searchParams.get("techLat")!) : null;
   const techLng = searchParams.get("techLng") ? parseFloat(searchParams.get("techLng")!) : null;
-  const techId  = searchParams.get("techId") ?? null;
-  const excludeStatus = searchParams.get("excludeStatus")?.split(",") ?? ["completed", "cancelled"];
+  const techId = searchParams.get("techId") ?? null;
 
   if (!isSupabaseConfigured) {
     return NextResponse.json({ queue: [], total: 0 });
@@ -32,57 +52,76 @@ export async function GET(req: Request) {
   try {
     const db = getAdmin();
 
-    // Check simulation mode — when active, show simulation rows instead of live rows
-    const { data: simRow } = await db
-      .from("app_settings")
-      .select("value")
-      .eq("key", "simulation_mode")
-      .maybeSingle();
-    const isSimulation = simRow?.value === true || simRow?.value === "true";
-
-    // Get active jobs (office-created); respect simulation mode
-    const jobsQuery = db
-      .from("jobs")
-      .select("*")
-      .not("status", "in", `(${excludeStatus.map((s) => `"${s}"`).join(",")})`);
-    const { data: jobs, error: jobsErr } = isSimulation
-      ? await jobsQuery.eq("is_simulation", true)
-      : await jobsQuery.eq("is_simulation", false);
-
-    if (jobsErr) return NextResponse.json({ error: jobsErr.message }, { status: 500 });
-
-    // Job queue = real dispatch work only (call-ins + sold/started/wants-to-proceed field leads).
-    // Unsold opportunities, door hangers, and utility/no-damage stay on map + Opportunities list.
-    const actionableStatuses = ["sold", "job_started", "temp_power", "grounding", "wants_to_proceed"];
-    const outagesQuery = db
-      .from("outages")
-      .select("id, lat, lng, city, county, customers, outage_type, cause, etr, status, priority_score, street_address, source, first_seen_at, lead_source")
-      .eq("is_active", true)
-      .in("status", actionableStatuses);
-    const { data: outages, error: outErr } = isSimulation
-      ? await outagesQuery.eq("is_simulation", true)
-      : await outagesQuery.eq("is_simulation", false);
-
-    if (outErr) return NextResponse.json({ error: outErr.message }, { status: 500 });
-
-    // Look up the requesting tech's territory zip codes (for in-territory flag)
-    let techTerritoryZips: string[] | null = null;
-    if (techId) {
-      const { data: techRow } = await db
-        .from("technicians")
-        .select("territory_id, territories(zip_codes)")
-        .eq("user_id", techId)
+    let isSimulation = false;
+    try {
+      const { data: simRow, error: simErr } = await db
+        .from("app_settings")
+        .select("value")
+        .eq("key", "simulation_mode")
         .maybeSingle();
-      techTerritoryZips = (techRow as any)?.territories?.zip_codes ?? null;
+      if (!simErr) isSimulation = parseSimulationFlag(simRow?.value);
+    } catch {
+      /* app_settings optional on fresh DB */
     }
 
-    /** Check if a lat/lng falls within the tech's territory (zip approximation via bounding box) */
+    let jobsQuery = db.from("jobs").select("*").in("status", [...ACTIVE_JOB_STATUSES]);
+    jobsQuery = isSimulation ? jobsQuery.eq("is_simulation", true) : jobsQuery.eq("is_simulation", false);
+
+    const { data: jobs, error: jobsErr } = await jobsQuery;
+    if (jobsErr) {
+      console.error("[jobs/queue] jobs query:", jobsErr.message);
+      return NextResponse.json({ error: jobsErr.message }, { status: 500 });
+    }
+
+    let outagesQuery = db
+      .from("outages")
+      .select(OUTAGE_SELECT)
+      .eq("is_active", true)
+      .in("status", [...OUTAGE_QUEUE_STATUSES]);
+    outagesQuery = isSimulation
+      ? outagesQuery.eq("is_simulation", true)
+      : outagesQuery.eq("is_simulation", false);
+
+    let { data: outages, error: outErr } = await outagesQuery;
+
+    if (outErr && /status|check constraint|invalid input/i.test(outErr.message)) {
+      const fallback = await db.from("outages").select(OUTAGE_SELECT).eq("is_active", true);
+      outages = fallback.data;
+      outErr = fallback.error;
+    }
+
+    if (outErr) {
+      console.error("[jobs/queue] outages query:", outErr.message);
+      return NextResponse.json(
+        {
+          error: outErr.message,
+          hint: "Run supabase/migrations/20260528130000_workflow_roles_m007.sql on your database",
+        },
+        { status: 500 }
+      );
+    }
+
+    let techTerritoryZips: string[] | null = null;
+    if (techId) {
+      const { data: techRow, error: techErr } = await db
+        .from("technicians")
+        .select("territory_id")
+        .eq("user_id", techId)
+        .maybeSingle();
+      if (!techErr && techRow?.territory_id) {
+        const { data: terr } = await db
+          .from("territories")
+          .select("zip_codes")
+          .eq("id", techRow.territory_id)
+          .maybeSingle();
+        techTerritoryZips = terr?.zip_codes ?? null;
+      }
+    }
+
     function inTerritory(_lat: number | null, _lng: number | null): boolean {
-      // Without polygon support we can't check precisely; return true when no territory set
       return techTerritoryZips == null || techTerritoryZips.length === 0;
     }
 
-    // Normalize to queue items
     type QueueItem = {
       id: string;
       type: "job" | "outage";
@@ -136,6 +175,9 @@ export async function GET(req: Request) {
     }
 
     for (const o of outages ?? []) {
+      if (!OUTAGE_QUEUE_STATUSES.includes(o.status as (typeof OUTAGE_QUEUE_STATUSES)[number])) {
+        continue;
+      }
       const dist =
         techLat != null && techLng != null && o.lat && o.lng
           ? haversineMiles(techLat, techLng, o.lat, o.lng)
@@ -163,9 +205,7 @@ export async function GET(req: Request) {
       });
     }
 
-    // Sort
     queueItems.sort((a, b) => {
-      // Confirmed opportunities always float to top
       if (a.isConfirmed && !b.isConfirmed) return -1;
       if (!a.isConfirmed && b.isConfirmed) return 1;
 
@@ -175,11 +215,18 @@ export async function GET(req: Request) {
       if (sort === "value") {
         return (b.customers ?? 0) - (a.customers ?? 0);
       }
+      if (sort === "smart") {
+        const smartA = (a.priorityScore ?? 0) - (a.distanceMiles ?? 0) * 8;
+        const smartB = (b.priorityScore ?? 0) - (b.distanceMiles ?? 0) * 8;
+        return smartB - smartA;
+      }
       return b.priorityScore - a.priorityScore;
     });
 
     return NextResponse.json({ queue: queueItems, total: queueItems.length });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Queue failed";
+    console.error("[jobs/queue]", message);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

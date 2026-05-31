@@ -1,6 +1,7 @@
 import crypto from "crypto";
+import { getJwtSecret } from "./env";
 
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-in-production";
+const JWT_SECRET = getJwtSecret();
 const JWT_EXPIRES_IN_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 export type JWTPayload = {

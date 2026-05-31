@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Loader } from "@googlemaps/js-api-loader";
+import { loadGoogleMaps } from "@/lib/google-maps";
 import InvestigationForm from "./components/InvestigationForm";
 import JobForm from "./components/JobForm";
 import JobQueue from "./components/JobQueue";
@@ -10,6 +10,10 @@ import TechPanel from "./components/TechPanel";
 import AdminPanel from "./components/AdminPanel";
 import ProfilePanel from "./components/ProfilePanel";
 import TerritoryPanel from "./components/TerritoryPanel";
+import SiteGuideDocs from "./components/SiteGuideDocs";
+import PageHelp from "./components/PageHelp";
+import Link from "next/link";
+import { STATUS_CONFIG, getStatusConfig, statusBadgeStyle, type OutageStatus } from "@/lib/outage-status";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 type Role = "office" | "tech" | "admin" | "owner";
@@ -21,20 +25,6 @@ type User = {
   phone?: string | null;
   role: Role;
 };
-
-type OutageStatus =
-  | "unvisited"
-  | "investigating"
-  | "no_opportunity"
-  | "opportunity"
-  | "door_hanger"
-  | "wants_to_proceed"
-  | "customer_thinking"
-  | "sold"
-  | "job_started"
-  | "temp_power"
-  | "grounding"
-  | "completed";
 
 type Outage = {
   id: number | string;
@@ -61,6 +51,14 @@ type Outage = {
   priorityScore?: number;
   isSimulation?: boolean;
   isNew?: boolean;
+  firstSeenAt?: string | null;
+  lastUpdatedAt?: string | null;
+  isStaleMarker?: boolean;
+  scoreBreakdown?: {
+    finalScore: number;
+    urgency: number;
+    parts: Record<string, number>;
+  };
 };
 
 type Tech = {
@@ -76,27 +74,23 @@ type Tech = {
   updatedAt?: string | null;
 };
 
-type Tab = "dashboard" | "map" | "outages" | "opportunities" | "queue" | "techs" | "territories" | "admin" | "profile";
+type BoundaryZone = {
+  id: string;
+  name: string;
+  type: "zip" | "polygon";
+  geometry?: {
+    type?: string;
+    coordinates?: number[][][];
+    properties?: { zoneType?: "territory" | "priority" | "exclusion" };
+  } | null;
+  zip_codes?: string[] | null;
+};
+
+type Tab = "dashboard" | "map" | "outages" | "opportunities" | "queue" | "techs" | "territories" | "admin" | "guide" | "profile";
 
 // ── Config ───────────────────────────────────────────────────────────────────
 const CENTER = { lat: 44.9778, lng: -93.265 };
 const RADIUS_MILES = 40;
-
-// strokeColor drives the ring/outline on the map marker
-const STATUS_CONFIG: Record<OutageStatus, { color: string; strokeColor: string; bg: string; label: string }> = {
-  unvisited:        { color: "#ffffff",  strokeColor: "#9ca3af", bg: "#f9fafb",  label: "Unvisited" },
-  investigating:    { color: "#a855f7",  strokeColor: "#7e22ce", bg: "#faf5ff",  label: "Investigating" },
-  no_opportunity:   { color: "#111827",  strokeColor: "#111827", bg: "#f3f4f6",  label: "Declined / Dead" },
-  opportunity:      { color: "#ffffff",  strokeColor: "#f97316", bg: "#fff7ed",  label: "Opportunity Found" },
-  door_hanger:      { color: "#ec4899",  strokeColor: "#be185d", bg: "#fdf2f8",  label: "Door Hanger Left" },
-  wants_to_proceed: { color: "#f97316",  strokeColor: "#22c55e", bg: "#f0fdf4",  label: "Wants to Proceed" },
-  customer_thinking:{ color: "#9ca3af",  strokeColor: "#6b7280", bg: "#f3f4f6",  label: "Customer Thinking" },
-  sold:             { color: "#ffffff",  strokeColor: "#22c55e", bg: "#f0fdf4",  label: "Job Sold" },
-  job_started:      { color: "#22c55e",  strokeColor: "#16a34a", bg: "#ecfdf5",  label: "Job Started" },
-  temp_power:       { color: "#facc15",  strokeColor: "#f97316", bg: "#fffbeb",  label: "Temp Power Installed" },
-  grounding:        { color: "#facc15",  strokeColor: "#22c55e", bg: "#f0fdf4",  label: "Return for Grounding" },
-  completed:        { color: "#2563eb",  strokeColor: "#1d4ed8", bg: "#eff6ff",  label: "Completed" },
-};
 
 const TECH_STATUS_COLOR = {
   available: "#10b981",
@@ -111,6 +105,7 @@ export default function Page() {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [preAuthScreen, setPreAuthScreen] = useState<"landing" | "auth">("landing");
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [email, setEmail] = useState("");
@@ -135,6 +130,9 @@ export default function Page() {
   const [activeSources, setActiveSources] = useState<string[]>(["xcel"]);
   const [connexusEnabled, setConnexusEnabled] = useState(false);
   const [fetchIntervalMins, setFetchIntervalMins] = useState(5);
+  const [stormPhase, setStormPhase] = useState<"phase_1" | "phase_2" | "phase_3">("phase_1");
+  const [tempOutMode, setTempOutMode] = useState(false);
+  const [activeCallsInQueue, setActiveCallsInQueue] = useState(0);
 
   // Manual test outage state (simulation mode map-click)
   const [showManualOutageForm, setShowManualOutageForm] = useState(false);
@@ -150,12 +148,17 @@ export default function Page() {
 
   // Filters
   const [filterStatus, setFilterStatus] = useState<OutageStatus | "all">("all");
+  const [zones, setZones] = useState<BoundaryZone[]>([]);
 
   // Map refs
   const mapRef = useRef<HTMLDivElement>(null);
   const mapObj = useRef<google.maps.Map | null>(null);
   const markersRef = useRef<google.maps.Marker[]>([]);
   const techMarkersRef = useRef<google.maps.Marker[]>([]);
+  const techMarkerByUserRef = useRef<Record<string, google.maps.Marker>>({});
+  const techAnimByUserRef = useRef<Record<string, number>>({});
+  const techDataByUserRef = useRef<Record<string, Tech>>({});
+  const zonePolygonsRef = useRef<google.maps.Polygon[]>([]);
   const infoWindowRef = useRef<google.maps.InfoWindow | null>(null);
   const routeLineRef = useRef<google.maps.Polyline | null>(null);
   // navTargetRef holds the coordinates + user location; navVersion counter triggers the effect.
@@ -185,6 +188,7 @@ export default function Page() {
   const [reportCustomerEmail, setReportCustomerEmail] = useState("");
   const [hideCompletedOnMap, setHideCompletedOnMap] = useState(true);
   const [hideDeclinedOnMap, setHideDeclinedOnMap] = useState(true);
+  const [showStaleOnMap, setShowStaleOnMap] = useState(true);
   const [reportAddressEdit, setReportAddressEdit] = useState("");
   const [reportStreet, setReportStreet] = useState("");
   const [reportCity, setReportCity] = useState("");
@@ -256,6 +260,9 @@ export default function Page() {
           priorityScore: attrs.priorityScore ?? f.priorityScore ?? 0,
           isSimulation: data.isSimulation ?? false,
           isNew: attrs.isNew ?? f.isNew ?? false,
+          firstSeenAt: attrs.firstSeenAt ?? f.firstSeenAt ?? null,
+          lastUpdatedAt: attrs.lastUpdatedAt ?? f.lastUpdatedAt ?? null,
+          isStaleMarker: attrs.isStaleMarker ?? f.isStaleMarker ?? false,
         };
       }).filter(Boolean) as Outage[];
 
@@ -279,6 +286,18 @@ export default function Page() {
     } catch {}
   }, [token]);
 
+  const fetchZones = useCallback(async () => {
+    try {
+      const res = await fetch("/api/territories", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const data = await res.json();
+      setZones(data.territories ?? []);
+    } catch {
+      setZones([]);
+    }
+  }, [token]);
+
   // ── Auto-refresh polling ─────────────────────────────────────────────────
   useEffect(() => {
     if (!user) return;
@@ -290,10 +309,19 @@ export default function Page() {
     return () => clearInterval(id);
   }, [user, fetchIntervalMins, fetchOutages, fetchTechs]);
 
+  // Real-time tech refresh every 30s for dispatch visibility.
+  useEffect(() => {
+    if (!user) return;
+    fetchTechs();
+    const id = setInterval(() => fetchTechs(), 30_000);
+    return () => clearInterval(id);
+  }, [user, fetchTechs]);
+
   useEffect(() => {
     if (!user) return;
     fetchOutages();
     fetchTechs();
+    fetchZones();
     // Update own location for techs
     if (user.role === "tech" && navigator.geolocation) {
       navigator.geolocation.getCurrentPosition((pos) => {
@@ -308,7 +336,73 @@ export default function Page() {
         }
       });
     }
-  }, [user]);
+  }, [user, fetchOutages, fetchTechs, fetchZones]);
+
+  // Tech GPS heartbeat every 30s so office sees near-live movement.
+  useEffect(() => {
+    if (!user || user.role !== "tech" || !token || !navigator.geolocation) return;
+    let cancelled = false;
+    let lastSentAt = 0;
+    const updateLocation = () => {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          if (cancelled) return;
+          const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          setUserLocation(loc);
+          const now = Date.now();
+          if (now - lastSentAt < 28_000) return;
+          lastSentAt = now;
+          fetch("/api/techs", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ lat: loc.lat, lng: loc.lng }),
+          }).catch(() => {});
+          fetch("/api/jobs/eta", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ lat: loc.lat, lng: loc.lng }),
+          }).catch(() => {});
+        },
+        () => {},
+        { enableHighAccuracy: true, maximumAge: 10_000, timeout: 10_000 }
+      );
+    };
+    updateLocation();
+    const id = setInterval(updateLocation, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [user?.id, user?.role, token]);
+
+  // Load global app settings so every role sees current storm mode.
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/admin", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        if (!res.ok || cancelled) return;
+        const s = data?.settings ?? {};
+        if (Array.isArray(s.active_sources)) {
+          setActiveSources(s.active_sources);
+          setConnexusEnabled(s.active_sources.includes("connexus"));
+        }
+        if (typeof s.simulation_mode === "boolean") setIsSimMode(s.simulation_mode);
+        if (typeof s.fetch_interval_minutes === "number") setFetchIntervalMins(s.fetch_interval_minutes);
+        if (s.storm_phase === "phase_1" || s.storm_phase === "phase_2" || s.storm_phase === "phase_3") {
+          setStormPhase(s.storm_phase);
+        }
+        if (typeof s.temp_out_mode === "boolean") setTempOutMode(s.temp_out_mode);
+      } catch {
+        // non-fatal in field mode
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [token]);
 
   // ── Map init — only while Live Map tab is visible ───────────────────────
   // Google Maps often renders a permanent blank canvas if `new Map()` runs while
@@ -342,8 +436,7 @@ export default function Page() {
         const key = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
         if (!key) { setError("Missing Google Maps API key"); return; }
 
-        const loader = new Loader({ apiKey: key, version: "weekly", libraries: ["marker", "geocoding"] });
-        await loader.load();
+        await loadGoogleMaps();
         if (cancelled || !mapRef.current || mapObj.current) return;
 
         const map = new google.maps.Map(mapRef.current, {
@@ -422,7 +515,12 @@ export default function Page() {
   useEffect(() => {
     if (!mapObj.current || !mapReady) return;
     placeOutageMarkers(outages);
-  }, [outages, mapReady, hideCompletedOnMap, hideDeclinedOnMap]);
+  }, [outages, mapReady, hideCompletedOnMap, hideDeclinedOnMap, showStaleOnMap]);
+
+  useEffect(() => {
+    if (!mapObj.current || !mapReady) return;
+    placeZonePolygons(zones);
+  }, [zones, mapReady]);
 
   // ── Sync tech markers ────────────────────────────────────────────────────
   useEffect(() => {
@@ -512,12 +610,48 @@ export default function Page() {
   }, [user, fetchIntervalMins, fetchOutages]);
 
   // ── Called by AdminPanel after saving settings ────────────────────────────
-  function handleSettingsChanged(sources: string[], simMode: boolean) {
+  function handleSettingsChanged(
+    sources: string[],
+    simMode: boolean,
+    stormOps?: {
+      stormPhase: "phase_1" | "phase_2" | "phase_3";
+      tempOutMode: boolean;
+      fetchIntervalMinutes: number;
+    }
+  ) {
     setActiveSources(sources);                    // triggers the useEffect above
     setConnexusEnabled(sources.includes("connexus"));
     setIsSimMode(simMode);
+    if (stormOps) {
+      setStormPhase(stormOps.stormPhase);
+      setTempOutMode(stormOps.tempOutMode);
+      setFetchIntervalMins(stormOps.fetchIntervalMinutes);
+    }
     // No setTimeout needed — the activeSources useEffect handles the refetch
   }
+
+  // Keep a lightweight queue count for office storm-phase dashboard.
+  useEffect(() => {
+    if (!token || !user) return;
+    let cancelled = false;
+    const loadQueueCount = async () => {
+      try {
+        const res = await fetch("/api/jobs/queue", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        if (!cancelled) setActiveCallsInQueue(Number(data?.total ?? 0));
+      } catch {
+        if (!cancelled) setActiveCallsInQueue(0);
+      }
+    };
+    loadQueueCount();
+    const id = setInterval(loadQueueCount, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [token, user, activeTab, stormPhase, tempOutMode]);
 
   // ── LocalStorage visit fallback ──────────────────────────────────────────
   function loadSavedVisits(): Record<string, Partial<Outage>> {
@@ -553,6 +687,65 @@ export default function Page() {
     return google.maps.SymbolPath.CIRCLE;
   }
 
+  function zoneTypeOf(z: BoundaryZone): "territory" | "priority" | "exclusion" {
+    const t = z.geometry?.properties?.zoneType;
+    if (t === "priority" || t === "exclusion") return t;
+    return "territory";
+  }
+
+  function pointInPolygon(lat: number, lng: number, polygonRing: number[][]): boolean {
+    // polygonRing shape: [[lng, lat], ...]
+    let inside = false;
+    for (let i = 0, j = polygonRing.length - 1; i < polygonRing.length; j = i++) {
+      const xi = polygonRing[i][0];
+      const yi = polygonRing[i][1];
+      const xj = polygonRing[j][0];
+      const yj = polygonRing[j][1];
+      const intersects = ((yi > lat) !== (yj > lat))
+        && (lng < ((xj - xi) * (lat - yi)) / ((yj - yi) || Number.EPSILON) + xi);
+      if (intersects) inside = !inside;
+    }
+    return inside;
+  }
+
+  function isInZone(outage: Outage, zone: BoundaryZone): boolean {
+    const ring = zone.geometry?.coordinates?.[0];
+    if (!ring || ring.length < 3) return false;
+    return pointInPolygon(outage.lat, outage.lng, ring);
+  }
+
+  function zoneColor(kind: "territory" | "priority" | "exclusion"): string {
+    if (kind === "exclusion") return "#ef4444";
+    if (kind === "priority") return "#f59e0b";
+    return "#0d9488";
+  }
+
+  function placeZonePolygons(data: BoundaryZone[]) {
+    if (typeof google === "undefined" || !mapObj.current) return;
+    zonePolygonsRef.current.forEach((p) => p.setMap(null));
+    zonePolygonsRef.current = [];
+
+    data.forEach((z) => {
+      if (z.type !== "polygon") return;
+      const ring = z.geometry?.coordinates?.[0];
+      if (!ring || ring.length < 3) return;
+      const kind = zoneTypeOf(z);
+      const color = zoneColor(kind);
+      const paths = ring.map(([plng, plat]) => ({ lat: plat, lng: plng }));
+      const poly = new google.maps.Polygon({
+        map: mapObj.current!,
+        paths,
+        strokeColor: color,
+        strokeOpacity: 0.9,
+        strokeWeight: 2,
+        fillColor: color,
+        fillOpacity: kind === "exclusion" ? 0.12 : kind === "priority" ? 0.08 : 0.06,
+        clickable: false,
+      });
+      zonePolygonsRef.current.push(poly);
+    });
+  }
+
   // ── Outage markers ───────────────────────────────────────────────────────
   function placeOutageMarkers(data: Outage[]) {
     if (typeof google === "undefined" || !mapObj.current) return;
@@ -562,25 +755,31 @@ export default function Page() {
     const visible = data.filter((o) => {
       if (hideCompletedOnMap && o.status === "completed") return false;
       if (hideDeclinedOnMap && o.status === "no_opportunity") return false;
+      if (!showStaleOnMap && o.isStaleMarker) return false;
+      const excluded = zones.some((z) => z.type === "polygon" && zoneTypeOf(z) === "exclusion" && isInZone(o, z));
+      if (excluded) return false;
       return true;
     });
 
     visible.forEach((outage) => {
-      const cfg = STATUS_CONFIG[outage.status as OutageStatus] ?? STATUS_CONFIG.unvisited;
+      const cfg = getStatusConfig(outage.status);
 
       // Honey hole: opportunity with >1 customer → bigger marker + label
       const isHoneyHole =
         (outage.status === "opportunity" || outage.status === "wants_to_proceed") &&
         outage.customers > 1;
-      const baseSize = isHoneyHole
+      const inPriorityZone = zones.some((z) => z.type === "polygon" && zoneTypeOf(z) === "priority" && isInZone(outage, z));
+      const baseSizeRaw = isHoneyHole
         ? Math.min(22, Math.max(14, 12 + Math.sqrt(outage.customers)))
         : 10;
+      const baseSize = inPriorityZone ? baseSizeRaw + 2 : baseSizeRaw;
 
       // New (unseen) ArcGIS dot: white fill with red outline, high z-index
       const isNewArcGIS = outage.isNew === true && (outage.source === "xcel" || outage.source === "connexus" || outage.source === "arcgis");
 
       const fillColor = isNewArcGIS ? "#ffffff" : cfg.color;
-      const strokeColor = isNewArcGIS ? "#dc2626" : cfg.strokeColor;
+      const stale = outage.isStaleMarker === true;
+      const strokeColor = stale ? "#9ca3af" : (isNewArcGIS ? "#dc2626" : cfg.strokeColor);
       const strokeWeight = isNewArcGIS ? 4 : (isHoneyHole ? 4 : 3);
 
       const marker = new google.maps.Marker({
@@ -590,7 +789,7 @@ export default function Page() {
         icon: {
           path: markerPathForOutage(outage),
           fillColor,
-          fillOpacity: 1,
+          fillOpacity: stale ? 0.35 : 1,
           strokeColor,
           strokeWeight,
           scale: baseSize,
@@ -598,7 +797,7 @@ export default function Page() {
         label: isHoneyHole
           ? { text: String(outage.customers), color: "#fff", fontSize: "10px", fontWeight: "700" }
           : undefined,
-        zIndex: isNewArcGIS ? 9999 : (outage.priorityScore ?? 0),
+        zIndex: isNewArcGIS ? 9999 : ((outage.priorityScore ?? 0) + (inPriorityZone ? 1000 : 0)),
       });
 
       marker.addListener("click", () => {
@@ -615,62 +814,107 @@ export default function Page() {
 
   // ── Tech markers (square with initials) ──────────────────────────────────
   function placeTechMarkers(data: Tech[]) {
-    techMarkersRef.current.forEach((m) => m.setMap(null));
-    techMarkersRef.current = [];
+    const vehiclePath = "M -1.2,-0.4 L 0.4,-0.4 L 0.8,0 L 1.2,0 L 1.2,0.6 L -1.2,0.6 Z";
+    const liveIds = new Set<string>();
 
     data.forEach((tech) => {
       if (!tech.lat || !tech.lng) return;
+      const key = tech.userId || tech.id;
+      liveIds.add(key);
+      techDataByUserRef.current[key] = tech;
+
       const color = TECH_STATUS_COLOR[tech.status] ?? "#6b7280";
       const initials = tech.name
         .split(" ")
         .map((w: string) => w[0]?.toUpperCase() ?? "")
         .slice(0, 2)
         .join("");
+      const icon: google.maps.Symbol = {
+        path: vehiclePath,
+        fillColor: color,
+        fillOpacity: 1,
+        strokeColor: "#fff",
+        strokeWeight: 2,
+        scale: 14,
+      };
 
-      // Simple truck-like marker silhouette
-      const vehiclePath = "M -1.2,-0.4 L 0.4,-0.4 L 0.8,0 L 1.2,0 L 1.2,0.6 L -1.2,0.6 Z";
-
-      const marker = new google.maps.Marker({
-        map: mapObj.current!,
-        position: { lat: tech.lat, lng: tech.lng },
-        title: `${tech.name} – ${tech.status}`,
-        icon: {
-          path: vehiclePath,
-          fillColor: color,
-          fillOpacity: 1,
-          strokeColor: "#fff",
-          strokeWeight: 2,
-          scale: 14,
-        },
-        label: { text: initials, color: "#fff", fontSize: "10px", fontWeight: "700" },
-        zIndex: 1000,
-      });
-
-      marker.addListener("click", () => {
-        if (!infoWindowRef.current || !mapObj.current) return;
-        const statusLabel = tech.status.charAt(0).toUpperCase() + tech.status.slice(1);
-        const lastUpdate = tech.updatedAt ? new Date(tech.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Unknown";
-        const color2 = TECH_STATUS_COLOR[tech.status] ?? "#6b7280";
-        infoWindowRef.current.setContent(`
-          <div style="font-family:system-ui;padding:10px;min-width:200px">
-            <div style="font-weight:700;font-size:14px;margin-bottom:4px">${tech.name}</div>
-            <div style="font-size:12px;color:#6b7280;margin-bottom:6px">${tech.email ?? ""}</div>
-            <span style="display:inline-block;padding:3px 10px;background:${color2}22;color:${color2};border-radius:12px;font-size:12px;font-weight:600">${statusLabel}</span>
-            <div style="font-size:12px;margin-top:6px;color:#374151"><b>Current job:</b> ${tech.currentJobName ?? "None"}</div>
-            <div style="font-size:12px;margin-top:4px;color:#6b7280"><b>Last update:</b> ${lastUpdate}</div>
-            ${tech.phone ? `<div style="font-size:12px;margin-top:6px;color:#374151">${tech.phone}</div>` : ""}
-          </div>`);
-        infoWindowRef.current.open({ map: mapObj.current, anchor: marker });
-      });
-
-      techMarkersRef.current.push(marker);
+      const existing = techMarkerByUserRef.current[key];
+      if (!existing) {
+        const marker = new google.maps.Marker({
+          map: mapObj.current!,
+          position: { lat: tech.lat, lng: tech.lng },
+          title: `${tech.name} – ${tech.status}`,
+          icon,
+          label: { text: initials, color: "#fff", fontSize: "10px", fontWeight: "700" },
+          zIndex: 1000,
+        });
+        marker.addListener("click", () => {
+          if (!infoWindowRef.current || !mapObj.current) return;
+          const cur = techDataByUserRef.current[key];
+          if (!cur) return;
+          const statusLabel = cur.status.charAt(0).toUpperCase() + cur.status.slice(1);
+          const lastUpdate = cur.updatedAt ? new Date(cur.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Unknown";
+          const color2 = TECH_STATUS_COLOR[cur.status] ?? "#6b7280";
+          infoWindowRef.current.setContent(`
+            <div style="font-family:system-ui;padding:10px;min-width:200px">
+              <div style="font-weight:700;font-size:14px;margin-bottom:4px">${cur.name}</div>
+              <div style="font-size:12px;color:#6b7280;margin-bottom:6px">${cur.email ?? ""}</div>
+              <span style="display:inline-block;padding:3px 10px;background:${color2}22;color:${color2};border-radius:12px;font-size:12px;font-weight:600">${statusLabel}</span>
+              <div style="font-size:12px;margin-top:6px;color:#374151"><b>Current job:</b> ${cur.currentJobName ?? "None"}</div>
+              <div style="font-size:12px;margin-top:4px;color:#6b7280"><b>Last update:</b> ${lastUpdate}</div>
+              ${cur.phone ? `<div style="font-size:12px;margin-top:6px;color:#374151">${cur.phone}</div>` : ""}
+            </div>`);
+          infoWindowRef.current.open({ map: mapObj.current, anchor: marker });
+        });
+        techMarkerByUserRef.current[key] = marker;
+      } else {
+        existing.setTitle(`${tech.name} – ${tech.status}`);
+        existing.setIcon(icon);
+        existing.setLabel({ text: initials, color: "#fff", fontSize: "10px", fontWeight: "700" });
+        const from = existing.getPosition();
+        const fromLat = from?.lat() ?? tech.lat;
+        const fromLng = from?.lng() ?? tech.lng;
+        const toLat = tech.lat;
+        const toLng = tech.lng;
+        const delta = Math.abs(fromLat - toLat) + Math.abs(fromLng - toLng);
+        if (delta > 0.00002) {
+          const prior = techAnimByUserRef.current[key];
+          if (prior) cancelAnimationFrame(prior);
+          const start = performance.now();
+          const duration = 900;
+          const step = (ts: number) => {
+            const t = Math.min(1, (ts - start) / duration);
+            const eased = 1 - Math.pow(1 - t, 3);
+            existing.setPosition({
+              lat: fromLat + (toLat - fromLat) * eased,
+              lng: fromLng + (toLng - fromLng) * eased,
+            });
+            if (t < 1) techAnimByUserRef.current[key] = requestAnimationFrame(step);
+          };
+          techAnimByUserRef.current[key] = requestAnimationFrame(step);
+        }
+      }
     });
+
+    // Remove markers for techs that are offline/not returned anymore.
+    Object.keys(techMarkerByUserRef.current).forEach((key) => {
+      if (liveIds.has(key)) return;
+      const marker = techMarkerByUserRef.current[key];
+      if (marker) marker.setMap(null);
+      delete techMarkerByUserRef.current[key];
+      delete techDataByUserRef.current[key];
+      const prior = techAnimByUserRef.current[key];
+      if (prior) cancelAnimationFrame(prior);
+      delete techAnimByUserRef.current[key];
+    });
+
+    techMarkersRef.current = Object.values(techMarkerByUserRef.current);
   }
 
   // ── Info window ──────────────────────────────────────────────────────────
   function showInfoWindow(outage: Outage, marker: google.maps.Marker) {
     if (!infoWindowRef.current || !mapObj.current) return;
-    const cfg = STATUS_CONFIG[outage.status];
+    const cfg = getStatusConfig(outage.status);
     const row = (label: string, value: string | number | null | undefined) =>
       value != null && value !== ""
         ? `<div style="font-size:12px;color:#374151;margin-bottom:3px"><b>${label}:</b> ${value}</div>`
@@ -697,7 +941,7 @@ export default function Page() {
           ${row("ETR", outage.etr)}
           ${row("Source", outage.source)}
           ${row("Priority score", Math.round(outage.priorityScore ?? 0))}
-          <div style="font-size:12px;color:#374151;margin-bottom:3px"><b>Status:</b> <span style="color:${cfg.color};font-weight:600">${cfg.label}</span></div>
+          <div style="font-size:12px;color:#374151;margin-bottom:3px"><b>Status:</b> <span style="color:${cfg.badgeText};font-weight:600">${cfg.label}</span></div>
         </div>
         <div style="display:flex;gap:6px">
           <a href="https://www.google.com/maps/dir/?api=1&destination=${outage.lat},${outage.lng}"
@@ -821,6 +1065,28 @@ export default function Page() {
     );
   }
 
+  async function removeMarker(id: number | string) {
+    if (!token) return;
+    const ok = window.confirm("Remove this dot from active map?");
+    if (!ok) return;
+    try {
+      const res = await fetch("/api/outages/cleanup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: "deactivate_one", id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed");
+      setOutages((prev) => prev.filter((o) => String(o.id) !== String(id)));
+      if (detailOutage && String(detailOutage.id) === String(id)) {
+        setShowDetail(false);
+        setDetailOutage(null);
+      }
+    } catch (err: any) {
+      alert(err.message || "Could not remove marker");
+    }
+  }
+
   // ── Auth handlers ────────────────────────────────────────────────────────
   async function handleAuth(e: React.FormEvent) {
     e.preventDefault();
@@ -852,6 +1118,7 @@ export default function Page() {
   function handleLogout() {
     setUser(null);
     setToken(null);
+    setPreAuthScreen("landing");
     localStorage.removeItem("fieldmap_user");
     localStorage.removeItem("fieldmap_token");
     setOutages([]);
@@ -1103,6 +1370,7 @@ export default function Page() {
     { id: "techs",       label: "Techs",       icon: "M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75", officeOnly: true },
     { id: "territories", label: "Territories", icon: "M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7", officeOnly: true },
     { id: "admin",       label: "Admin",       icon: "M12 1l3 6 6.5 1-4.75 4.5 1 6.5-5.75-3-5.75 3 1-6.5L2 8l6.5-1z", adminOnly: false, officeOnly: true },
+    { id: "guide",       label: "Guide",       icon: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" },
     { id: "profile",   label: "Profile",   icon: "M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2M12 11a4 4 0 100-8 4 4 0 000 8z" },
   ];
 
@@ -1114,6 +1382,39 @@ export default function Page() {
 
   // ── Auth screen ──────────────────────────────────────────────────────────
   if (!user) {
+    if (preAuthScreen === "landing") {
+      return (
+        <div style={{ minHeight: "100vh", padding: "32px 20px", background: "linear-gradient(135deg, #0f172a 0%, #0d9488 55%, #0891b2 100%)", fontFamily: "system-ui", color: "#fff" }}>
+          <div style={{ maxWidth: "980px", margin: "0 auto" }}>
+            <h1 style={{ margin: 0, fontSize: "36px", fontWeight: 800 }}>Storm Response Platform</h1>
+            <p style={{ margin: "10px 0 24px", maxWidth: "760px", fontSize: "16px", opacity: 0.95 }}>
+              Fast field investigations, clear dispatch lists, routing optimization, and office controls for high-volume storm operations.
+            </p>
+            <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginBottom: "22px" }}>
+              <Link href="/docs" style={{ padding: "11px 16px", background: "#fff", color: "#0f766e", border: "none", borderRadius: "8px", fontWeight: 700, cursor: "pointer", textDecoration: "none", display: "inline-block" }}>
+                Read Documentation
+              </Link>
+              <Link href="/docs/guide" style={{ padding: "11px 16px", background: "rgba(255,255,255,0.18)", color: "#fff", border: "1px solid rgba(255,255,255,0.4)", borderRadius: "8px", fontWeight: 700, cursor: "pointer", textDecoration: "none", display: "inline-block" }}>
+                Site Navigation Guide
+              </Link>
+              <button onClick={() => setPreAuthScreen("auth")} style={{ padding: "11px 16px", background: "rgba(255,255,255,0.18)", color: "#fff", border: "1px solid rgba(255,255,255,0.4)", borderRadius: "8px", fontWeight: 700, cursor: "pointer" }}>
+                Continue to Login
+              </button>
+            </div>
+            <div style={{ background: "rgba(255,255,255,0.14)", border: "1px solid rgba(255,255,255,0.3)", borderRadius: "12px", padding: "16px" }}>
+              <div style={{ fontSize: "12px", fontWeight: 700, letterSpacing: "0.7px", textTransform: "uppercase", marginBottom: "8px" }}>What this platform does</div>
+              <ul style={{ margin: 0, paddingLeft: "18px", lineHeight: 1.7 }}>
+                <li>Separates Outages, Opportunities, and Job Queue</li>
+                <li>Supports multi-stop routing, smart dispatch, and cluster targeting</li>
+                <li>Tracks tech GPS in near real-time with ETA and auto-arrival updates</li>
+                <li>Includes storm phase, temp-out mode, cleanup, exports, and admin controls</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, #0d9488 0%, #0891b2 100%)", fontFamily: "system-ui" }}>
         <div style={{ background: "#fff", padding: "48px", borderRadius: "16px", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.3)", width: "100%", maxWidth: "420px" }}>
@@ -1125,6 +1426,12 @@ export default function Page() {
             </div>
             <h1 style={{ margin: "0 0 6px", fontSize: "22px", fontWeight: 700, color: "#1f2937" }}>Outage Field Map</h1>
             <p style={{ margin: 0, fontSize: "13px", color: "#6b7280" }}>Xcel + Connexus · Dispatch · Routing</p>
+            <button
+              onClick={() => setPreAuthScreen("landing")}
+              style={{ marginTop: "10px", border: "none", background: "transparent", color: "#0d9488", cursor: "pointer", fontSize: "12px", fontWeight: 700 }}
+            >
+              ← Back to landing
+            </button>
           </div>
 
           {authError && (
@@ -1451,11 +1758,33 @@ export default function Page() {
           </div>
         )}
 
+        {(stormPhase || tempOutMode) && (
+          <div style={{ padding: "10px 20px", background: tempOutMode ? "#fff7ed" : "#ecfeff", borderBottom: "1px solid #e5e7eb", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <span style={{ fontSize: "12px", fontWeight: 700, color: tempOutMode ? "#9a3412" : "#155e75" }}>
+                {stormPhase === "phase_1" ? "PHASE 1 — HUNTING MODE" : stormPhase === "phase_2" ? "PHASE 2 — CAPTURE / DISPATCH MODE" : "PHASE 3 — CLEANUP MODE"}
+              </span>
+              {tempOutMode && (
+                <span style={{ fontSize: "11px", fontWeight: 700, color: "#fff", background: "#f97316", borderRadius: "999px", padding: "2px 8px" }}>
+                  TEMP-OUT ON
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: "11px", color: "#374151", display: "flex", gap: "10px", flexWrap: "wrap" }}>
+              <span>Active calls: <b>{activeCallsInQueue}</b></span>
+              <span>Sold: <b>{stats.sold}</b></span>
+              <span>Confirmed opps: <b>{stats.opportunity + stats.customerThinking + stats.doorHanger}</b></span>
+              <span>Temp-out pending return: <b>{stats.tempPower + stats.grounding}</b></span>
+            </div>
+          </div>
+        )}
+
         {/* Body */}
         <div style={{ flex: 1, overflow: "auto", padding: isMobile ? "12px" : "20px 24px" }}>
           {/* ── DASHBOARD ─────────────────────────────────────────────── */}
           {activeTab === "dashboard" && (
             <div>
+              <PageHelp pageId="dashboard" />
               {/* Stat Cards */}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: "14px", marginBottom: "24px" }}>
                 {[
@@ -1463,6 +1792,10 @@ export default function Page() {
                   { label: "Unvisited",         value: stats.unvisited,      color: "#9ca3af", bg: "#f9fafb" },
                   { label: "Investigating",     value: stats.investigating,  color: "#3b82f6", bg: "#eff6ff" },
                   { label: "Opportunities",     value: stats.opportunity + stats.wantsToProceed, color: "#f97316", bg: "#fff7ed" },
+                  { label: "Active Calls in Queue", value: activeCallsInQueue, color: "#2563eb", bg: "#eff6ff" },
+                  { label: "Sold Jobs",         value: stats.sold,           color: "#16a34a", bg: "#f0fdf4" },
+                  { label: "Confirmed Opportunities", value: stats.opportunity + stats.customerThinking + stats.doorHanger, color: "#ea580c", bg: "#fff7ed" },
+                  { label: "Temp-Out Pending Return", value: stats.tempPower + stats.grounding, color: "#ca8a04", bg: "#fffbeb" },
                   { label: "Door Hangers",      value: stats.doorHanger,     color: "#eab308", bg: "#fefce8" },
                   { label: "Follow-Up Needed",  value: stats.tempPower + stats.grounding, color: "#22c55e", bg: "#f0fdf4" },
                   { label: "Completed",         value: stats.completed,      color: "#10b981", bg: "#ecfdf5" },
@@ -1508,7 +1841,7 @@ export default function Page() {
                     </thead>
                     <tbody>
                       {[...outages].sort((a, b) => (b.priorityScore ?? 0) - (a.priorityScore ?? 0)).slice(0, 10).map((o) => {
-                        const cfg = STATUS_CONFIG[o.status];
+                        const cfg = getStatusConfig(o.status);
                         return (
                           <tr key={o.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
                             <td style={{ padding: "12px 16px" }}>
@@ -1516,7 +1849,7 @@ export default function Page() {
                               <div style={{ fontSize: "11px", color: "#9ca3af" }}>{o.streetAddress ?? "Address unavailable"}</div>
                             </td>
                             <td style={{ padding: "12px 16px" }}>
-                              <span style={{ padding: "3px 10px", background: cfg.bg, color: cfg.color, borderRadius: "20px", fontSize: "11px", fontWeight: 600 }}>{cfg.label}</span>
+                              <span style={statusBadgeStyle(cfg)}>{cfg.label}</span>
                             </td>
                             <td style={{ padding: "12px 16px", textAlign: "center", fontWeight: 600, color: "#1f2937", fontSize: "13px" }}>{o.customers}</td>
                             <td style={{ padding: "12px 16px", fontSize: "11px", color: "#6b7280", textTransform: "uppercase" }}>{o.source ?? "xcel"}</td>
@@ -1525,6 +1858,14 @@ export default function Page() {
                               <button onClick={() => { setDetailOutage(o); setShowDetail(true); }} style={{ padding: "5px 10px", background: "#0d9488", color: "#fff", border: "none", borderRadius: "6px", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}>
                                 View
                               </button>
+                              {isOffice && (
+                                <button
+                                  onClick={() => removeMarker(o.id)}
+                                  style={{ marginLeft: "6px", padding: "5px 10px", background: "#ef4444", color: "#fff", border: "none", borderRadius: "6px", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}
+                                >
+                                  Remove
+                                </button>
+                              )}
                             </td>
                           </tr>
                         );
@@ -1535,6 +1876,8 @@ export default function Page() {
               </div>
             </div>
           )}
+
+          {activeTab === "map" && <PageHelp pageId="map" />}
 
           {/* ── MAP — always mounted so the Google Maps instance is never detached ── */}
           <div style={{ display: activeTab === "map" ? "block" : "none" }}>
@@ -1572,6 +1915,10 @@ export default function Page() {
                     <input type="checkbox" checked={hideDeclinedOnMap} onChange={(e) => setHideDeclinedOnMap(e.target.checked)} />
                     Hide declined
                   </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "#374151", cursor: "pointer", marginTop: "4px" }}>
+                    <input type="checkbox" checked={showStaleOnMap} onChange={(e) => setShowStaleOnMap(e.target.checked)} />
+                    Show stale dots
+                  </label>
                 </div>
                 <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "4px", paddingTop: "6px", fontWeight: 700, color: "#1f2937", marginBottom: "4px", fontSize: "12px" }}>
                   Status / Color
@@ -1593,6 +1940,9 @@ export default function Page() {
                 ))}
                 <div style={{ fontSize: "10px", color: "#9ca3af", marginTop: "4px", marginBottom: "6px" }}>
                   Larger orange = honey hole (multi-customer)
+                </div>
+                <div style={{ fontSize: "10px", color: "#9ca3af", marginBottom: "6px" }}>
+                  Faded marker = stale (older storm carry-over)
                 </div>
                 <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "4px", paddingTop: "6px", fontWeight: 700, color: "#1f2937", marginBottom: "4px", fontSize: "12px" }}>Technicians</div>
                 {(["available", "working", "paused"] as const).map((s) => (
@@ -1658,6 +2008,7 @@ export default function Page() {
           {/* ── OUTAGES LIST ───────────────────────────────────────────── */}
           {activeTab === "outages" && (
             <div>
+              <PageHelp pageId="outages" />
               {/* Filters + CSV export */}
               <div style={{ background: "#fff", borderRadius: "10px", padding: "14px 18px", marginBottom: "16px", display: "flex", gap: "16px", alignItems: "center", flexWrap: "wrap", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
                 <span style={{ fontSize: "13px", fontWeight: 600, color: "#374151" }}>Filter:</span>
@@ -1683,15 +2034,15 @@ export default function Page() {
                   /* ── Mobile card list ── */
                   <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                     {filteredOutages.map((o) => {
-                      const cfg = STATUS_CONFIG[o.status];
+                      const cfg = getStatusConfig(o.status);
                       return (
-                        <div key={o.id} style={{ background: "#fff", borderRadius: "10px", padding: "14px", boxShadow: "0 1px 3px rgba(0,0,0,0.07)", borderLeft: `4px solid ${cfg.color}` }}>
+                        <div key={o.id} style={{ background: "#fff", borderRadius: "10px", padding: "14px", boxShadow: "0 1px 3px rgba(0,0,0,0.07)", borderLeft: `4px solid ${cfg.strokeColor}` }}>
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px" }}>
                             <div style={{ minWidth: 0, flex: 1 }}>
                               <div style={{ fontWeight: 600, color: "#1f2937", fontSize: "14px", marginBottom: "2px" }}>{o.streetAddress?.split(",")[0] ?? o.city ?? `Outage #${o.id}`}</div>
                               <div style={{ fontSize: "11px", color: "#9ca3af" }}>{o.county} · {o.customers} customers · Score {Math.round(o.priorityScore ?? 0)}</div>
                             </div>
-                            <span style={{ padding: "3px 10px", background: cfg.bg, color: cfg.color, borderRadius: "20px", fontSize: "11px", fontWeight: 600, flexShrink: 0, marginLeft: "8px" }}>{cfg.label}</span>
+                            <span style={{ ...statusBadgeStyle(cfg), flexShrink: 0, marginLeft: "8px" }}>{cfg.label}</span>
                           </div>
                           <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
                             <button onClick={() => { setDetailOutage(o); setShowDetail(true); }} style={smBtnCss("#0d9488")}>View</button>
@@ -1719,7 +2070,7 @@ export default function Page() {
                       </thead>
                       <tbody>
                         {filteredOutages.map((o) => {
-                          const cfg = STATUS_CONFIG[o.status];
+                          const cfg = getStatusConfig(o.status);
                           return (
                             <tr key={o.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
                               <td style={{ padding: "12px 16px" }}>
@@ -1727,7 +2078,7 @@ export default function Page() {
                                 <div style={{ fontSize: "11px", color: "#9ca3af" }}>{o.county ?? "Unknown county"} · {o.source?.toUpperCase()}</div>
                               </td>
                               <td style={{ padding: "12px 16px" }}>
-                                <span style={{ padding: "3px 10px", background: cfg.bg, color: cfg.color, borderRadius: "20px", fontSize: "11px", fontWeight: 600 }}>{cfg.label}</span>
+                                <span style={statusBadgeStyle(cfg)}>{cfg.label}</span>
                               </td>
                               <td style={{ padding: "12px 16px", fontWeight: 600, fontSize: "13px", color: "#1f2937" }}>{o.customers}</td>
                               <td style={{ padding: "12px 16px", fontSize: "12px", color: "#6b7280" }}>{o.cause ?? "—"}</td>
@@ -1758,9 +2109,7 @@ export default function Page() {
           {/* ── CONFIRMED OPPORTUNITIES ───────────────────────────────── */}
           {activeTab === "opportunities" && (
             <div>
-              <p style={{ fontSize: "14px", color: "#6b7280", marginBottom: "16px", lineHeight: 1.5 }}>
-                Leads you found in the field — not sold yet. Sold or &quot;wants to proceed&quot; jobs move to the Job Queue.
-              </p>
+              <PageHelp pageId="opportunities" />
               <OpportunitiesList
                 outages={outages}
                 onNavigate={(lat, lng, addr) => {
@@ -1777,6 +2126,8 @@ export default function Page() {
 
           {/* ── JOB QUEUE ─────────────────────────────────────────────── */}
           {activeTab === "queue" && token && (
+            <>
+            <PageHelp pageId="queue" />
             <JobQueue
               token={token}
               role={user.role}
@@ -1784,42 +2135,59 @@ export default function Page() {
               onNavigate={(lat, lng, addr) => navigateToLatLng(lat, lng, addr)}
               onShowJobForm={() => setShowJobForm(true)}
             />
+            </>
           )}
 
           {/* ── TECHS ─────────────────────────────────────────────────── */}
           {activeTab === "techs" && isOffice && token && (
+            <>
+            <PageHelp pageId="techs" />
             <TechPanel
               token={token}
               onNavigateToTech={(lat, lng, name) => navigateToLatLng(lat, lng, name)}
               onNavigate={(lat, lng, label) => navigateToLatLng(lat, lng, label)}
               onRouteFromTech={routeFromTechToJob}
             />
+            </>
           )}
 
           {/* ── TERRITORIES ───────────────────────────────────────────── */}
           {activeTab === "territories" && isOffice && token && (
-            <div style={{ padding: isMobile ? "12px" : "24px", overflowY: "auto", flex: 1 }}>
+            <div style={{ padding: isMobile ? "0" : "0", overflowY: "auto", flex: 1 }}>
+              <PageHelp pageId="territories" />
               <TerritoryPanel token={token} role={user?.role ?? "office"} />
             </div>
           )}
 
           {/* ── ADMIN ─────────────────────────────────────────────────── */}
           {activeTab === "admin" && isOffice && token && (
+            <>
+            <PageHelp pageId="admin" />
             <AdminPanel
               token={token}
               onSettingsChanged={handleSettingsChanged}
             />
+            </>
           )}
 
           {/* ── PROFILE ───────────────────────────────────────────────── */}
           {activeTab === "profile" && token && (
-            <div style={{ padding: isMobile ? "12px" : "24px", overflowY: "auto", flex: 1 }}>
+            <div style={{ padding: isMobile ? "0" : "0", overflowY: "auto", flex: 1 }}>
+              <PageHelp pageId="profile" />
               <ProfilePanel
                 user={user}
                 token={token}
                 onUserUpdate={handleUserUpdate}
               />
             </div>
+          )}
+
+          {/* ── DOCS ──────────────────────────────────────────────────── */}
+          {activeTab === "guide" && (
+            <>
+              <PageHelp pageId="guide" />
+              <SiteGuideDocs variant="embedded" />
+            </>
           )}
         </div>
       </div>
@@ -1863,8 +2231,8 @@ export default function Page() {
               <button onClick={() => setShowDetail(false)} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#6b7280" }}>×</button>
             </div>
             <div style={{ padding: "20px 24px" }}>
-              <span style={{ padding: "5px 14px", background: STATUS_CONFIG[detailOutage.status].bg, color: STATUS_CONFIG[detailOutage.status].color, borderRadius: "20px", fontSize: "13px", fontWeight: 600 }}>
-                {STATUS_CONFIG[detailOutage.status].label}
+              <span style={{ ...statusBadgeStyle(getStatusConfig(detailOutage.status)), padding: "5px 14px", fontSize: "13px" }}>
+                {getStatusConfig(detailOutage.status).label}
               </span>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginTop: "16px", marginBottom: "16px" }}>
                 {[
@@ -1881,6 +2249,25 @@ export default function Page() {
                   </div>
                 ))}
               </div>
+              {detailOutage.scoreBreakdown && (
+                <div style={{ padding: "12px", background: "#f8fafc", borderRadius: "8px", marginBottom: "16px", border: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: "11px", color: "#334155", fontWeight: 700, marginBottom: "8px" }}>SCORE BREAKDOWN</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "6px 10px", fontSize: "12px", color: "#475569" }}>
+                    {Object.entries(detailOutage.scoreBreakdown.parts)
+                      .filter(([, v]) => Math.abs(v) > 0.01)
+                      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+                      .slice(0, 8)
+                      .map(([k, v]) => (
+                        <>
+                          <span key={`${k}-k`}>{k.replace(/_/g, " ")}</span>
+                          <span key={`${k}-v`} style={{ fontWeight: 700, color: v >= 0 ? "#0f766e" : "#b91c1c" }}>
+                            {v >= 0 ? "+" : ""}{Math.round(v)}
+                          </span>
+                        </>
+                      ))}
+                  </div>
+                </div>
+              )}
               <div style={{ padding: "12px", background: "#f0fdfa", borderRadius: "8px", marginBottom: "16px" }}>
                 <div style={{ fontSize: "11px", color: "#0d9488", fontWeight: 600, marginBottom: "6px" }}>LOCATION</div>
                 <input
@@ -1907,6 +2294,11 @@ export default function Page() {
               <div style={{ display: "flex", gap: "10px" }}>
                 <button onClick={() => { navigateToLatLng(detailOutage.lat, detailOutage.lng, detailOutage.streetAddress, detailOutage); setShowDetail(false); }} style={{ flex: 1, padding: "11px", background: "#0ea5e9", color: "#fff", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>Navigate</button>
                 <button onClick={() => { setInvestigatingOutage(detailOutage); setShowDetail(false); setShowInvestigation(true); }} style={{ flex: 1, padding: "11px", background: "#0d9488", color: "#fff", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>Investigate</button>
+                {isOffice && (
+                  <button onClick={() => removeMarker(detailOutage.id)} style={{ flex: 1, padding: "11px", background: "#ef4444", color: "#fff", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>
+                    Remove Dot
+                  </button>
+                )}
                 <select value={detailOutage.status} onChange={(e) => { updateStatus(detailOutage.id, e.target.value as OutageStatus); setDetailOutage((p) => p && { ...p, status: e.target.value as OutageStatus }); }} style={{ padding: "11px", border: "1px solid #e5e7eb", borderRadius: "8px", fontSize: "13px" }}>
                   {Object.entries(STATUS_CONFIG).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
                 </select>

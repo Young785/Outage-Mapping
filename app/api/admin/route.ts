@@ -26,6 +26,8 @@ export async function GET(req: Request) {
         active_sources: ["xcel"],
         connexus_enabled: false,
         fetch_interval_minutes: 15,
+        storm_phase: "phase_1",
+        temp_out_mode: false,
       },
       integrations: {
         housecall: {

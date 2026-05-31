@@ -23,13 +23,33 @@ export async function GET(req: Request) {
   if (!isSupabaseConfigured) return NextResponse.json({ events: [] });
 
   const db = getAdmin();
-  const { data, error } = await db
+  let { data, error } = await db
     .from("storm_events")
-    .select("*, created_by_user:users!created_by(name)")
+    .select("*")
     .order("started_at", { ascending: false })
     .limit(20);
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (!error && data?.length) {
+    const creatorIds = [...new Set(data.map((e) => e.created_by).filter(Boolean))] as string[];
+    if (creatorIds.length > 0) {
+      const { data: users } = await db.from("users").select("id, name").in("id", creatorIds);
+      const nameById = new Map((users ?? []).map((u) => [u.id, u.name]));
+      data = data.map((e) => ({
+        ...e,
+        created_by_user: e.created_by ? { name: nameById.get(e.created_by) ?? null } : null,
+      }));
+    }
+  }
+
+  if (error) {
+    if (/storm_events|does not exist|schema cache/i.test(error.message)) {
+      return NextResponse.json({
+        events: [],
+        warning: "storm_events table missing — run supabase/migrations/20260528120000_storm_events.sql",
+      });
+    }
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
   return NextResponse.json({ events: data ?? [] });
 }
 

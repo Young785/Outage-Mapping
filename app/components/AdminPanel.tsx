@@ -20,12 +20,56 @@ type Settings = {
   active_sources: string[];
   connexus_enabled: boolean;
   fetch_interval_minutes: number;
+  storm_phase: "phase_1" | "phase_2" | "phase_3";
+  temp_out_mode: boolean;
+  max_jobs_per_tech: number;
+  overtime_hours_soft_limit: number;
+  overtime_hours_hard_limit: number;
 };
 
 type Props = {
   token: string;
   /** Called after any save so page.tsx can sync activeSources and refetch outages */
-  onSettingsChanged?: (activeSources: string[], simulationMode: boolean) => void;
+  onSettingsChanged?: (
+    activeSources: string[],
+    simulationMode: boolean,
+    stormOps?: {
+      stormPhase: "phase_1" | "phase_2" | "phase_3";
+      tempOutMode: boolean;
+      fetchIntervalMinutes: number;
+    }
+  ) => void;
+};
+
+type OpsMetrics = {
+  metrics: {
+    activeCallsInQueue: number;
+    soldJobs: number;
+    confirmedOpportunities: number;
+    tempOutPendingReturn: number;
+  };
+  storage?: {
+    provider: string;
+    tables: string[];
+  };
+  totals?: {
+    outages: number;
+    jobs: number;
+    investigations: number;
+  };
+  recent7d?: {
+    outages: number;
+    jobs: number;
+  };
+};
+
+type PhaseAlert = {
+  city: string;
+  hotScore?: number;
+  hotCount?: number;
+  lowYieldScore?: number;
+  lowYieldCount?: number;
+  sample: number;
 };
 
 export default function AdminPanel({ token, onSettingsChanged }: Props) {
@@ -63,10 +107,18 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
     active_sources: ["xcel"],
     connexus_enabled: false,
     fetch_interval_minutes: 15,
+    storm_phase: "phase_1",
+    temp_out_mode: false,
+    max_jobs_per_tech: 4,
+    overtime_hours_soft_limit: 10,
+    overtime_hours_hard_limit: 14,
   });
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(false);
   const [message, setMessage]   = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [opsMetrics, setOpsMetrics] = useState<OpsMetrics | null>(null);
+  const [opsLoading, setOpsLoading] = useState(false);
+  const [phaseAlerts, setPhaseAlerts] = useState<{ hotZones: PhaseAlert[]; lowYieldZones: PhaseAlert[] } | null>(null);
 
   // ── Load current settings ─────────────────────────────────────────────────
   async function loadAdmin() {
@@ -101,7 +153,53 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
     setSnapLoading(false);
   }, [token]);
 
-  useEffect(() => { loadAdmin(); loadStormEvents(); loadSnapshots(); }, []);
+  const loadOpsMetrics = useCallback(async () => {
+    setOpsLoading(true);
+    try {
+      const res = await fetch("/api/ops/metrics", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const d = await res.json();
+      if (res.ok) setOpsMetrics(d);
+    } catch {}
+    setOpsLoading(false);
+  }, [token]);
+
+  const loadPhaseAlerts = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ops/phase-alerts", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const d = await res.json();
+      if (res.ok) setPhaseAlerts({ hotZones: d.hotZones ?? [], lowYieldZones: d.lowYieldZones ?? [] });
+    } catch {}
+  }, [token]);
+
+  useEffect(() => { loadAdmin(); loadStormEvents(); loadSnapshots(); loadOpsMetrics(); loadPhaseAlerts(); }, []);
+
+  async function downloadExport(kind: "outages" | "jobs" | "investigations", sinceDays = 30) {
+    try {
+      const res = await fetch(`/api/ops/export?kind=${kind}&sinceDays=${sinceDays}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || "Export failed");
+      }
+      const text = await res.text();
+      const blob = new Blob([text], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${kind}-${sinceDays}d-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setMessage({ type: "error", text: err.message });
+    }
+  }
 
   // ── Save priority weights ─────────────────────────────────────────────────
   async function saveWeights() {
@@ -127,6 +225,14 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
         active_sources: settings.active_sources,
         connexus_enabled: settings.connexus_enabled,
         fetch_interval_minutes: settings.fetch_interval_minutes,
+        storm_phase: settings.storm_phase,
+        temp_out_mode: settings.temp_out_mode,
+        max_jobs_per_tech: Math.max(1, Number(settings.max_jobs_per_tech) || 4),
+        overtime_hours_soft_limit: Math.max(1, Number(settings.overtime_hours_soft_limit) || 10),
+        overtime_hours_hard_limit: Math.max(
+          Number(settings.overtime_hours_soft_limit) || 10,
+          Number(settings.overtime_hours_hard_limit) || 14
+        ),
       };
       const res = await fetch("/api/admin", {
         method: "POST",
@@ -136,7 +242,11 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
       const d = await res.json();
       if (!res.ok) throw new Error(d.error);
       setMessage({ type: "success", text: "Settings saved. Refreshing outages…" });
-      onSettingsChanged?.(settings.active_sources, settings.simulation_mode);
+      onSettingsChanged?.(settings.active_sources, settings.simulation_mode, {
+        stormPhase: settings.storm_phase,
+        tempOutMode: settings.temp_out_mode,
+        fetchIntervalMinutes: settings.fetch_interval_minutes,
+      });
     } catch (err: any) { setMessage({ type: "error", text: err.message }); }
     setSaving(false);
   }
@@ -157,7 +267,11 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
         type: "success",
         text: enable ? "Simulation mode ON — synthetic storm data active." : "Simulation mode OFF — live data restored.",
       });
-      onSettingsChanged?.(settings.active_sources, enable);
+      onSettingsChanged?.(settings.active_sources, enable, {
+        stormPhase: settings.storm_phase,
+        tempOutMode: settings.temp_out_mode,
+        fetchIntervalMinutes: settings.fetch_interval_minutes,
+      });
     } catch (err: any) { setMessage({ type: "error", text: err.message }); }
     setSaving(false);
   }
@@ -176,6 +290,8 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
       if (!res.ok) throw new Error(d.error);
       setNewEventName("");
       await loadStormEvents();
+      await loadOpsMetrics();
+      await loadPhaseAlerts();
       setMessage({ type: "success", text: `Storm event "${newEventName}" started.` });
     } catch (err: any) { setMessage({ type: "error", text: err.message }); }
     setStormLoading(false);
@@ -192,8 +308,60 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
       const d = await res.json();
       if (!res.ok) throw new Error(d.error);
       await loadStormEvents();
+      await loadOpsMetrics();
+      await loadPhaseAlerts();
       setMessage({ type: "success", text: `Storm event "${name}" ended.` });
     } catch (err: any) { setMessage({ type: "error", text: err.message }); }
+    setStormLoading(false);
+  }
+
+  async function sweepCompletedAndDeclined() {
+    setStormLoading(true);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/outages/cleanup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: "sweep_statuses", statuses: ["completed", "no_opportunity"] }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      setMessage({ type: "success", text: `Sweep complete. Removed ${d.affected ?? 0} completed/declined dots from active map.` });
+      await loadOpsMetrics();
+      await loadPhaseAlerts();
+      onSettingsChanged?.(settings.active_sources, settings.simulation_mode, {
+        stormPhase: settings.storm_phase,
+        tempOutMode: settings.temp_out_mode,
+        fetchIntervalMinutes: settings.fetch_interval_minutes,
+      });
+    } catch (err: any) {
+      setMessage({ type: "error", text: err.message });
+    }
+    setStormLoading(false);
+  }
+
+  async function archiveStaleDots(hours: number) {
+    setStormLoading(true);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/outages/cleanup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: "archive_stale", hours }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      setMessage({ type: "success", text: `Archived ${d.affected ?? 0} stale dots older than ${hours}h.` });
+      await loadOpsMetrics();
+      await loadPhaseAlerts();
+      onSettingsChanged?.(settings.active_sources, settings.simulation_mode, {
+        stormPhase: settings.storm_phase,
+        tempOutMode: settings.temp_out_mode,
+        fetchIntervalMinutes: settings.fetch_interval_minutes,
+      });
+    } catch (err: any) {
+      setMessage({ type: "error", text: err.message });
+    }
     setStormLoading(false);
   }
 
@@ -209,7 +377,11 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
       const d = await res.json();
       if (!res.ok) throw new Error(d.error);
       setMessage({ type: "success", text: `Loaded ${d.loaded} outages from snapshot. Activate simulation mode to view them.` });
-      onSettingsChanged?.(settings.active_sources, true);
+      onSettingsChanged?.(settings.active_sources, true, {
+        stormPhase: settings.storm_phase,
+        tempOutMode: settings.temp_out_mode,
+        fetchIntervalMinutes: settings.fetch_interval_minutes,
+      });
     } catch (err: any) { setMessage({ type: "error", text: err.message }); }
     setLoadingSnap(null);
   }
@@ -323,6 +495,101 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
             onChange={(e) => setSettings({ ...settings, fetch_interval_minutes: parseInt(e.target.value) || 15 })}
             style={{ ...fieldStyle, maxWidth: "120px" }}
           />
+        </div>
+
+        <div style={{ marginTop: "14px" }}>
+          <label style={labelStyle}>Storm Phase</label>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: "8px" }}>
+            {[
+              { value: "phase_1" as const, label: "Phase 1", sub: "Hunting" },
+              { value: "phase_2" as const, label: "Phase 2", sub: "Dispatch" },
+              { value: "phase_3" as const, label: "Phase 3", sub: "Cleanup" },
+            ].map((phase) => (
+              <button
+                key={phase.value}
+                type="button"
+                onClick={() => setSettings((prev) => ({ ...prev, storm_phase: phase.value }))}
+                style={{
+                  padding: "10px 8px",
+                  borderRadius: "8px",
+                  border: `1px solid ${settings.storm_phase === phase.value ? "#0d9488" : "#e5e7eb"}`,
+                  background: settings.storm_phase === phase.value ? "#ccfbf1" : "#fff",
+                  cursor: "pointer",
+                }}
+              >
+                <div style={{ fontWeight: 700, color: settings.storm_phase === phase.value ? "#0f766e" : "#1f2937", fontSize: "12px" }}>{phase.label}</div>
+                <div style={{ color: "#6b7280", fontSize: "11px", marginTop: "2px" }}>{phase.sub}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <label
+          style={{
+            marginTop: "12px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "12px 14px",
+            background: settings.temp_out_mode ? "#fff7ed" : "#f9fafb",
+            borderRadius: "8px",
+            cursor: "pointer",
+            border: `1px solid ${settings.temp_out_mode ? "#fb923c" : "#e5e7eb"}`,
+          }}
+        >
+          <div>
+            <div style={{ fontWeight: 600, color: "#1f2937" }}>Temp-Out Mode</div>
+            <div style={{ fontSize: "12px", color: "#6b7280" }}>When ON, crews secure customer + temporary power + return later</div>
+          </div>
+          <input
+            type="checkbox"
+            checked={settings.temp_out_mode}
+            onChange={(e) => setSettings((prev) => ({ ...prev, temp_out_mode: e.target.checked }))}
+            style={{ width: "18px", height: "18px", cursor: "pointer", accentColor: "#f97316" }}
+          />
+        </label>
+        <div style={{ marginTop: "12px", padding: "12px", border: "1px solid #e5e7eb", borderRadius: "8px", background: "#f8fafc" }}>
+          <div style={{ fontWeight: 700, fontSize: "12px", color: "#334155", marginBottom: "8px", textTransform: "uppercase" }}>
+            Dispatch Guardrails
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: "8px" }}>
+            <div>
+              <label style={labelStyle}>Max Jobs / Tech</label>
+              <input
+                type="number"
+                min={1}
+                max={12}
+                value={settings.max_jobs_per_tech}
+                onChange={(e) => setSettings((prev) => ({ ...prev, max_jobs_per_tech: parseInt(e.target.value) || 4 }))}
+                style={fieldStyle}
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>Overtime Soft Limit (h)</label>
+              <input
+                type="number"
+                min={1}
+                max={24}
+                value={settings.overtime_hours_soft_limit}
+                onChange={(e) => setSettings((prev) => ({ ...prev, overtime_hours_soft_limit: parseInt(e.target.value) || 10 }))}
+                style={fieldStyle}
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>Overtime Hard Limit (h)</label>
+              <input
+                type="number"
+                min={1}
+                max={24}
+                value={settings.overtime_hours_hard_limit}
+                onChange={(e) => setSettings((prev) => ({ ...prev, overtime_hours_hard_limit: parseInt(e.target.value) || 14 }))}
+                style={fieldStyle}
+              />
+            </div>
+          </div>
+          <div style={{ marginTop: "6px", fontSize: "11px", color: "#64748b" }}>
+            Used by auto-dispatch scoring to reduce overload and avoid overtime-heavy assignments.
+          </div>
         </div>
         <button onClick={saveSourceSettings} disabled={saving} style={saveBtn()}>
           {saving ? "Saving…" : "Save & Apply"}
@@ -574,6 +841,116 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
             </div>
           </div>
         )}
+
+        <div style={{ marginTop: "18px", borderTop: "1px solid #e5e7eb", paddingTop: "14px" }}>
+          <div style={{ fontSize: "12px", fontWeight: 700, color: "#6b7280", marginBottom: "8px", textTransform: "uppercase" }}>Map Cleanup</div>
+          <p style={{ margin: "0 0 10px", fontSize: "12px", color: "#6b7280" }}>
+            Use these tools between storms to keep the active map clean without deleting history.
+          </p>
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <button
+              onClick={sweepCompletedAndDeclined}
+              disabled={stormLoading}
+              style={{ padding: "8px 12px", background: "#2563eb", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: stormLoading ? "default" : "pointer" }}
+            >
+              Sweep Completed + Declined
+            </button>
+            <button
+              onClick={() => archiveStaleDots(48)}
+              disabled={stormLoading}
+              style={{ padding: "8px 12px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: stormLoading ? "default" : "pointer" }}
+            >
+              Archive Stale (48h)
+            </button>
+            <button
+              onClick={() => archiveStaleDots(72)}
+              disabled={stormLoading}
+              style={{ padding: "8px 12px", background: "#6b7280", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: stormLoading ? "default" : "pointer" }}
+            >
+              Archive Stale (72h)
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Data Storage & Exports ────────────────────────────────────── */}
+      <div style={sectionStyle}>
+        <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: 700, color: "#1f2937" }}>Data Storage & Analytics</h3>
+        <p style={{ margin: "0 0 14px", fontSize: "13px", color: "#6b7280" }}>
+          Operational data is stored in Supabase Postgres and can be exported for routing analysis, inventory planning, and historical storm reviews.
+        </p>
+
+        {opsLoading ? (
+          <div style={{ fontSize: "13px", color: "#9ca3af" }}>Loading metrics…</div>
+        ) : (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))", gap: "10px", marginBottom: "12px" }}>
+              {[
+                { label: "Total Outages", value: opsMetrics?.totals?.outages ?? 0, color: "#334155" },
+                { label: "Total Jobs", value: opsMetrics?.totals?.jobs ?? 0, color: "#0f766e" },
+                { label: "Investigations", value: opsMetrics?.totals?.investigations ?? 0, color: "#7c3aed" },
+                { label: "Outages (7d)", value: opsMetrics?.recent7d?.outages ?? 0, color: "#ea580c" },
+                { label: "Jobs (7d)", value: opsMetrics?.recent7d?.jobs ?? 0, color: "#2563eb" },
+              ].map((m) => (
+                <div key={m.label} style={{ padding: "10px 12px", border: "1px solid #e5e7eb", borderRadius: "8px", background: "#fff" }}>
+                  <div style={{ fontSize: "11px", color: "#6b7280", marginBottom: "4px" }}>{m.label}</div>
+                  <div style={{ fontSize: "20px", fontWeight: 700, color: m.color }}>{m.value}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "10px" }}>
+              <strong>Storage:</strong> {opsMetrics?.storage?.provider ?? "Supabase Postgres"} · Tables: {(opsMetrics?.storage?.tables ?? []).join(", ")}
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "8px" }}>
+              <div style={{ padding: "12px", border: "1px solid #d1fae5", background: "#ecfdf5", borderRadius: "10px" }}>
+                <div style={{ fontSize: "12px", fontWeight: 700, color: "#065f46", marginBottom: "8px" }}>Hot Zones (72h)</div>
+                {(phaseAlerts?.hotZones ?? []).length === 0 ? (
+                  <div style={{ fontSize: "12px", color: "#6b7280" }}>No hot zones detected yet.</div>
+                ) : (
+                  (phaseAlerts?.hotZones ?? []).map((z) => (
+                    <div key={`hot-${z.city}`} style={{ fontSize: "12px", color: "#064e3b", marginBottom: "6px" }}>
+                      {z.city}: {z.hotScore}% hot ({z.hotCount}/{z.sample})
+                    </div>
+                  ))
+                )}
+              </div>
+              <div style={{ padding: "12px", border: "1px solid #fee2e2", background: "#fef2f2", borderRadius: "10px" }}>
+                <div style={{ fontSize: "12px", fontWeight: 700, color: "#991b1b", marginBottom: "8px" }}>Low-Yield Areas (72h)</div>
+                {(phaseAlerts?.lowYieldZones ?? []).length === 0 ? (
+                  <div style={{ fontSize: "12px", color: "#6b7280" }}>No low-yield alerts yet.</div>
+                ) : (
+                  (phaseAlerts?.lowYieldZones ?? []).map((z) => (
+                    <div key={`low-${z.city}`} style={{ fontSize: "12px", color: "#7f1d1d", marginBottom: "6px" }}>
+                      {z.city}: {z.lowYieldScore}% low-yield ({z.lowYieldCount}/{z.sample})
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </>
+        )}
+
+        <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: "12px", marginTop: "10px" }}>
+          <div style={{ fontSize: "12px", fontWeight: 700, color: "#6b7280", marginBottom: "8px", textTransform: "uppercase" }}>
+            Export CSV
+          </div>
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <button onClick={() => downloadExport("outages", 30)} style={{ padding: "8px 12px", background: "#0ea5e9", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
+              Outages (30d)
+            </button>
+            <button onClick={() => downloadExport("jobs", 30)} style={{ padding: "8px 12px", background: "#0d9488", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
+              Jobs (30d)
+            </button>
+            <button onClick={() => downloadExport("investigations", 30)} style={{ padding: "8px 12px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
+              Investigations (30d)
+            </button>
+            <button onClick={() => downloadExport("outages", 90)} style={{ padding: "8px 12px", background: "#6b7280", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
+              Outages (90d)
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

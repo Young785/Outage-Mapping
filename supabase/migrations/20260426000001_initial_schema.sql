@@ -216,7 +216,9 @@ INSERT INTO app_settings (key, value) VALUES
   ('simulation_mode',          'false'::jsonb),
   ('active_sources',           '["xcel"]'::jsonb),
   ('fetch_interval_minutes',   '15'::jsonb),
-  ('connexus_enabled',         'false'::jsonb)
+  ('connexus_enabled',         'false'::jsonb),
+  ('storm_phase',              '"phase_1"'::jsonb),
+  ('temp_out_mode',            'false'::jsonb)
 ON CONFLICT (key) DO NOTHING;
 
 -- ============================================================

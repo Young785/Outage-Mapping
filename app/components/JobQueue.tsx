@@ -1,6 +1,22 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+
+const TERMINAL_QUEUE_STATUSES = new Set([
+  "completed",
+  "cancelled",
+  "resolved",
+  "no_opportunity",
+]);
+
+type RoutePlan = {
+  strategy?: string;
+  totalStops: number;
+  totalMiles: number;
+  estimatedMinutes: number;
+  mapsUrl?: string;
+  orderedStops: Array<{ id: string; lat: number; lng: number; label?: string; legMiles: number }>;
+};
 
 type QueueItem = {
   id: string;
@@ -48,10 +64,17 @@ export default function JobQueue({ token, role, userLocation, onNavigate, onShow
   const [loading, setLoading] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
   const [isCompactDesktop, setIsCompactDesktop] = useState(false);
-  const [sort, setSort] = useState<"priority" | "distance" | "value">("priority");
+  const [sort, setSort] = useState<"priority" | "distance" | "value" | "smart">("priority");
   const [filter, setFilter] = useState<"all" | "job" | "outage">("all");
   const [assigning, setAssigning] = useState<string | null>(null);
   const [assignResult, setAssignResult] = useState<any | null>(null);
+  const [optimizing, setOptimizing] = useState(false);
+  const [routePlan, setRoutePlan] = useState<RoutePlan | null>(null);
+  const [skippedStopIds, setSkippedStopIds] = useState<Set<string>>(() => new Set());
+  const [routeError, setRouteError] = useState<string | null>(null);
+  const rerouteInFlight = useRef(false);
+  const [clustering, setClustering] = useState(false);
+  const [clusterPlan, setClusterPlan] = useState<Array<{ id: string; size: number; avgPriority: number; centroid: { lat: number; lng: number }; topStop?: { lat: number; lng: number; label?: string; priorityScore?: number } }>>([]);
 
   const loadQueue = useCallback(async () => {
     setLoading(true);
@@ -65,13 +88,18 @@ export default function JobQueue({ token, role, userLocation, onNavigate, onShow
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || data.hint || "Queue load failed");
+      }
       setQueue(data.queue ?? []);
-    } catch (err) {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Queue load failed";
       console.error("Queue load error:", err);
+      setRouteError(msg);
     } finally {
       setLoading(false);
     }
-  }, [sort, userLocation]);
+  }, [sort, userLocation, token]);
 
   useEffect(() => { loadQueue(); }, [loadQueue]);
   useEffect(() => {
@@ -129,13 +157,149 @@ export default function JobQueue({ token, role, userLocation, onNavigate, onShow
     } catch {}
   }
 
+  const buildRouteCandidates = useCallback(
+    (items: QueueItem[], exclude: Set<string>) =>
+      items
+        .filter((i) => i.lat != null && i.lng != null)
+        .filter((i) => !exclude.has(i.id))
+        .filter((i) => !TERMINAL_QUEUE_STATUSES.has(i.status))
+        .slice(0, 20)
+        .map((i) => ({
+          id: i.id,
+          lat: i.lat!,
+          lng: i.lng!,
+          label: i.address ?? i.displayName,
+          priorityScore: i.priorityScore ?? 0,
+          status: i.status,
+        })),
+    []
+  );
+
+  const runOptimizeRoute = useCallback(
+    async (exclude: Set<string>, silent = false) => {
+      if (!userLocation) {
+        if (!silent) setRouteError("Location is required for route optimization.");
+        return;
+      }
+      const candidates = buildRouteCandidates(filtered, exclude);
+      if (candidates.length < 2) {
+        setRoutePlan(null);
+        if (!silent) setRouteError("Need at least 2 routable items.");
+        return;
+      }
+      if (!silent) setOptimizing(true);
+      setRouteError(null);
+      try {
+        const res = await fetch("/api/routing/multi-stop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            origin: userLocation,
+            maxStops: 8,
+            stops: candidates,
+            excludeIds: [...exclude],
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Route optimization failed");
+        setRoutePlan(data);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Route optimization failed";
+        if (!silent) setRouteError(msg);
+      } finally {
+        if (!silent) setOptimizing(false);
+      }
+    },
+    [userLocation, filtered, buildRouteCandidates, token]
+  );
+
+  async function optimizeRoute() {
+    await runOptimizeRoute(skippedStopIds, false);
+  }
+
+  function skipRouteStop(stopId: string) {
+    setSkippedStopIds((prev) => {
+      const next = new Set(prev);
+      next.add(stopId);
+      void runOptimizeRoute(next, true);
+      return next;
+    });
+  }
+
+  // Auto re-route when queue changes (completed job, item leaves queue, etc.)
+  useEffect(() => {
+    if (!routePlan || !userLocation || rerouteInFlight.current) return;
+
+    const activeIds = new Set(filtered.map((i) => i.id));
+    const planIds = routePlan.orderedStops.map((s) => s.id);
+    const stale = planIds.some((id) => {
+      if (skippedStopIds.has(id)) return true;
+      if (!activeIds.has(id)) return true;
+      const row = queue.find((q) => q.id === id);
+      return row != null && TERMINAL_QUEUE_STATUSES.has(row.status);
+    });
+
+    if (!stale) return;
+
+    const remainingIds = planIds.filter((id) => {
+      if (skippedStopIds.has(id)) return false;
+      if (!activeIds.has(id)) return false;
+      const row = queue.find((q) => q.id === id);
+      return row == null || !TERMINAL_QUEUE_STATUSES.has(row.status);
+    });
+
+    if (remainingIds.length < 2) {
+      setRoutePlan(null);
+      return;
+    }
+
+    rerouteInFlight.current = true;
+    void runOptimizeRoute(skippedStopIds, true).finally(() => {
+      rerouteInFlight.current = false;
+    });
+  }, [queue, filtered, routePlan, skippedStopIds, userLocation, runOptimizeRoute]);
+
+  async function detectClusters() {
+    const candidates = filtered
+      .filter((i) => i.lat != null && i.lng != null)
+      .slice(0, 120)
+      .map((i) => ({
+        id: i.id,
+        lat: i.lat!,
+        lng: i.lng!,
+        label: i.address ?? i.displayName,
+        priorityScore: i.priorityScore ?? 0,
+        status: i.status,
+      }));
+    if (candidates.length < 3) {
+      setRouteError("Need at least 3 routable points for cluster detection.");
+      return;
+    }
+    setClustering(true);
+    setRouteError(null);
+    try {
+      const res = await fetch("/api/routing/clusters", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ stops: candidates, radiusMiles: 0.8, minPoints: 3 }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Cluster detection failed");
+      setClusterPlan(data.clusters ?? []);
+    } catch (err: any) {
+      setRouteError(err.message);
+    } finally {
+      setClustering(false);
+    }
+  }
+
   return (
     <div>
       {/* Toolbar */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "12px" }}>
         <div style={{ display: "flex", gap: "8px" }}>
           <span style={{ fontSize: "14px", fontWeight: 600, color: "#374151", alignSelf: "center" }}>Sort:</span>
-          {(["priority", "distance", "value"] as const).map((s) => (
+          {(["priority", "distance", "value", "smart"] as const).map((s) => (
             <button
               key={s}
               onClick={() => setSort(s)}
@@ -174,25 +338,169 @@ export default function JobQueue({ token, role, userLocation, onNavigate, onShow
           ))}
         </div>
 
-        {(role === "office" || role === "admin" || role === "owner") && (
+        <div style={{ display: "flex", gap: "8px" }}>
           <button
-            onClick={onShowJobForm}
-            style={{ padding: "8px 16px", background: "#0d9488", color: "#fff", border: "none", borderRadius: "8px", fontSize: "14px", fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: "6px" }}
+            onClick={detectClusters}
+            disabled={clustering}
+            style={{ padding: "8px 14px", background: clustering ? "#94a3b8" : "#7c3aed", color: "#fff", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: clustering ? "default" : "pointer" }}
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14"/></svg>
-            New Job
+            {clustering ? "Scanning..." : "Find Clusters"}
           </button>
-        )}
+          <button
+            onClick={optimizeRoute}
+            disabled={optimizing}
+            style={{ padding: "8px 14px", background: optimizing ? "#94a3b8" : "#1d4ed8", color: "#fff", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: optimizing ? "default" : "pointer" }}
+          >
+            {optimizing ? "Optimizing..." : "Optimize Route"}
+          </button>
+          {(role === "office" || role === "admin" || role === "owner") && (
+            <button
+              onClick={onShowJobForm}
+              style={{ padding: "8px 16px", background: "#0d9488", color: "#fff", border: "none", borderRadius: "8px", fontSize: "14px", fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: "6px" }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14"/></svg>
+              New Job
+            </button>
+          )}
+        </div>
       </div>
+
+      {routeError && (
+        <div style={{ padding: "10px 12px", background: "#fef2f2", border: "1px solid #fecaca", color: "#991b1b", borderRadius: "8px", marginBottom: "10px", fontSize: "13px" }}>
+          {routeError}
+        </div>
+      )}
+
+      {routePlan && (
+        <div style={{ padding: "12px 14px", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: "8px", marginBottom: "14px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", alignItems: "center", marginBottom: "8px", flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: "13px", color: "#1e3a8a", fontWeight: 700 }}>
+                Optimized plan: {routePlan.totalStops} stops · {routePlan.totalMiles} mi · ~{routePlan.estimatedMinutes} min
+              </div>
+              {routePlan.strategy?.includes("google") && (
+                <div style={{ fontSize: "11px", color: "#2563eb", marginTop: "2px" }}>
+                  Traffic-aware (Google Routes)
+                </div>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+              {routePlan.orderedStops?.[0] && (
+                <button
+                  onClick={() => onNavigate(routePlan.orderedStops[0].lat, routePlan.orderedStops[0].lng, routePlan.orderedStops[0].label)}
+                  style={{ padding: "7px 11px", background: "#2563eb", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}
+                >
+                  Go Next Stop
+                </button>
+              )}
+              {routePlan.mapsUrl && (
+                <a
+                  href={routePlan.mapsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ padding: "7px 11px", background: "#0d9488", color: "#fff", borderRadius: "6px", fontSize: "12px", fontWeight: 700, textDecoration: "none" }}
+                >
+                  Open in Maps
+                </a>
+              )}
+              <button
+                onClick={() => { setRoutePlan(null); setSkippedStopIds(new Set()); }}
+                style={{ padding: "7px 11px", background: "#e5e7eb", color: "#374151", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+            {(routePlan.orderedStops ?? []).map((s, idx) => (
+              <div key={`${s.id}-${idx}`} style={{ display: "flex", gap: "4px", alignItems: "center" }}>
+                <button
+                  onClick={() => onNavigate(s.lat, s.lng, s.label)}
+                  style={{ padding: "5px 8px", background: "#dbeafe", border: "1px solid #93c5fd", color: "#1e3a8a", borderRadius: "14px", fontSize: "11px", cursor: "pointer" }}
+                >
+                  {idx + 1}. {Math.round(s.legMiles * 10) / 10}mi
+                </button>
+                <button
+                  type="button"
+                  title="Skip this stop and re-route"
+                  onClick={() => skipRouteStop(s.id)}
+                  style={{ padding: "4px 7px", background: "#fff", border: "1px solid #cbd5e1", color: "#64748b", borderRadius: "6px", fontSize: "10px", cursor: "pointer" }}
+                >
+                  Skip
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {clusterPlan.length > 0 && (
+        <div style={{ padding: "12px 14px", background: "#f5f3ff", border: "1px solid #ddd6fe", borderRadius: "8px", marginBottom: "14px" }}>
+          <div style={{ fontSize: "13px", color: "#5b21b6", fontWeight: 700, marginBottom: "8px" }}>
+            Cluster packs detected: {clusterPlan.length}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+            {clusterPlan.slice(0, 6).map((c, idx) => (
+              <div key={c.id} style={{ background: "#fff", border: "1px solid #ddd6fe", borderRadius: "8px", padding: "8px 10px", minWidth: "180px" }}>
+                <div style={{ fontSize: "12px", fontWeight: 700, color: "#4c1d95" }}>
+                  Cluster {idx + 1} · {c.size} stops
+                </div>
+                <div style={{ fontSize: "11px", color: "#6b7280", margin: "3px 0 8px" }}>
+                  Avg score {c.avgPriority}
+                </div>
+                <button
+                  onClick={() => {
+                    const target = c.topStop ?? c.centroid;
+                    onNavigate(target.lat, target.lng, `Cluster ${idx + 1}`);
+                  }}
+                  style={{ padding: "6px 10px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", fontSize: "11px", fontWeight: 700, cursor: "pointer" }}
+                >
+                  Go To Cluster
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Assign result banner */}
       {assignResult && !assignResult.error && (
         <div style={{ padding: "14px 16px", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: "8px", marginBottom: "16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
-            <span style={{ fontWeight: 600, color: "#1e40af" }}>Closest tech: {assignResult.techName}</span>
+            <span style={{ fontWeight: 600, color: "#1e40af" }}>Recommended tech: {assignResult.techName}</span>
             <span style={{ color: "#6b7280", marginLeft: "8px", fontSize: "13px" }}>{assignResult.distanceMiles} mi away</span>
+            {assignResult.recommendationScore != null && (
+              <span style={{ color: "#0d9488", marginLeft: "8px", fontSize: "13px", fontWeight: 700 }}>
+                score {Math.round(assignResult.recommendationScore)}
+              </span>
+            )}
             {assignResult.inTerritory && (
               <span style={{ marginLeft: "8px", fontSize: "12px", padding: "2px 8px", background: "#d1fae5", color: "#059669", borderRadius: "10px", fontWeight: 600 }}>in territory</span>
+            )}
+            {assignResult.activeLoad != null && (
+              <span style={{ marginLeft: "8px", fontSize: "12px", padding: "2px 8px", background: "#f1f5f9", color: "#334155", borderRadius: "10px", fontWeight: 600 }}>
+                load {assignResult.activeLoad}
+              </span>
+            )}
+            {assignResult.workingHours != null && (
+              <span style={{ marginLeft: "8px", fontSize: "12px", padding: "2px 8px", background: "#fff7ed", color: "#9a3412", borderRadius: "10px", fontWeight: 600 }}>
+                shift {assignResult.workingHours}h
+              </span>
+            )}
+            {Array.isArray(assignResult.reasons) && assignResult.reasons.length > 0 && (
+              <div style={{ marginTop: "6px", fontSize: "12px", color: "#475569" }}>
+                Why: {assignResult.reasons.slice(0, 3).join(" · ")}
+              </div>
+            )}
+            {(assignResult.maxJobsPerTech != null || assignResult.overtimeSoftHours != null) && (
+              <div style={{ marginTop: "4px", fontSize: "11px", color: "#64748b" }}>
+                Guardrails: max load {assignResult.maxJobsPerTech ?? "—"} · overtime soft {assignResult.overtimeSoftHours ?? "—"}h
+              </div>
+            )}
+            {Array.isArray(assignResult.alternatives) && assignResult.alternatives.length > 0 && (
+              <div style={{ marginTop: "4px", fontSize: "11px", color: "#64748b" }}>
+                Alternatives: {assignResult.alternatives.map((a: any) => `${a.techName} (${a.distanceMiles}mi, score ${Math.round(a.recommendationScore)}, ${a.workingHours ?? "?"}h)`).join(" | ")}
+              </div>
             )}
           </div>
           <div style={{ display: "flex", gap: "8px" }}>

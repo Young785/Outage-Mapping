@@ -1,8 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
+import { getAppEnv, getSupabaseConfig } from "./env";
 
-const supabaseUrl = process.env.SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const supabaseAnonKey = process.env.SUPABASE_ANON_KEY!;
+const { url: supabaseUrl, serviceRoleKey: supabaseServiceKey, anonKey: supabaseAnonKey } = getSupabaseConfig();
+
+if (supabaseUrl) {
+  console.info(`[supabase] APP_ENV=${getAppEnv()} → ${supabaseUrl}`);
+}
 
 if (!supabaseUrl) {
   console.warn("[supabase] SUPABASE_URL not set — DB features will be unavailable");
@@ -22,7 +25,9 @@ export const supabaseClient = supabaseUrl && supabaseAnonKey
 
 export function getAdmin() {
   if (!supabaseAdmin) {
-    throw new Error("Supabase not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env");
+    throw new Error(
+      "Supabase not configured. Set SUPABASE_URL_DEV + SUPABASE_SERVICE_ROLE_KEY_DEV (development) or SUPABASE_URL_PROD + SUPABASE_SERVICE_ROLE_KEY_PROD (production) in .env"
+    );
   }
   return supabaseAdmin;
 }
