@@ -1436,7 +1436,7 @@ export default function Page() {
             <div style={{ background: "rgba(255,255,255,0.14)", border: "1px solid rgba(255,255,255,0.3)", borderRadius: "12px", padding: "16px" }}>
               <div style={{ fontSize: "12px", fontWeight: 700, letterSpacing: "0.7px", textTransform: "uppercase", marginBottom: "8px" }}>What this platform does</div>
               <ul style={{ margin: 0, paddingLeft: "18px", lineHeight: 1.7 }}>
-                <li>Separates Outagesssss, Opportunities, and Job Queue</li>
+                <li>Separates Outages, Opportunities, and Job Queue</li>
                 <li>Supports multi-stop routing, smart dispatch, and cluster targeting</li>
                 <li>Tracks tech GPS in near real-time with ETA and auto-arrival updates</li>
                 <li>Includes storm phase, temp-out mode, cleanup, exports, and admin controls</li>
