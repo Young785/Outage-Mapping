@@ -14,6 +14,7 @@ import SiteGuideDocs from "./components/SiteGuideDocs";
 import PageHelp from "./components/PageHelp";
 import SiteHelpLauncher from "./components/SiteHelpLauncher";
 import Link from "next/link";
+import type { PageHelpId } from "@/lib/page-help";
 import { STATUS_CONFIG, getStatusConfig, statusBadgeStyle, type OutageStatus } from "@/lib/outage-status";
 import { loadSavedVisits, saveFieldVisit, type FieldVisitCache } from "@/lib/field-visit";
 import { pickNextRouteStop } from "@/lib/route-next";
@@ -93,7 +94,7 @@ type BoundaryZone = {
   zip_codes?: string[] | null;
 };
 
-type Tab = "dashboard" | "map" | "outages" | "opportunities" | "queue" | "techs" | "territories" | "admin" | "guide" | "profile";
+type Tab = PageHelpId;
 
 // ── Config ───────────────────────────────────────────────────────────────────
 const CENTER = { lat: 44.9778, lng: -93.265 };
