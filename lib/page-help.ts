@@ -53,7 +53,7 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
     bullets: [
       "Click a dot to open details, then Investigate to submit the field form.",
       "Toggle Xcel / Connexus in the sidebar to control which feeds appear.",
-      "Use Hide done / Hide declined to reduce clutter; Route to Nearest sends you to the closest unvisited dot.",
+      "Map layer toggles (hide completed, hide declined, previous storms) live in the sidebar. Route to Next picks the highest-value stop, not just the nearest dot.",
       "Colors match the legend — gray badge = Unvisited; white circle with gray ring on the map.",
     ],
     layman: {
@@ -63,12 +63,12 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
       onThisPage: [
         "Colored dots — each is a real outage location from Xcel or Connexus.",
         "Legend — explains what each color and shape means (unvisited, sold, door hanger, etc.).",
-        "Top buttons — Route to Nearest, Add Opportunity, hide finished dots.",
-        "Sidebar toggles — turn Xcel or Connexus feeds on/off.",
+        "Top buttons — Route to Next, Add Opportunity.",
+        "Sidebar — Data Sources (Xcel/Connexus) and Map Layers (hide completed, etc.).",
       ],
       tryThis: [
         "Tap any dot → Investigate → pick an outcome (no answer, opportunity, sold, etc.).",
-        "Use Route to Nearest to jump to the closest unvisited stop.",
+        "Use Route to Next for the best next stop (sold jobs, office calls, and utility dots rank higher).",
         "Red + button adds a new lead at an address you found in the field.",
       ],
     },

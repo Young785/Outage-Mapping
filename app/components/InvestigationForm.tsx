@@ -1,6 +1,7 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { seedInvestigationForm } from "@/lib/field-visit";
 
 type Outage = {
   id: number | string;
@@ -9,6 +10,10 @@ type Outage = {
   customers: number;
   cause?: string;
   status: string;
+  investigationResult?: string;
+  customerIntent?: string;
+  verbalPrice?: string;
+  followUpStatus?: string;
 };
 
 type OutageStatus =
@@ -63,7 +68,16 @@ type Props = {
   outage: Outage;
   token: string | null;
   onClose: () => void;
-  onSubmitted: (outageId: number | string, newStatus: string) => void;
+  onSubmitted: (
+    outageId: number | string,
+    newStatus: string,
+    visit?: {
+      investigationResult?: string;
+      customerIntent?: string;
+      verbalPrice?: string;
+      followUpStatus?: string;
+    }
+  ) => void;
 };
 
 function deriveStatus(
@@ -83,35 +97,37 @@ function deriveStatus(
   return "opportunity";
 }
 
-function deriveInitialState(status: string): {
-  primary: PrimaryOutcome;
-  action: OpportunityAction;
-  thinkingIntent: "" | "thinks_utility" | "wait_insurance" | "think_or_quotes";
-  startedSub: "" | "return_grounding";
-} {
-  const blank = { primary: "" as PrimaryOutcome, action: "" as OpportunityAction, thinkingIntent: "" as const, startedSub: "" as const };
-  switch (status) {
-    case "no_opportunity": return { ...blank, primary: "no_damage" };
-    case "door_hanger": return { ...blank, primary: "opportunity_found", action: "door_hanger" };
-    case "customer_thinking": case "wants_to_proceed": return { ...blank, primary: "opportunity_found", action: "customer_thinking" };
-    case "sold": return { ...blank, primary: "opportunity_found", action: "job_sold" };
-    case "temp_power": return { ...blank, primary: "opportunity_found", action: "temp_power" };
-    case "job_started": return { ...blank, primary: "opportunity_found", action: "job_started" };
-    case "grounding": return { ...blank, primary: "opportunity_found", action: "job_started", startedSub: "return_grounding" };
-    case "opportunity": return { ...blank, primary: "opportunity_found" };
-    default: return blank;
+function applySeed(
+  outage: Outage,
+  setters: {
+    setPrimary: (v: PrimaryOutcome) => void;
+    setAction: (v: OpportunityAction) => void;
+    setStartedSub: (v: "" | "return_grounding") => void;
+    setThinkingIntent: (v: "" | "thinks_utility" | "wait_insurance" | "think_or_quotes") => void;
+    setVerbalPrice: (v: string) => void;
   }
+) {
+  const seed = seedInvestigationForm(outage.status, {
+    investigationResult: outage.investigationResult,
+    customerIntent: outage.customerIntent,
+    verbalPrice: outage.verbalPrice,
+    followUpStatus: outage.followUpStatus,
+  });
+  setters.setPrimary(seed.primary);
+  setters.setAction(seed.action);
+  setters.setStartedSub(seed.startedSub);
+  setters.setThinkingIntent(seed.thinkingIntent);
+  setters.setVerbalPrice(seed.verbalPrice);
 }
 
 export default function InvestigationForm({ outage, token, onClose, onSubmitted }: Props) {
   const formRef = useRef<HTMLFormElement | null>(null);
-  const initState = deriveInitialState(outage.status);
-  const [primary, setPrimary] = useState<PrimaryOutcome>(initState.primary);
-  const [action, setAction] = useState<OpportunityAction>(initState.action);
-  const [startedSub, setStartedSub] = useState<"" | "return_grounding">(initState.startedSub);
+  const [primary, setPrimary] = useState<PrimaryOutcome>("");
+  const [action, setAction] = useState<OpportunityAction>("");
+  const [startedSub, setStartedSub] = useState<"" | "return_grounding">("");
   const [thinkingIntent, setThinkingIntent] = useState<
     "" | "thinks_utility" | "wait_insurance" | "think_or_quotes"
-  >(initState.thinkingIntent);
+  >("");
   const [power, setPower] = useState<PowerOption>("");
   const [verbalPrice, setVerbalPrice] = useState("");
   const [honeyHoleHomes, setHoneyHoleHomes] = useState<number | "">(
@@ -125,6 +141,17 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
   const [techsRequired, setTechsRequired] = useState<number | "">("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    applySeed(outage, {
+      setPrimary,
+      setAction,
+      setStartedSub,
+      setThinkingIntent,
+      setVerbalPrice,
+    });
+    setError(null);
+  }, [outage.id, outage.status, outage.investigationResult, outage.customerIntent, outage.verbalPrice, outage.followUpStatus]);
 
   const serviceType = amperage && serviceSetup ? `${amperage} ${serviceSetup}`.toLowerCase() : "";
   const isOpportunity = primary === "opportunity_found";
@@ -235,7 +262,12 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
         throw new Error(d.error || "Submission failed");
       }
 
-      onSubmitted(outage.id, newStatus);
+      onSubmitted(outage.id, newStatus, {
+        investigationResult,
+        customerIntent: customerIntent ?? undefined,
+        verbalPrice: verbalPrice.trim() || undefined,
+        followUpStatus: followUpStatus || undefined,
+      });
       onClose();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Submission failed");
@@ -343,15 +375,16 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
   }
 
   const previewStatus = primary ? deriveStatus(primary, action, startedSub) : null;
-  const STATUS_PREVIEW: Record<string, { color: string; label: string }> = {
-    no_opportunity: { color: "#111827", label: "Declined / No opportunity" },
-    opportunity: { color: "#f97316", label: "Opportunity found" },
-    door_hanger: { color: "#ec4899", label: "Door hanger left" },
-    customer_thinking: { color: "#9ca3af", label: "Customer thinking" },
-    sold: { color: "#22c55e", label: "Job sold → Job queue" },
-    job_started: { color: "#22c55e", label: "Job started" },
-    temp_power: { color: "#facc15", label: "Temp power installed" },
-    grounding: { color: "#facc15", label: "Return for grounding" },
+  const STATUS_PREVIEW: Record<string, { color: string; stroke: string; label: string }> = {
+    no_opportunity: { color: "#111827", stroke: "#111827", label: "Declined / No opportunity" },
+    opportunity: { color: "#ffffff", stroke: "#f97316", label: "Opportunity found" },
+    door_hanger: { color: "#ec4899", stroke: "#be185d", label: "Door hanger left" },
+    customer_thinking: { color: "#9ca3af", stroke: "#6b7280", label: "Customer thinking" },
+    sold: { color: "#ffffff", stroke: "#22c55e", label: "Job sold → Job queue" },
+    job_started: { color: "#22c55e", stroke: "#16a34a", label: "Job started" },
+    temp_power: { color: "#facc15", stroke: "#f97316", label: "Temp power installed" },
+    grounding: { color: "#facc15", stroke: "#22c55e", label: "Return for grounding" },
+    completed: { color: "#2563eb", stroke: "#1d4ed8", label: "Completed" },
   };
 
   return (
@@ -572,7 +605,7 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
           {showOptional && (
             <div style={{ marginTop: "12px", padding: "14px", background: "#f9fafb", borderRadius: "10px", border: "1px solid #e5e7eb" }}>
               <p style={sectionHead}>Service (optional)</p>
-              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "12px" }}>
                 <select value={amperage} onChange={(e) => setAmperage(e.target.value)} style={{ ...inp, flex: 1, minWidth: "120px" }}>
                   <option value="">Amperage…</option>
                   {AMPERAGE_OPTIONS.map((a) => (
@@ -599,7 +632,7 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
 
           {previewStatus && (
             <div style={{ marginTop: "14px", padding: "10px 14px", background: "#f0fdfa", borderRadius: "8px", display: "flex", alignItems: "center", gap: "10px" }}>
-              <div style={{ width: "12px", height: "12px", borderRadius: previewStatus === "door_hanger" ? "2px" : "50%", background: STATUS_PREVIEW[previewStatus]?.color ?? "#9ca3af" }} />
+              <div style={{ width: "12px", height: "12px", borderRadius: "50%", background: STATUS_PREVIEW[previewStatus]?.color ?? "#9ca3af", border: `2px solid ${STATUS_PREVIEW[previewStatus]?.stroke ?? "#9ca3af"}` }} />
               <span style={{ fontSize: "13px", fontWeight: 600, color: "#0f766e" }}>{STATUS_PREVIEW[previewStatus]?.label ?? previewStatus}</span>
             </div>
           )}

@@ -15,6 +15,8 @@ import PageHelp from "./components/PageHelp";
 import SiteHelpLauncher from "./components/SiteHelpLauncher";
 import Link from "next/link";
 import { STATUS_CONFIG, getStatusConfig, statusBadgeStyle, type OutageStatus } from "@/lib/outage-status";
+import { loadSavedVisits, saveFieldVisit, type FieldVisitCache } from "@/lib/field-visit";
+import { pickNextRouteStop } from "@/lib/route-next";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 type Role = "office" | "tech" | "admin" | "owner";
@@ -55,6 +57,10 @@ type Outage = {
   firstSeenAt?: string | null;
   lastUpdatedAt?: string | null;
   isStaleMarker?: boolean;
+  investigationResult?: string;
+  customerIntent?: string;
+  verbalPrice?: string;
+  followUpStatus?: string;
   scoreBreakdown?: {
     finalScore: number;
     urgency: number;
@@ -236,7 +242,12 @@ export default function Page() {
 
         // Restore status from localStorage as offline fallback
         const savedVisits = loadSavedVisits();
-        const saved = savedVisits[attrs.id ?? f.id] ?? {};
+        const saved = savedVisits[String(attrs.id ?? f.id)] ?? {};
+
+        const serverStatus = (attrs.status ?? f.status) as OutageStatus | undefined;
+        const mergedStatus = (serverStatus && serverStatus !== "unvisited"
+          ? serverStatus
+          : (saved.status as OutageStatus | undefined) ?? serverStatus ?? "unvisited") as OutageStatus;
 
         return {
           id: attrs.id ?? f.id,
@@ -250,7 +261,11 @@ export default function Page() {
           outageType: attrs.outageType ?? f.outageType ?? "Known Electric Outage",
           cause: attrs.cause ?? f.cause,
           etr: attrs.etr ?? f.etr,
-          status: (attrs.status ?? f.status ?? saved.status ?? "unvisited") as OutageStatus,
+          status: mergedStatus,
+          investigationResult: saved.investigationResult,
+          customerIntent: saved.customerIntent,
+          verbalPrice: saved.verbalPrice,
+          followUpStatus: saved.followUpStatus,
           source: attrs.source ?? f.source ?? "xcel",
           customerName: attrs.customerName ?? f.customerName ?? null,
           customerPhone: attrs.customerPhone ?? f.customerPhone ?? null,
@@ -654,14 +669,16 @@ export default function Page() {
     };
   }, [token, user, activeTab, stormPhase, tempOutMode]);
 
-  // ── LocalStorage visit fallback ──────────────────────────────────────────
-  function loadSavedVisits(): Record<string, Partial<Outage>> {
-    try { return JSON.parse(localStorage.getItem("fieldmap_visits") || "{}"); } catch { return {}; }
-  }
-  function saveVisit(id: number | string, data: Partial<Outage>) {
-    const saved = loadSavedVisits();
-    saved[String(id)] = { ...saved[String(id)], ...data };
-    localStorage.setItem("fieldmap_visits", JSON.stringify(saved));
+  function mergeOutageWithVisit(o: Outage, visit?: FieldVisitCache): Outage {
+    if (!visit) return o;
+    return {
+      ...o,
+      status: (visit.status as OutageStatus) ?? o.status,
+      investigationResult: visit.investigationResult ?? o.investigationResult,
+      customerIntent: visit.customerIntent ?? o.customerIntent,
+      verbalPrice: visit.verbalPrice ?? o.verbalPrice,
+      followUpStatus: visit.followUpStatus ?? o.followUpStatus,
+    };
   }
 
   function markerPathForOutage(outage: Outage): google.maps.SymbolPath | string {
@@ -1027,29 +1044,46 @@ export default function Page() {
     URL.revokeObjectURL(url);
   }
 
-  function findNearest() {
-    const unvisited = outages.filter((o) => o.status === "unvisited");
-    if (!unvisited.length) { alert("No unvisited outages!"); return; }
-    if (!userLocation) { alert("Enable location access to use this feature."); return; }
-    let nearest = unvisited[0];
-    let minDist = Infinity;
-    unvisited.forEach((o) => {
-      const d = Math.sqrt(Math.pow(o.lat - userLocation.lat, 2) + Math.pow(o.lng - userLocation.lng, 2));
-      if (d < minDist) { minDist = d; nearest = o; }
-    });
-    navigateToLatLng(nearest.lat, nearest.lng, nearest.streetAddress ?? nearest.city, nearest);
+  function routeToNext() {
+    if (!userLocation) {
+      alert("Enable location access to use Route to Next.");
+      return;
+    }
+    const next = pickNextRouteStop(outages, userLocation);
+    if (!next) {
+      alert("No actionable stops remaining on the map.");
+      return;
+    }
+    navigateToLatLng(next.lat, next.lng, next.streetAddress ?? next.city, next);
   }
 
   // ── Status update ────────────────────────────────────────────────────────
-  function updateStatus(id: number | string, status: OutageStatus) {
-    setOutages((prev) =>
-      prev.map((o) => (o.id === id ? { ...o, status } : o))
-    );
-    saveVisit(id, { status });
-    if (selectedOutage?.id === id) setSelectedOutage((p) => p && { ...p, status });
-    if (detailOutage?.id === id) setDetailOutage((p) => p && { ...p, status });
+  function updateStatus(
+    id: number | string,
+    status: OutageStatus,
+    visit?: FieldVisitCache
+  ) {
+    const patch: FieldVisitCache = { status, ...visit };
+    saveFieldVisit(id, patch);
 
-    // Persist to DB
+    setOutages((prev) =>
+      prev.map((o) =>
+        o.id === id
+          ? mergeOutageWithVisit({ ...o, status }, patch)
+          : o
+      )
+    );
+
+    if (selectedOutage?.id === id) {
+      setSelectedOutage((p) => p && mergeOutageWithVisit({ ...p, status }, patch));
+    }
+    if (detailOutage?.id === id) {
+      setDetailOutage((p) => p && mergeOutageWithVisit({ ...p, status }, patch));
+    }
+    if (investigatingOutage?.id === id) {
+      setInvestigatingOutage((p) => p && mergeOutageWithVisit({ ...p, status }, patch));
+    }
+
     fetch("/api/outages", {
       method: "POST",
       headers: {
@@ -1057,12 +1091,9 @@ export default function Page() {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({ id, status }),
-    });
+    }).catch(() => {});
 
-    // Re-render markers
-    placeOutageMarkers(
-      outages.map((o) => (o.id === id ? { ...o, status } : o))
-    );
+    void fetchOutages();
   }
 
   async function removeMarker(id: number | string) {
@@ -1581,13 +1612,29 @@ export default function Page() {
           <div style={{ fontSize: "11px", fontWeight: 600, color: "#9ca3af", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Data Sources</div>
           <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px", cursor: "pointer" }}
             onClick={() => setActiveSources((prev) => prev.includes("xcel") ? prev.filter((s) => s !== "xcel") : [...prev, "xcel"])}>
-            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>Xcel Energy</span>
+            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>Xcel Outages</span>
             <div style={toggleCss(activeSources.includes("xcel"), "#0d9488")}><div style={toggleKnobCss(activeSources.includes("xcel"))} /></div>
           </label>
           <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}
             onClick={() => setConnexusEnabled(!connexusEnabled)}>
-            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>Connexus</span>
+            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>Connexus Outages</span>
             <div style={toggleCss(connexusEnabled, "#0d9488")}><div style={toggleKnobCss(connexusEnabled)} /></div>
+          </label>
+          <div style={{ fontSize: "11px", fontWeight: 600, color: "#9ca3af", margin: "12px 0 8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Map Layers</div>
+          <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px", cursor: "pointer" }}
+            onClick={() => setHideCompletedOnMap((v) => !v)}>
+            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>Hide completed</span>
+            <div style={toggleCss(hideCompletedOnMap, "#6b7280")}><div style={toggleKnobCss(hideCompletedOnMap)} /></div>
+          </label>
+          <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px", cursor: "pointer" }}
+            onClick={() => setHideDeclinedOnMap((v) => !v)}>
+            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>Hide declined</span>
+            <div style={toggleCss(hideDeclinedOnMap, "#6b7280")}><div style={toggleKnobCss(hideDeclinedOnMap)} /></div>
+          </label>
+          <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}
+            onClick={() => setShowStaleOnMap((v) => !v)}>
+            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>Show previous storms</span>
+            <div style={toggleCss(showStaleOnMap, "#6b7280")}><div style={toggleKnobCss(showStaleOnMap)} /></div>
           </label>
         </div>
 
@@ -1718,7 +1765,7 @@ export default function Page() {
               </button>
             )}
             {activeTab === "map" && (
-              <button onClick={findNearest} style={btnCss("#0d9488")}>
+              <button onClick={routeToNext} style={btnCss("#0d9488")}>
                 {isMobile ? "→" : "Route to Next"}
               </button>
             )}
@@ -1780,7 +1827,6 @@ export default function Page() {
                 {[
                   { label: "Total Outages",     value: stats.total,          color: "#374151", bg: "#f9fafb" },
                   { label: "Unvisited",         value: stats.unvisited,      color: "#9ca3af", bg: "#f9fafb" },
-                  { label: "Investigating",     value: stats.investigating,  color: "#3b82f6", bg: "#eff6ff" },
                   { label: "Opportunities",     value: stats.opportunity + stats.wantsToProceed, color: "#f97316", bg: "#fff7ed" },
                   { label: "Active Calls in Queue", value: activeCallsInQueue, color: "#2563eb", bg: "#eff6ff" },
                   { label: "Sold Jobs",         value: stats.sold,           color: "#16a34a", bg: "#f0fdf4" },
@@ -1895,19 +1941,8 @@ export default function Page() {
                   <div style={{ fontSize: "11px", color: "#374151" }}>▲ Office / Call-in (triangle)</div>
                   <div style={{ fontSize: "11px", color: "#374151" }}>◆ Tech-generated (diamond)</div>
                 </div>
-                <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "8px", paddingTop: "8px" }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "#374151", cursor: "pointer", marginBottom: "4px" }}>
-                    <input type="checkbox" checked={hideCompletedOnMap} onChange={(e) => setHideCompletedOnMap(e.target.checked)} />
-                    Hide completed
-                  </label>
-                  <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "#374151", cursor: "pointer" }}>
-                    <input type="checkbox" checked={hideDeclinedOnMap} onChange={(e) => setHideDeclinedOnMap(e.target.checked)} />
-                    Hide declined
-                  </label>
-                  <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "#374151", cursor: "pointer", marginTop: "4px" }}>
-                    <input type="checkbox" checked={showStaleOnMap} onChange={(e) => setShowStaleOnMap(e.target.checked)} />
-                    Show stale dots
-                  </label>
+                <div style={{ fontSize: "10px", color: "#6b7280", marginTop: "6px", marginBottom: "4px" }}>
+                  Map layer toggles are in the sidebar under Map Layers.
                 </div>
                 <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "4px", paddingTop: "6px", fontWeight: 700, color: "#1f2937", marginBottom: "4px", fontSize: "12px" }}>
                   Status / Color
@@ -1927,7 +1962,7 @@ export default function Page() {
                   Larger orange = honey hole (multi-customer)
                 </div>
                 <div style={{ fontSize: "10px", color: "#9ca3af", marginBottom: "6px" }}>
-                  Faded marker = stale (older storm carry-over)
+                  Shape never changes (lead source). Faded = previous storm — toggle in sidebar.
                 </div>
                 <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "4px", paddingTop: "6px", fontWeight: 700, color: "#1f2937", marginBottom: "4px", fontSize: "12px" }}>Technicians</div>
                 {(["available", "working", "paused"] as const).map((s) => (
@@ -2184,7 +2219,7 @@ export default function Page() {
           outage={investigatingOutage}
           token={token}
           onClose={() => { setShowInvestigation(false); setInvestigatingOutage(null); }}
-          onSubmitted={(id, newStatus) => updateStatus(id, newStatus as OutageStatus)}
+          onSubmitted={(id, newStatus, visit) => updateStatus(id, newStatus as OutageStatus, visit)}
         />
       )}
 
