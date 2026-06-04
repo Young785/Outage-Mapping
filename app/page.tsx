@@ -665,10 +665,6 @@ export default function Page() {
   }
 
   function markerPathForOutage(outage: Outage): google.maps.SymbolPath | string {
-    // Door hanger = square marker (any source)
-    if (outage.status === "door_hanger") {
-      return "M -1,-1 L 1,-1 1,1 -1,1 Z";
-    }
     if (
       outage.source === "office" ||
       outage.source === "crm" ||
@@ -776,11 +772,14 @@ export default function Page() {
       const baseSize = inPriorityZone ? baseSizeRaw + 2 : baseSizeRaw;
 
       // New (unseen) ArcGIS dot: white fill with red outline, high z-index
-      const isNewArcGIS = outage.isNew === true && (outage.source === "xcel" || outage.source === "connexus" || outage.source === "arcgis");
+      const isArcGIS = outage.source === "xcel" || outage.source === "connexus" || outage.source === "arcgis";
+      const isNewArcGIS = outage.isNew === true && isArcGIS;
+      // Unvisited ArcGIS outages always show white+red outline (utility-confirmed)
+      const isUnvisitedArcGIS = outage.status === "unvisited" && isArcGIS;
 
-      const fillColor = isNewArcGIS ? "#ffffff" : cfg.color;
+      const fillColor = (isNewArcGIS || isUnvisitedArcGIS) ? "#ffffff" : cfg.color;
       const stale = outage.isStaleMarker === true;
-      const strokeColor = stale ? "#9ca3af" : (isNewArcGIS ? "#dc2626" : cfg.strokeColor);
+      const strokeColor = stale ? "#9ca3af" : ((isNewArcGIS || isUnvisitedArcGIS) ? "#dc2626" : cfg.strokeColor);
       const strokeWeight = isNewArcGIS ? 4 : (isHoneyHole ? 4 : 3);
 
       const marker = new google.maps.Marker({
@@ -1719,19 +1718,9 @@ export default function Page() {
               </button>
             )}
             {activeTab === "map" && (
-              <>
-                <label style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#6b7280", cursor: "pointer", whiteSpace: "nowrap" }}>
-                  <input type="checkbox" checked={hideCompletedOnMap} onChange={(e) => setHideCompletedOnMap(e.target.checked)} />
-                  Hide done
-                </label>
-                <label style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#6b7280", cursor: "pointer", whiteSpace: "nowrap" }}>
-                  <input type="checkbox" checked={hideDeclinedOnMap} onChange={(e) => setHideDeclinedOnMap(e.target.checked)} />
-                  Hide declined
-                </label>
-                <button onClick={findNearest} style={btnCss("#0d9488")}>
-                  {isMobile ? "→" : "Route to Nearest"}
-                </button>
-              </>
+              <button onClick={findNearest} style={btnCss("#0d9488")}>
+                {isMobile ? "→" : "Route to Next"}
+              </button>
             )}
             {lastUpdatedAt && !isMobile && (
               <span style={{ fontSize: "12px", color: "#9ca3af", alignSelf: "center", whiteSpace: "nowrap" }}>
@@ -1900,12 +1889,11 @@ export default function Page() {
                 <div style={{ display: "flex", flexDirection: "column", gap: "3px", marginBottom: "8px" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                     <span style={{ width: 12, height: 12, borderRadius: "50%", background: "#fff", border: "2px solid #dc2626", flexShrink: 0, display: "inline-block" }} />
-                    <span style={{ fontSize: "11px", color: "#374151" }}>ArcGIS (new — high priority)</span>
+                    <span style={{ fontSize: "11px", color: "#374151" }}>ArcGIS — unvisited (utility-confirmed)</span>
                   </div>
-                  <div style={{ fontSize: "11px", color: "#374151" }}>● ArcGIS (visited)</div>
-                  <div style={{ fontSize: "11px", color: "#374151" }}>▲ Office / Call-in</div>
-                  <div style={{ fontSize: "11px", color: "#374151" }}>◆ Self-generated</div>
-                  <div style={{ fontSize: "11px", color: "#374151" }}>■ Door hanger left</div>
+                  <div style={{ fontSize: "11px", color: "#374151" }}>● ArcGIS / Xcel (circle)</div>
+                  <div style={{ fontSize: "11px", color: "#374151" }}>▲ Office / Call-in (triangle)</div>
+                  <div style={{ fontSize: "11px", color: "#374151" }}>◆ Tech-generated (diamond)</div>
                 </div>
                 <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "8px", paddingTop: "8px" }}>
                   <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "#374151", cursor: "pointer", marginBottom: "4px" }}>
@@ -1924,11 +1912,7 @@ export default function Page() {
                 <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "4px", paddingTop: "6px", fontWeight: 700, color: "#1f2937", marginBottom: "4px", fontSize: "12px" }}>
                   Status / Color
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
-                  <div style={{ width: "12px", height: "12px", borderRadius: "50%", background: "#ffffff", border: "2px solid #dc2626", flexShrink: 0 }} />
-                  <span style={{ color: "#374151" }}>New ArcGIS (unseen)</span>
-                </div>
-                {Object.entries(STATUS_CONFIG).filter(([k]) => !["opportunity", "wants_to_proceed"].includes(k)).map(([k, v]) => (
+                {Object.entries(STATUS_CONFIG).filter(([k]) => !["opportunity", "wants_to_proceed", "investigating"].includes(k)).map(([k, v]) => (
                   <div key={k} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
                     <div style={{
                       width: "12px", height: "12px", borderRadius: "50%",
@@ -2474,7 +2458,7 @@ export default function Page() {
           </div>
         </div>
       )}
-      <SiteHelpLauncher role={user.role} />
+      <SiteHelpLauncher role={user.role} activePage={activeTab} />
     </div>
   );
 }

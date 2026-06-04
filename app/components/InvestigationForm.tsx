@@ -25,17 +25,15 @@ type OutageStatus =
   | "grounding"
   | "completed";
 
-type PrimaryOutcome = "" | "utility_only" | "no_damage" | "opportunity_found";
+type PrimaryOutcome = "" | "utility_only" | "no_damage" | "not_target" | "opportunity_found";
 type OpportunityAction =
   | ""
   | "door_hanger"
   | "job_sold"
   | "temp_power"
   | "job_started"
-  | "return_grounding"
   | "customer_thinking"
-  | "customer_declined"
-  | "verbal_quote";
+  | "customer_declined";
 type PowerOption =
   | ""
   | "has_power"
@@ -46,7 +44,6 @@ type PowerOption =
 
 const JOB_SCOPE_OPTIONS = [
   { value: "", label: "— Not specified —" },
-  { value: "temped_out", label: "Temped-out job" },
   { value: "farm_box", label: "Farm box needed" },
   { value: "panel_replace", label: "Panel replacement needed" },
   { value: "relocate", label: "Relocate service" },
@@ -72,41 +69,55 @@ type Props = {
 function deriveStatus(
   primary: PrimaryOutcome,
   action: OpportunityAction,
-  thinkingIntent: string,
-  soldSub: "" | "temp_power",
   startedSub: "" | "return_grounding"
 ): OutageStatus {
-  if (primary === "utility_only" || primary === "no_damage") return "no_opportunity";
+  if (primary === "utility_only" || primary === "no_damage" || primary === "not_target") return "no_opportunity";
   if (primary !== "opportunity_found") return "investigating";
 
   if (action === "door_hanger") return "door_hanger";
   if (action === "customer_declined") return "no_opportunity";
-  if (action === "verbal_quote") return "opportunity";
-  if (action === "job_sold") return soldSub === "temp_power" ? "temp_power" : "sold";
+  if (action === "job_sold") return "sold";
+  if (action === "temp_power") return "temp_power";
   if (action === "job_started") return startedSub === "return_grounding" ? "grounding" : "job_started";
-  if (action === "customer_thinking") {
-    if (thinkingIntent === "wants_to_proceed") return "wants_to_proceed";
-    return "customer_thinking";
-  }
+  if (action === "customer_thinking") return "customer_thinking";
   return "opportunity";
+}
+
+function deriveInitialState(status: string): {
+  primary: PrimaryOutcome;
+  action: OpportunityAction;
+  thinkingIntent: "" | "thinks_utility" | "wait_insurance" | "think_or_quotes";
+  startedSub: "" | "return_grounding";
+} {
+  const blank = { primary: "" as PrimaryOutcome, action: "" as OpportunityAction, thinkingIntent: "" as const, startedSub: "" as const };
+  switch (status) {
+    case "no_opportunity": return { ...blank, primary: "no_damage" };
+    case "door_hanger": return { ...blank, primary: "opportunity_found", action: "door_hanger" };
+    case "customer_thinking": case "wants_to_proceed": return { ...blank, primary: "opportunity_found", action: "customer_thinking" };
+    case "sold": return { ...blank, primary: "opportunity_found", action: "job_sold" };
+    case "temp_power": return { ...blank, primary: "opportunity_found", action: "temp_power" };
+    case "job_started": return { ...blank, primary: "opportunity_found", action: "job_started" };
+    case "grounding": return { ...blank, primary: "opportunity_found", action: "job_started", startedSub: "return_grounding" };
+    case "opportunity": return { ...blank, primary: "opportunity_found" };
+    default: return blank;
+  }
 }
 
 export default function InvestigationForm({ outage, token, onClose, onSubmitted }: Props) {
   const formRef = useRef<HTMLFormElement | null>(null);
-  const [primary, setPrimary] = useState<PrimaryOutcome>("");
-  const [action, setAction] = useState<OpportunityAction>("");
-  const [soldSub, setSoldSub] = useState<"" | "temp_power">("");
-  const [startedSub, setStartedSub] = useState<"" | "return_grounding">("");
+  const initState = deriveInitialState(outage.status);
+  const [primary, setPrimary] = useState<PrimaryOutcome>(initState.primary);
+  const [action, setAction] = useState<OpportunityAction>(initState.action);
+  const [startedSub, setStartedSub] = useState<"" | "return_grounding">(initState.startedSub);
   const [thinkingIntent, setThinkingIntent] = useState<
-    "" | "thinks_utility" | "wait_insurance" | "think_or_quotes" | "wants_to_proceed"
-  >("");
+    "" | "thinks_utility" | "wait_insurance" | "think_or_quotes"
+  >(initState.thinkingIntent);
   const [power, setPower] = useState<PowerOption>("");
   const [verbalPrice, setVerbalPrice] = useState("");
   const [honeyHoleHomes, setHoneyHoleHomes] = useState<number | "">(
     outage.customers > 1 ? outage.customers : ""
   );
   const [jobScope, setJobScope] = useState("");
-  const [multiFamily, setMultiFamily] = useState(false);
   const [showOptional, setShowOptional] = useState(false);
   const [amperage, setAmperage] = useState("");
   const [serviceSetup, setServiceSetup] = useState("");
@@ -138,27 +149,25 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
 
   const followUpStatus =
     action === "job_sold"
-      ? soldSub === "temp_power"
+      ? "sold"
+      : action === "temp_power"
         ? "temp_power"
-        : "sold"
-      : action === "job_started"
-        ? startedSub === "return_grounding"
-          ? "return_grounding"
-          : "job_started"
-        : action === "door_hanger"
-          ? "door_hanger"
-          : action === "customer_thinking"
-            ? "customer_thinking"
-            : action === "customer_declined"
-              ? "complete"
-              : action === "verbal_quote"
-                ? "opportunity"
+        : action === "job_started"
+          ? startedSub === "return_grounding"
+            ? "return_grounding"
+            : "job_started"
+          : action === "door_hanger"
+            ? "door_hanger"
+            : action === "customer_thinking"
+              ? "customer_thinking"
+              : action === "customer_declined"
+                ? "complete"
                 : "";
 
   const contactOutcome =
     action === "door_hanger"
       ? "unavailable"
-      : ["verbal_quote", "job_sold", "job_started", "customer_thinking", "customer_declined"].includes(action)
+      : ["job_sold", "temp_power", "job_started", "customer_thinking", "customer_declined"].includes(action)
         ? "spoke_customer"
         : null;
 
@@ -178,11 +187,10 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
     setSubmitting(true);
     setError(null);
 
-    const newStatus = deriveStatus(primary, action, thinkingIntent, soldSub, startedSub);
+    const newStatus = deriveStatus(primary, action, startedSub);
 
     const scopeNote = [
       jobScope && `job_scope=${jobScope}`,
-      multiFamily && "multi_family=true",
       neighborhoodDead && "neighborhood_dead=true",
       verbalPrice.trim() && `verbal_price=${verbalPrice.trim()}`,
     ]
@@ -334,18 +342,16 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
     formRef.current?.requestSubmit();
   }
 
-  const previewStatus = primary ? deriveStatus(primary, action, thinkingIntent, soldSub, startedSub) : null;
+  const previewStatus = primary ? deriveStatus(primary, action, startedSub) : null;
   const STATUS_PREVIEW: Record<string, { color: string; label: string }> = {
     no_opportunity: { color: "#111827", label: "Declined / No opportunity" },
-    opportunity: { color: "#f97316", label: "Opportunity" },
-    door_hanger: { color: "#ec4899", label: "Door hanger (square marker)" },
+    opportunity: { color: "#f97316", label: "Opportunity found" },
+    door_hanger: { color: "#ec4899", label: "Door hanger left" },
     customer_thinking: { color: "#9ca3af", label: "Customer thinking" },
-    wants_to_proceed: { color: "#22c55e", label: "Wants to proceed → Job queue" },
     sold: { color: "#22c55e", label: "Job sold → Job queue" },
     job_started: { color: "#22c55e", label: "Job started" },
     temp_power: { color: "#facc15", label: "Temp power installed" },
     grounding: { color: "#facc15", label: "Return for grounding" },
-    investigating: { color: "#a855f7", label: "Investigating" },
   };
 
   return (
@@ -423,6 +429,14 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
           <p style={sectionHead}>What did you find?</p>
           <BigRadio
             name="primary"
+            value="not_target"
+            checked={primary === "not_target"}
+            onChange={() => { setPrimary("not_target"); setAction(""); }}
+            label="Not a target property"
+            sub="Warehouse, commercial, excluded zone"
+          />
+          <BigRadio
+            name="primary"
             value="utility_only"
             checked={primary === "utility_only"}
             onChange={() => {
@@ -454,31 +468,24 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
           {isOpportunity && (
             <>
               <p style={{ ...sectionHead, marginTop: "16px" }}>What happened?</p>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "8px" }}>
-                <Chip selected={action === "door_hanger"} onClick={() => { setAction("door_hanger"); setSoldSub(""); setStartedSub(""); }} label="Door hanger left" />
-                <Chip selected={action === "verbal_quote"} onClick={() => { setAction("verbal_quote"); setSoldSub(""); setStartedSub(""); }} label="Verbal price quoted" />
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <Chip selected={action === "door_hanger"} onClick={() => { setAction("door_hanger"); setStartedSub(""); }} label="Door hanger left" />
                 <Chip selected={action === "job_sold"} onClick={() => { setAction("job_sold"); setStartedSub(""); }} label="Job sold" />
-                {action === "job_sold" && (
-                  <div style={{ marginLeft: "12px", display: "flex", flexDirection: "column", gap: "6px" }}>
-                    <Chip selected={soldSub === ""} onClick={() => setSoldSub("")} label="Sold (no temp yet)" />
-                    <Chip selected={soldSub === "temp_power"} onClick={() => setSoldSub("temp_power")} label="Temp power installed" />
-                  </div>
-                )}
-                <Chip selected={action === "job_started"} onClick={() => { setAction("job_started"); setSoldSub(""); }} label="Job started" />
+                <Chip selected={action === "temp_power"} onClick={() => { setAction("temp_power"); setStartedSub(""); }} label="Temp power installed" />
+                <Chip selected={action === "job_started"} onClick={() => { setAction("job_started"); }} label="Job started" />
                 {action === "job_started" && (
                   <div style={{ marginLeft: "12px", display: "flex", flexDirection: "column", gap: "6px" }}>
                     <Chip selected={startedSub === ""} onClick={() => setStartedSub("")} label="In progress" />
                     <Chip selected={startedSub === "return_grounding"} onClick={() => setStartedSub("return_grounding")} label="Return for grounding" />
                   </div>
                 )}
-                <Chip selected={action === "customer_thinking"} onClick={() => { setAction("customer_thinking"); setSoldSub(""); setStartedSub(""); }} label="Customer thinking" />
+                <Chip selected={action === "customer_thinking"} onClick={() => { setAction("customer_thinking"); setStartedSub(""); }} label="Customer thinking" />
                 {action === "customer_thinking" && (
                   <div style={{ marginLeft: "12px", display: "flex", flexDirection: "column", gap: "6px" }}>
                     {[
                       { v: "thinks_utility" as const, l: "Thinks utility will fix it" },
                       { v: "wait_insurance" as const, l: "Wait for insurance" },
                       { v: "think_or_quotes" as const, l: "Wants quotes / thinking" },
-                      { v: "wants_to_proceed" as const, l: "Wants to proceed now" },
                     ].map((o) => (
                       <Chip key={o.v} selected={thinkingIntent === o.v} onClick={() => setThinkingIntent(o.v)} label={o.l} />
                     ))}
@@ -487,24 +494,22 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
                 <Chip selected={action === "customer_declined"} onClick={() => { setAction("customer_declined"); setThinkingIntent(""); }} label="Customer declined" />
               </div>
 
-              {action === "verbal_quote" && (
-                <div style={{ marginTop: "12px" }}>
-                  <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>
-                    Verbal price quoted ($)
-                  </label>
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={verbalPrice}
-                    onChange={(e) => setVerbalPrice(e.target.value)}
-                    placeholder="e.g. 4500"
-                    style={inp}
-                  />
-                </div>
-              )}
+              <div style={{ marginTop: "12px" }}>
+                <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>
+                  Verbal price quoted ($) <span style={{ fontWeight: 400, color: "#9ca3af" }}>— optional</span>
+                </label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={verbalPrice}
+                  onChange={(e) => setVerbalPrice(e.target.value)}
+                  placeholder="e.g. 4500"
+                  style={inp}
+                />
+              </div>
 
               <p style={{ ...sectionHead, marginTop: "16px" }}>Power status</p>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "6px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                 {[
                   { v: "has_power" as const, l: "Has power" },
                   { v: "no_power_on_drop" as const, l: "No power — power on line drop" },
@@ -541,10 +546,6 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
                     </option>
                   ))}
                 </select>
-                <label style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "10px", cursor: "pointer" }}>
-                  <input type="checkbox" checked={multiFamily} onChange={(e) => setMultiFamily(e.target.checked)} style={{ width: "18px", height: "18px", accentColor: "#0d9488" }} />
-                  <span style={{ fontSize: "14px", color: "#374151" }}>Multi-family</span>
-                </label>
               </div>
             </>
           )}

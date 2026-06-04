@@ -58,10 +58,10 @@ export const STATUS_CONFIG: Record<OutageStatus, StatusStyle> = {
     badgeText: "#9d174d",
   },
   wants_to_proceed: {
-    color: "#f97316",
+    color: "#ffffff",
     strokeColor: "#22c55e",
     bg: "#f0fdf4",
-    label: "Wants to Proceed",
+    label: "Job Sold",
     badgeText: "#15803d",
   },
   customer_thinking: {
