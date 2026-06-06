@@ -33,12 +33,11 @@ export type InvestigationFormSeed = {
     | ""
     | "door_hanger"
     | "job_sold"
-    | "temp_power"
     | "job_started"
     | "customer_thinking"
     | "customer_declined";
   thinkingIntent: "" | "thinks_utility" | "wait_insurance" | "think_or_quotes";
-  startedSub: "" | "return_grounding";
+  startedSub: "" | "temp_power" | "return_grounding";
   verbalPrice: string;
 };
 
@@ -80,7 +79,7 @@ export function seedInvestigationForm(
     case "sold":
       return { ...blank, primary: "opportunity_found", action: "job_sold" };
     case "temp_power":
-      return { ...blank, primary: "opportunity_found", action: "temp_power" };
+      return { ...blank, primary: "opportunity_found", action: "job_started", startedSub: "temp_power" };
     case "job_started":
       return { ...blank, primary: "opportunity_found", action: "job_started" };
     case "grounding":
@@ -115,7 +114,7 @@ function seedFromFollowUp(
     case "sold":
       return { ...blank, primary: "opportunity_found", action: "job_sold" };
     case "temp_power":
-      return { ...blank, primary: "opportunity_found", action: "temp_power" };
+      return { ...blank, primary: "opportunity_found", action: "job_started", startedSub: "temp_power" };
     case "job_started":
       return { ...blank, primary: "opportunity_found", action: "job_started" };
     case "return_grounding":

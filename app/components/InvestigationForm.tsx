@@ -5,10 +5,18 @@ import { seedInvestigationForm } from "@/lib/field-visit";
 
 type Outage = {
   id: number | string;
+  lat?: number;
+  lng?: number;
   streetAddress?: string;
   city?: string;
   customers: number;
   cause?: string;
+  etr?: string;
+  crewStatus?: string;
+  outageImpact?: string;
+  outageType?: string;
+  source?: string;
+  priorityScore?: number;
   status: string;
   investigationResult?: string;
   customerIntent?: string;
@@ -35,17 +43,11 @@ type OpportunityAction =
   | ""
   | "door_hanger"
   | "job_sold"
-  | "temp_power"
   | "job_started"
   | "customer_thinking"
   | "customer_declined";
-type PowerOption =
-  | ""
-  | "has_power"
-  | "no_power_on_drop"
-  | "no_power_no_drop"
-  | "neighborhood_dead"
-  | "honey_hole";
+type PrimaryPower = "" | "has_power" | "no_power";
+type NoPowerDetail = "" | "no_power_on_drop" | "no_power_no_drop" | "neighborhood_dead";
 
 const JOB_SCOPE_OPTIONS = [
   { value: "", label: "— Not specified —" },
@@ -83,7 +85,7 @@ type Props = {
 function deriveStatus(
   primary: PrimaryOutcome,
   action: OpportunityAction,
-  startedSub: "" | "return_grounding"
+  startedSub: "" | "temp_power" | "return_grounding"
 ): OutageStatus {
   if (primary === "utility_only" || primary === "no_damage" || primary === "not_target") return "no_opportunity";
   if (primary !== "opportunity_found") return "investigating";
@@ -91,8 +93,11 @@ function deriveStatus(
   if (action === "door_hanger") return "door_hanger";
   if (action === "customer_declined") return "no_opportunity";
   if (action === "job_sold") return "sold";
-  if (action === "temp_power") return "temp_power";
-  if (action === "job_started") return startedSub === "return_grounding" ? "grounding" : "job_started";
+  if (action === "job_started") {
+    if (startedSub === "return_grounding") return "grounding";
+    if (startedSub === "temp_power") return "temp_power";
+    return "job_started";
+  }
   if (action === "customer_thinking") return "customer_thinking";
   return "opportunity";
 }
@@ -102,7 +107,7 @@ function applySeed(
   setters: {
     setPrimary: (v: PrimaryOutcome) => void;
     setAction: (v: OpportunityAction) => void;
-    setStartedSub: (v: "" | "return_grounding") => void;
+    setStartedSub: (v: "" | "temp_power" | "return_grounding") => void;
     setThinkingIntent: (v: "" | "thinks_utility" | "wait_insurance" | "think_or_quotes") => void;
     setVerbalPrice: (v: string) => void;
   }
@@ -124,17 +129,19 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
   const formRef = useRef<HTMLFormElement | null>(null);
   const [primary, setPrimary] = useState<PrimaryOutcome>("");
   const [action, setAction] = useState<OpportunityAction>("");
-  const [startedSub, setStartedSub] = useState<"" | "return_grounding">("");
+  const [startedSub, setStartedSub] = useState<"" | "temp_power" | "return_grounding">("");
   const [thinkingIntent, setThinkingIntent] = useState<
     "" | "thinks_utility" | "wait_insurance" | "think_or_quotes"
   >("");
-  const [power, setPower] = useState<PowerOption>("");
+  const [primaryPower, setPrimaryPower] = useState<PrimaryPower>("");
+  const [noPowerDetail, setNoPowerDetail] = useState<NoPowerDetail>("");
   const [verbalPrice, setVerbalPrice] = useState("");
   const [honeyHoleHomes, setHoneyHoleHomes] = useState<number | "">(
     outage.customers > 1 ? outage.customers : ""
   );
   const [jobScope, setJobScope] = useState("");
   const [showOptional, setShowOptional] = useState(false);
+  const [showAdditionalOutage, setShowAdditionalOutage] = useState(false);
   const [amperage, setAmperage] = useState("");
   const [serviceSetup, setServiceSetup] = useState("");
   const [notes, setNotes] = useState("");
@@ -160,12 +167,19 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
     !!primary &&
     (primary !== "opportunity_found" || (!!action && !needsThinking));
 
+  const power =
+    primaryPower === "has_power"
+      ? "has_power"
+      : primaryPower === "no_power" && noPowerDetail
+        ? noPowerDetail
+        : ("" as const);
+
   const customerHasPower =
     power === "has_power" ? true : power === "" ? null : false;
   const lineDrop = power === "no_power_on_drop" || power === "no_power_no_drop";
   const powerOnLineDrop = power === "no_power_on_drop";
   const lineDropDamaged = false;
-  const honeyHole = power === "honey_hole";
+  const honeyHole = honeyHoleHomes !== "" && Number(honeyHoleHomes) > 1;
   const neighborhoodDead = power === "neighborhood_dead";
   const difficultJob = jobScope === "return_trip";
   const farmBoxNeeded = jobScope === "farm_box";
@@ -177,24 +191,24 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
   const followUpStatus =
     action === "job_sold"
       ? "sold"
-      : action === "temp_power"
-        ? "temp_power"
-        : action === "job_started"
-          ? startedSub === "return_grounding"
-            ? "return_grounding"
+      : action === "job_started"
+        ? startedSub === "return_grounding"
+          ? "return_grounding"
+          : startedSub === "temp_power"
+            ? "temp_power"
             : "job_started"
-          : action === "door_hanger"
-            ? "door_hanger"
-            : action === "customer_thinking"
-              ? "customer_thinking"
-              : action === "customer_declined"
-                ? "complete"
-                : "";
+        : action === "door_hanger"
+          ? "door_hanger"
+          : action === "customer_thinking"
+            ? "customer_thinking"
+            : action === "customer_declined"
+              ? "complete"
+              : "";
 
   const contactOutcome =
     action === "door_hanger"
       ? "unavailable"
-      : ["job_sold", "temp_power", "job_started", "customer_thinking", "customer_declined"].includes(action)
+      : ["job_sold", "job_started", "customer_thinking", "customer_declined"].includes(action)
         ? "spoke_customer"
         : null;
 
@@ -204,6 +218,13 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
       : action === "customer_declined"
         ? "not_interested"
         : null;
+
+  const addressLine = outage.streetAddress ?? outage.city ?? `Outage #${outage.id}`;
+  const shortAddress = outage.streetAddress?.split(",")[0] ?? outage.city ?? `Outage #${outage.id}`;
+  const navUrl =
+    outage.lat != null && outage.lng != null
+      ? `https://www.google.com/maps/dir/?api=1&destination=${outage.lat},${outage.lng}&travelmode=driving`
+      : null;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -235,7 +256,7 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
         },
         body: JSON.stringify({
           investigationResult,
-          customersAffected: honeyHole && honeyHoleHomes !== "" ? honeyHoleHomes : null,
+          customersAffected: honeyHole ? honeyHoleHomes : null,
           customerHasPower,
           lineDrop,
           powerOnLineDrop,
@@ -414,42 +435,80 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
           style={{
             padding: "16px 20px 12px",
             borderBottom: "1px solid #e5e7eb",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
             position: "sticky",
             top: 0,
             background: "#fff",
             zIndex: 1,
           }}
         >
-          <div style={{ minWidth: 0, paddingRight: "8px" }}>
-            <h2 style={{ margin: "0 0 2px", fontSize: "17px", fontWeight: 700 }}>Quick investigate</h2>
-            <p style={{ margin: 0, fontSize: "12px", color: "#6b7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              Target: 10-20 second tagging
-            </p>
-            <p style={{ margin: "2px 0 0", fontSize: "13px", color: "#6b7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {outage.streetAddress?.split(",")[0] ?? outage.city ?? `Outage #${outage.id}`}
-            </p>
-          </div>
-          <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
-            {canSubmit && (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
+            <h2 style={{ margin: 0, fontSize: "17px", fontWeight: 700 }}>Quick investigate</h2>
+            <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+              {canSubmit && (
+                <button
+                  type="button"
+                  onClick={quickSave}
+                  style={{ background: "#0d9488", color: "#fff", border: "none", borderRadius: "8px", height: "36px", padding: "0 10px", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}
+                >
+                  Done
+                </button>
+              )}
               <button
                 type="button"
-                onClick={quickSave}
-                style={{ background: "#0d9488", color: "#fff", border: "none", borderRadius: "8px", height: "36px", padding: "0 10px", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}
+                onClick={onClose}
+                style={{ background: "#f3f4f6", border: "none", borderRadius: "8px", width: "36px", height: "36px", fontSize: "20px", cursor: "pointer", color: "#374151" }}
               >
-                Done
+                ×
               </button>
-            )}
-            <button
-              type="button"
-              onClick={onClose}
-              style={{ background: "#f3f4f6", border: "none", borderRadius: "8px", width: "36px", height: "36px", fontSize: "20px", cursor: "pointer", color: "#374151" }}
-            >
-              ×
-            </button>
+            </div>
           </div>
+
+          {navUrl && (
+            <a
+              href={navUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "8px",
+                width: "100%",
+                padding: "12px",
+                marginBottom: "12px",
+                background: "#1d4ed8",
+                color: "#fff",
+                textDecoration: "none",
+                borderRadius: "10px",
+                fontSize: "14px",
+                fontWeight: 700,
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <polygon points="3 11 22 2 13 21 11 13 3 11" />
+              </svg>
+              Google Navigation
+            </a>
+          )}
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "6px" }}>
+            <div style={{ padding: "8px 10px", background: "#f9fafb", borderRadius: "8px" }}>
+              <div style={{ fontSize: "10px", fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.05em" }}>Customers affected</div>
+              <div style={{ fontSize: "18px", fontWeight: 700, color: "#1f2937" }}>{outage.customers}</div>
+            </div>
+            <div style={{ padding: "8px 10px", background: "#f9fafb", borderRadius: "8px" }}>
+              <div style={{ fontSize: "10px", fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.05em" }}>Priority score</div>
+              <div style={{ fontSize: "18px", fontWeight: 700, color: "#0d9488" }}>{Math.round(outage.priorityScore ?? 0)}</div>
+            </div>
+          </div>
+          <p style={{ margin: 0, fontSize: "13px", color: "#374151", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {shortAddress}
+          </p>
+          {outage.streetAddress && outage.streetAddress !== shortAddress && (
+            <p style={{ margin: "2px 0 0", fontSize: "11px", color: "#9ca3af", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {addressLine}
+            </p>
+          )}
         </div>
 
         <form ref={formRef} onSubmit={handleSubmit} style={{ padding: "16px 20px 24px" }}>
@@ -459,15 +518,38 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
             </div>
           )}
 
+          <button
+            type="button"
+            onClick={() => setShowAdditionalOutage(!showAdditionalOutage)}
+            style={{
+              width: "100%",
+              marginBottom: "14px",
+              padding: "10px",
+              background: "#f9fafb",
+              border: "1px solid #e5e7eb",
+              borderRadius: "8px",
+              fontSize: "13px",
+              fontWeight: 600,
+              color: "#6b7280",
+              cursor: "pointer",
+              textAlign: "left",
+            }}
+          >
+            {showAdditionalOutage ? "▲ Hide additional outage information" : "▼ Show additional outage information"}
+          </button>
+
+          {showAdditionalOutage && (
+            <div style={{ marginBottom: "16px", padding: "12px 14px", background: "#f9fafb", borderRadius: "10px", border: "1px solid #e5e7eb", fontSize: "13px", color: "#374151" }}>
+              {outage.outageType && <div style={{ marginBottom: "4px" }}><b>Type:</b> {outage.outageType}</div>}
+              {outage.cause && <div style={{ marginBottom: "4px" }}><b>Cause:</b> {outage.cause}</div>}
+              {outage.crewStatus && <div style={{ marginBottom: "4px" }}><b>Crew status:</b> {outage.crewStatus}</div>}
+              {outage.outageImpact && <div style={{ marginBottom: "4px" }}><b>Impact:</b> {outage.outageImpact}</div>}
+              {outage.etr && <div style={{ marginBottom: "4px" }}><b>ETR:</b> {outage.etr}</div>}
+              {outage.source && <div><b>Source:</b> {outage.source}</div>}
+            </div>
+          )}
+
           <p style={sectionHead}>What did you find?</p>
-          <BigRadio
-            name="primary"
-            value="not_target"
-            checked={primary === "not_target"}
-            onChange={() => { setPrimary("not_target"); setAction(""); }}
-            label="Not a target property"
-            sub="Warehouse, commercial, excluded zone"
-          />
           <BigRadio
             name="primary"
             value="utility_only"
@@ -497,6 +579,14 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
             label="Opportunity found"
             sub="Damage / sale possible"
           />
+          <BigRadio
+            name="primary"
+            value="not_target"
+            checked={primary === "not_target"}
+            onChange={() => { setPrimary("not_target"); setAction(""); }}
+            label="Not a target property"
+            sub="Warehouse, commercial, excluded zone"
+          />
 
           {isOpportunity && (
             <>
@@ -504,11 +594,11 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
               <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                 <Chip selected={action === "door_hanger"} onClick={() => { setAction("door_hanger"); setStartedSub(""); }} label="Door hanger left" />
                 <Chip selected={action === "job_sold"} onClick={() => { setAction("job_sold"); setStartedSub(""); }} label="Job sold" />
-                <Chip selected={action === "temp_power"} onClick={() => { setAction("temp_power"); setStartedSub(""); }} label="Temp power installed" />
                 <Chip selected={action === "job_started"} onClick={() => { setAction("job_started"); }} label="Job started" />
                 {action === "job_started" && (
                   <div style={{ marginLeft: "12px", display: "flex", flexDirection: "column", gap: "6px" }}>
                     <Chip selected={startedSub === ""} onClick={() => setStartedSub("")} label="In progress" />
+                    <Chip selected={startedSub === "temp_power"} onClick={() => setStartedSub("temp_power")} label="Temp power installed" />
                     <Chip selected={startedSub === "return_grounding"} onClick={() => setStartedSub("return_grounding")} label="Return for grounding" />
                   </div>
                 )}
@@ -524,7 +614,7 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
                     ))}
                   </div>
                 )}
-                <Chip selected={action === "customer_declined"} onClick={() => { setAction("customer_declined"); setThinkingIntent(""); }} label="Customer declined" />
+                <Chip selected={action === "customer_declined"} onClick={() => { setAction("customer_declined"); setThinkingIntent(""); setStartedSub(""); }} label="Customer declined" />
               </div>
 
               <div style={{ marginTop: "12px" }}>
@@ -543,20 +633,38 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
 
               <p style={{ ...sectionHead, marginTop: "16px" }}>Power status</p>
               <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                {[
-                  { v: "has_power" as const, l: "Has power" },
-                  { v: "no_power_on_drop" as const, l: "No power — power on line drop" },
-                  { v: "no_power_no_drop" as const, l: "No power — no power on line drop" },
-                  { v: "neighborhood_dead" as const, l: "Neighborhood dead (whole area out)" },
-                  { v: "honey_hole" as const, l: "Honey hole (multiple homes)" },
-                ].map((o) => (
-                  <Chip key={o.v} selected={power === o.v} onClick={() => setPower(o.v)} label={o.l} />
-                ))}
+                <Chip
+                  selected={primaryPower === "has_power"}
+                  onClick={() => { setPrimaryPower("has_power"); setNoPowerDetail(""); }}
+                  label="Has power"
+                />
+                <Chip
+                  selected={primaryPower === "no_power"}
+                  onClick={() => setPrimaryPower("no_power")}
+                  label="No power"
+                />
               </div>
-              {power === "honey_hole" && (
-                <div style={{ marginTop: "10px" }}>
+              {primaryPower === "no_power" && (
+                <div style={{ marginLeft: "12px", marginTop: "8px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                  {[
+                    { v: "no_power_on_drop" as const, l: "Power on line drop" },
+                    { v: "no_power_no_drop" as const, l: "No power on line drop" },
+                    { v: "neighborhood_dead" as const, l: "Neighborhood dead (entire area out)" },
+                  ].map((o) => (
+                    <Chip
+                      key={o.v}
+                      selected={noPowerDetail === o.v}
+                      onClick={() => setNoPowerDetail(o.v)}
+                      label={o.l}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {outage.customers > 1 && (
+                <div style={{ marginTop: "12px" }}>
                   <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>
-                    Homes affected
+                    Homes affected (honey hole)
                   </label>
                   <input
                     type="number"

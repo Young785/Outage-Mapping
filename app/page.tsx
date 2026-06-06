@@ -194,9 +194,9 @@ export default function Page() {
   const [reportCustomerName, setReportCustomerName] = useState("");
   const [reportCustomerPhone, setReportCustomerPhone] = useState("");
   const [reportCustomerEmail, setReportCustomerEmail] = useState("");
-  const [hideCompletedOnMap, setHideCompletedOnMap] = useState(true);
-  const [hideDeclinedOnMap, setHideDeclinedOnMap] = useState(true);
+  const [hideNonCriticalMarkers, setHideNonCriticalMarkers] = useState(true);
   const [showStaleOnMap, setShowStaleOnMap] = useState(true);
+  const [legendCollapsed, setLegendCollapsed] = useState(false);
   const [reportAddressEdit, setReportAddressEdit] = useState("");
   const [reportStreet, setReportStreet] = useState("");
   const [reportCity, setReportCity] = useState("");
@@ -532,7 +532,7 @@ export default function Page() {
   useEffect(() => {
     if (!mapObj.current || !mapReady) return;
     placeOutageMarkers(outages);
-  }, [outages, mapReady, hideCompletedOnMap, hideDeclinedOnMap, showStaleOnMap]);
+  }, [outages, mapReady, hideNonCriticalMarkers, showStaleOnMap]);
 
   useEffect(() => {
     if (!mapObj.current || !mapReady) return;
@@ -768,8 +768,14 @@ export default function Page() {
     markersRef.current = [];
 
     const visible = data.filter((o) => {
-      if (hideCompletedOnMap && o.status === "completed") return false;
-      if (hideDeclinedOnMap && o.status === "no_opportunity") return false;
+      if (o.investigationResult === "not_target") return false;
+      if (hideNonCriticalMarkers) {
+        if (o.status === "completed") return false;
+        if (o.status === "customer_thinking") return false;
+        if (o.status === "temp_power") return false;
+        if (o.status === "grounding") return false;
+        if (o.status === "no_opportunity") return false;
+      }
       if (!showStaleOnMap && o.isStaleMarker) return false;
       const excluded = zones.some((z) => z.type === "polygon" && zoneTypeOf(z) === "exclusion" && isInZone(o, z));
       if (excluded) return false;
@@ -819,9 +825,7 @@ export default function Page() {
       });
 
       marker.addListener("click", () => {
-        setSelectedOutage(outage);
-        showInfoWindow(outage, marker);
-        // Also open investigation form directly on marker click
+        infoWindowRef.current?.close();
         setInvestigatingOutage(outage);
         setShowInvestigation(true);
       });
@@ -1623,14 +1627,9 @@ export default function Page() {
           </label>
           <div style={{ fontSize: "11px", fontWeight: 600, color: "#9ca3af", margin: "12px 0 8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Map Layers</div>
           <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px", cursor: "pointer" }}
-            onClick={() => setHideCompletedOnMap((v) => !v)}>
-            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>Hide completed</span>
-            <div style={toggleCss(hideCompletedOnMap, "#6b7280")}><div style={toggleKnobCss(hideCompletedOnMap)} /></div>
-          </label>
-          <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px", cursor: "pointer" }}
-            onClick={() => setHideDeclinedOnMap((v) => !v)}>
-            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>Hide declined</span>
-            <div style={toggleCss(hideDeclinedOnMap, "#6b7280")}><div style={toggleKnobCss(hideDeclinedOnMap)} /></div>
+            onClick={() => setHideNonCriticalMarkers((v) => !v)}>
+            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>Hide non-critical markers</span>
+            <div style={toggleCss(hideNonCriticalMarkers, "#6b7280")}><div style={toggleKnobCss(hideNonCriticalMarkers)} /></div>
           </label>
           <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}
             onClick={() => setShowStaleOnMap((v) => !v)}>
@@ -1926,53 +1925,77 @@ export default function Page() {
               )}
               <div ref={mapRef} style={{ width: "100%", height: "100%", borderRadius: "8px" }} />
 
-              {/* Legend — hidden on mobile to save space */}
-              {!isMobile && <div style={{ position: "absolute", top: "20px", left: "20px", background: "rgba(255,255,255,0.97)", borderRadius: "10px", padding: "10px 14px", boxShadow: "0 2px 8px rgba(0,0,0,0.12)", fontSize: "11px", maxHeight: "calc(100vh - 180px)", overflowY: "auto" }}>
-                <div style={{ fontWeight: 700, color: "#1f2937", marginBottom: "6px", fontSize: "12px" }}>Outage Markers</div>
-                <div style={{ fontSize: "10px", color: "#6b7280", marginBottom: "6px" }}>Shape = Lead source, color/ring = status</div>
-                <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "2px", paddingTop: "6px", fontWeight: 700, color: "#1f2937", marginBottom: "4px", fontSize: "12px" }}>
-                  Lead Source / Shape
+              {/* Legend — collapsible; hidden on mobile to save space */}
+              {!isMobile && (
+                <div style={{
+                  position: "absolute", top: "20px", left: "20px",
+                  background: "rgba(255,255,255,0.97)", borderRadius: "10px",
+                  padding: legendCollapsed ? "6px 10px" : "10px 14px",
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.12)", fontSize: "11px",
+                  maxHeight: legendCollapsed ? undefined : "calc(100vh - 180px)",
+                  overflowY: legendCollapsed ? "visible" : "auto",
+                }}>
+                  <button
+                    type="button"
+                    onClick={() => setLegendCollapsed((v) => !v)}
+                    style={{
+                      display: "flex", alignItems: "center", gap: "6px",
+                      background: "none", border: "none", cursor: "pointer",
+                      padding: 0, fontWeight: 700, color: "#1f2937", fontSize: "12px",
+                    }}
+                  >
+                    <span style={{ fontSize: "10px", color: "#6b7280" }}>{legendCollapsed ? "▶" : "▼"}</span>
+                    Legend
+                  </button>
+                  {!legendCollapsed && (
+                    <>
+                      <div style={{ fontSize: "10px", color: "#6b7280", margin: "6px 0" }}>Shape = Lead source, color/ring = status</div>
+                      <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "2px", paddingTop: "6px", fontWeight: 700, color: "#1f2937", marginBottom: "4px", fontSize: "12px" }}>
+                        Lead Source / Shape
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "3px", marginBottom: "8px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                          <span style={{ width: 12, height: 12, borderRadius: "50%", background: "#fff", border: "2px solid #dc2626", flexShrink: 0, display: "inline-block" }} />
+                          <span style={{ fontSize: "11px", color: "#374151" }}>ArcGIS — unvisited (utility-confirmed)</span>
+                        </div>
+                        <div style={{ fontSize: "11px", color: "#374151" }}>● ArcGIS / Xcel (circle)</div>
+                        <div style={{ fontSize: "11px", color: "#374151" }}>▲ Office / Call-in (triangle)</div>
+                        <div style={{ fontSize: "11px", color: "#374151" }}>◆ Tech-generated (diamond)</div>
+                      </div>
+                      <div style={{ fontSize: "10px", color: "#6b7280", marginTop: "6px", marginBottom: "4px" }}>
+                        Map layer toggles are in the sidebar under Map Layers.
+                      </div>
+                      <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "4px", paddingTop: "6px", fontWeight: 700, color: "#1f2937", marginBottom: "4px", fontSize: "12px" }}>
+                        Status / Color
+                      </div>
+                      {Object.entries(STATUS_CONFIG).filter(([k]) => !["opportunity", "wants_to_proceed", "investigating"].includes(k)).map(([k, v]) => (
+                        <div key={k} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                          <div style={{
+                            width: "12px", height: "12px", borderRadius: "50%",
+                            background: v.color,
+                            border: `2px solid ${v.strokeColor}`,
+                            flexShrink: 0,
+                          }} />
+                          <span style={{ color: "#374151" }}>{v.label}</span>
+                        </div>
+                      ))}
+                      <div style={{ fontSize: "10px", color: "#9ca3af", marginTop: "4px", marginBottom: "6px" }}>
+                        Larger orange = honey hole (multi-customer)
+                      </div>
+                      <div style={{ fontSize: "10px", color: "#9ca3af", marginBottom: "6px" }}>
+                        Shape never changes (lead source). Faded = previous storm — toggle in sidebar.
+                      </div>
+                      <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "4px", paddingTop: "6px", fontWeight: 700, color: "#1f2937", marginBottom: "4px", fontSize: "12px" }}>Technicians</div>
+                      {(["available", "working", "paused"] as const).map((s) => (
+                        <div key={s} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                          <div style={{ width: "12px", height: "12px", background: TECH_STATUS_COLOR[s], borderRadius: "2px", flexShrink: 0 }} />
+                          <span style={{ color: "#374151", textTransform: "capitalize" }}>{s}</span>
+                        </div>
+                      ))}
+                    </>
+                  )}
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: "3px", marginBottom: "8px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                    <span style={{ width: 12, height: 12, borderRadius: "50%", background: "#fff", border: "2px solid #dc2626", flexShrink: 0, display: "inline-block" }} />
-                    <span style={{ fontSize: "11px", color: "#374151" }}>ArcGIS — unvisited (utility-confirmed)</span>
-                  </div>
-                  <div style={{ fontSize: "11px", color: "#374151" }}>● ArcGIS / Xcel (circle)</div>
-                  <div style={{ fontSize: "11px", color: "#374151" }}>▲ Office / Call-in (triangle)</div>
-                  <div style={{ fontSize: "11px", color: "#374151" }}>◆ Tech-generated (diamond)</div>
-                </div>
-                <div style={{ fontSize: "10px", color: "#6b7280", marginTop: "6px", marginBottom: "4px" }}>
-                  Map layer toggles are in the sidebar under Map Layers.
-                </div>
-                <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "4px", paddingTop: "6px", fontWeight: 700, color: "#1f2937", marginBottom: "4px", fontSize: "12px" }}>
-                  Status / Color
-                </div>
-                {Object.entries(STATUS_CONFIG).filter(([k]) => !["opportunity", "wants_to_proceed", "investigating"].includes(k)).map(([k, v]) => (
-                  <div key={k} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
-                    <div style={{
-                      width: "12px", height: "12px", borderRadius: "50%",
-                      background: v.color,
-                      border: `2px solid ${v.strokeColor}`,
-                      flexShrink: 0,
-                    }} />
-                    <span style={{ color: "#374151" }}>{v.label}</span>
-                  </div>
-                ))}
-                <div style={{ fontSize: "10px", color: "#9ca3af", marginTop: "4px", marginBottom: "6px" }}>
-                  Larger orange = honey hole (multi-customer)
-                </div>
-                <div style={{ fontSize: "10px", color: "#9ca3af", marginBottom: "6px" }}>
-                  Shape never changes (lead source). Faded = previous storm — toggle in sidebar.
-                </div>
-                <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "4px", paddingTop: "6px", fontWeight: 700, color: "#1f2937", marginBottom: "4px", fontSize: "12px" }}>Technicians</div>
-                {(["available", "working", "paused"] as const).map((s) => (
-                  <div key={s} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
-                    <div style={{ width: "12px", height: "12px", background: TECH_STATUS_COLOR[s], borderRadius: "2px", flexShrink: 0 }} />
-                    <span style={{ color: "#374151", textTransform: "capitalize" }}>{s}</span>
-                  </div>
-                ))}
-              </div>}
+              )}
 
               {/* Map controls */}
               <div style={{ position: "absolute", top: "20px", right: "20px", display: "flex", gap: "8px" }}>
@@ -1999,30 +2022,6 @@ export default function Page() {
                 </button>
               </div>
 
-              {selectedOutage && (
-                <div style={{ position: "absolute", bottom: "20px", left: "20px", right: "20px", background: "#fff", padding: "14px 16px", borderRadius: "10px", boxShadow: "0 4px 12px rgba(0,0,0,0.15)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ fontWeight: 600, color: "#1f2937", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {selectedOutage.streetAddress?.split(",")[0] ?? `Outage #${selectedOutage.id}`}
-                    </div>
-                    <div style={{ fontSize: "13px", color: "#6b7280" }}>{selectedOutage.customers} customers · {selectedOutage.cause ?? "Unknown cause"}</div>
-                  </div>
-                  <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
-                    <a
-                      href={`https://www.google.com/maps/dir/?api=1&destination=${selectedOutage.lat},${selectedOutage.lng}&travelmode=driving`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ padding: "7px 10px", background: "#1d4ed8", color: "#fff", border: "none", borderRadius: "6px", fontSize: "11px", fontWeight: 600, cursor: "pointer", textDecoration: "none", display: "inline-flex", alignItems: "center" }}
-                    >
-                      Maps
-                    </a>
-                    <button onClick={() => { setInvestigatingOutage(selectedOutage); setShowInvestigation(true); }} style={{ padding: "7px 12px", background: "#0d9488", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
-                      Investigate
-                    </button>
-                    <button onClick={() => setSelectedOutage(null)} style={{ padding: "7px 12px", background: "#f3f4f6", border: "none", borderRadius: "6px", fontSize: "12px", cursor: "pointer" }}>Close</button>
-                  </div>
-                </div>
-              )}
             </div>
           </div>
 
