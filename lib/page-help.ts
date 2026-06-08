@@ -348,8 +348,8 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
     },
     steps: [
       { title: "Click + New Boundary", detail: "Opens the form. Give the zone a name, pick ZIP codes or Polygon mode, and choose zone type: Territory (crew home), Priority (score boost), or Exclusion (hide from routing)." },
-      { title: "Draw on the map (polygon mode)", detail: "Click Draw Polygon, then click each corner on the map to outline the area. Click Finish Polygon once you have at least 3 points." },
-      { title: "Fine-tune the shape", detail: "Drag the corner dots on the editable polygon to adjust the boundary. The preview updates live on the map." },
+      { title: "Draw on the map (polygon mode)", detail: "Click Draw Polygon, then click each corner. Drag the white handles to adjust placement. Ctrl+Z (or Undo) removes the last point." },
+      { title: "Fine-tune the shape", detail: "Click Finish Polygon, then drag any corner or drag the whole shape to reposition. Changes save when you click Create Boundary." },
       { title: "Save the boundary", detail: "Click Create Boundary. Priority zones immediately boost Route to Next scores inside that area. Exclusion zones stop dots there from being recommended." },
       { title: "Assign techs to territories", detail: "Scroll to Tech Assignment at the bottom. Pick each crew member's home territory from the dropdown so Assign and dispatch scoring prefer the right owner." },
       { title: "Edit or delete later", detail: "Click any boundary in the list to edit its name, shape, or ZIP codes. Delete removes the zone — tech assignments to that zone are cleared." },

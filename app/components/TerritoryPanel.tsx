@@ -79,6 +79,8 @@ export default function TerritoryPanel({ token, role }: Props) {
   const drawClickListenerRef = useRef<google.maps.MapsEventListener | null>(null);
   const pathListenersRef = useRef<google.maps.MapsEventListener[]>([]);
   const draftVerticesRef = useRef<LatLng[]>([]);
+  const draftMarkersRef = useRef<google.maps.Marker[]>([]);
+  const polygonDragListenerRef = useRef<google.maps.MapsEventListener | null>(null);
   const mapInitGen = useRef(0);
 
   const isOffice = role === "office" || role === "admin" || role === "owner";
@@ -135,9 +137,20 @@ export default function TerritoryPanel({ token, role }: Props) {
     syncPath();
   }
 
+  function clearDraftMarkers() {
+    draftMarkersRef.current.forEach((m) => m.setMap(null));
+    draftMarkersRef.current = [];
+  }
+
+  function refreshDraftOverlay() {
+    const verts = draftVerticesRef.current;
+    setPolygonPath([...verts]);
+    previewPolylineRef.current?.setPath(verts);
+  }
+
   function stopDrawingMode() {
     setIsDrawingPolygon(false);
-    mapObj.current?.setOptions({ draggable: true });
+    mapObj.current?.setOptions({ draggable: true, draggableCursor: null, draggingCursor: null });
     if (drawClickListenerRef.current) {
       google.maps.event.removeListener(drawClickListenerRef.current);
       drawClickListenerRef.current = null;
@@ -146,12 +159,17 @@ export default function TerritoryPanel({ token, role }: Props) {
       previewPolylineRef.current.setMap(null);
       previewPolylineRef.current = null;
     }
+    clearDraftMarkers();
     draftVerticesRef.current = [];
   }
 
   function teardownMap() {
     stopDrawingMode();
     clearPathListeners();
+    if (polygonDragListenerRef.current) {
+      google.maps.event.removeListener(polygonDragListenerRef.current);
+      polygonDragListenerRef.current = null;
+    }
     if (editablePolyRef.current) {
       editablePolyRef.current.setMap(null);
       editablePolyRef.current = null;
@@ -179,15 +197,21 @@ export default function TerritoryPanel({ token, role }: Props) {
   function createEditablePolygon(path: LatLng[]) {
     if (!mapObj.current || path.length < 3) return;
     stopDrawingMode();
+    if (polygonDragListenerRef.current) {
+      google.maps.event.removeListener(polygonDragListenerRef.current);
+      polygonDragListenerRef.current = null;
+    }
     if (editablePolyRef.current) {
       editablePolyRef.current.setMap(null);
       editablePolyRef.current = null;
     }
+    mapObj.current.setOptions({ draggable: true });
     const color = zoneColor(tZoneType);
     editablePolyRef.current = new google.maps.Polygon({
       map: mapObj.current,
       paths: path,
       editable: true,
+      draggable: true,
       fillColor: color,
       fillOpacity: 0.15,
       strokeColor: color,
@@ -195,6 +219,19 @@ export default function TerritoryPanel({ token, role }: Props) {
       strokeWeight: 2,
     });
     attachPathSyncListeners(editablePolyRef.current);
+    polygonDragListenerRef.current = google.maps.event.addListener(
+      editablePolyRef.current,
+      "dragend",
+      () => {
+        if (!editablePolyRef.current) return;
+        const synced =
+          editablePolyRef.current
+            .getPath()
+            .getArray()
+            .map((p) => ({ lat: p.lat(), lng: p.lng() })) ?? [];
+        setPolygonPath(synced);
+      }
+    );
   }
 
   // Initialize polygon draw map when form is visible
@@ -272,6 +309,48 @@ export default function TerritoryPanel({ token, role }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showForm, tMode, mapReady, polygonPath.length, isDrawingPolygon]);
 
+  function addDraftVertex(point: LatLng, index: number) {
+    if (!mapObj.current) return;
+    const color = zoneColor(tZoneType);
+    const marker = new google.maps.Marker({
+      position: point,
+      map: mapObj.current,
+      draggable: true,
+      optimized: false,
+      zIndex: 2,
+      icon: {
+        path: google.maps.SymbolPath.CIRCLE,
+        scale: 7,
+        fillColor: "#fff",
+        fillOpacity: 1,
+        strokeColor: color,
+        strokeWeight: 2,
+      },
+    });
+    marker.addListener("drag", () => {
+      const pos = marker.getPosition();
+      if (!pos) return;
+      draftVerticesRef.current[index] = { lat: pos.lat(), lng: pos.lng() };
+      refreshDraftOverlay();
+    });
+    marker.addListener("dragend", () => {
+      const pos = marker.getPosition();
+      if (!pos) return;
+      draftVerticesRef.current[index] = { lat: pos.lat(), lng: pos.lng() };
+      refreshDraftOverlay();
+    });
+    draftMarkersRef.current[index] = marker;
+  }
+
+  function undoLastPolygonPoint() {
+    if (draftVerticesRef.current.length === 0) return;
+    draftVerticesRef.current.pop();
+    const removed = draftMarkersRef.current.pop();
+    removed?.setMap(null);
+    refreshDraftOverlay();
+    setError(null);
+  }
+
   function startPolygonDraw() {
     if (!mapObj.current || !mapReady) {
       setError("Map is still loading. Wait a moment, then try Draw Polygon again.");
@@ -281,6 +360,10 @@ export default function TerritoryPanel({ token, role }: Props) {
       editablePolyRef.current.setMap(null);
       editablePolyRef.current = null;
     }
+    if (polygonDragListenerRef.current) {
+      google.maps.event.removeListener(polygonDragListenerRef.current);
+      polygonDragListenerRef.current = null;
+    }
     clearPathListeners();
     stopDrawingMode();
 
@@ -288,7 +371,11 @@ export default function TerritoryPanel({ token, role }: Props) {
     draftVerticesRef.current = [];
     setPolygonPath([]);
     setIsDrawingPolygon(true);
-    mapObj.current.setOptions({ draggable: false });
+    mapObj.current.setOptions({
+      draggable: false,
+      draggableCursor: "crosshair",
+      draggingCursor: "crosshair",
+    });
 
     previewPolylineRef.current = new google.maps.Polyline({
       map: mapObj.current,
@@ -302,11 +389,25 @@ export default function TerritoryPanel({ token, role }: Props) {
     drawClickListenerRef.current = mapObj.current.addListener("click", (e: google.maps.MapMouseEvent) => {
       if (!e.latLng) return;
       const point = { lat: e.latLng.lat(), lng: e.latLng.lng() };
+      const index = draftVerticesRef.current.length;
       draftVerticesRef.current = [...draftVerticesRef.current, point];
-      setPolygonPath([...draftVerticesRef.current]);
-      previewPolylineRef.current?.setPath(draftVerticesRef.current);
+      addDraftVertex(point, index);
+      refreshDraftOverlay();
     });
   }
+
+  // Ctrl+Z / Cmd+Z — undo last corner while drawing
+  useEffect(() => {
+    if (!isDrawingPolygon) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undoLastPolygonPoint();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isDrawingPolygon]);
 
   function finishPolygonDraw() {
     if (draftVerticesRef.current.length < 3) {
@@ -528,7 +629,7 @@ export default function TerritoryPanel({ token, role }: Props) {
               <div style={{ marginBottom: "14px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", gap: "8px", flexWrap: "wrap" }}>
                   <div style={{ fontSize: "12px", color: "#6b7280" }}>
-                    Click corners on the map, then finish the polygon.
+                    Click corners, drag handles to adjust, Ctrl+Z to undo. After Finish — drag shape or corners.
                   </div>
                   <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
                     <button
@@ -566,6 +667,24 @@ export default function TerritoryPanel({ token, role }: Props) {
                           }}
                         >
                           Finish Polygon
+                        </button>
+                        <button
+                          type="button"
+                          onClick={undoLastPolygonPoint}
+                          disabled={polygonPath.length === 0}
+                          title="Undo last point (Ctrl+Z)"
+                          style={{
+                            padding: "7px 12px",
+                            background: polygonPath.length > 0 ? "#f3f4f6" : "#e5e7eb",
+                            color: "#374151",
+                            border: "1px solid #d1d5db",
+                            borderRadius: "6px",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            cursor: polygonPath.length > 0 ? "pointer" : "not-allowed",
+                          }}
+                        >
+                          Undo
                         </button>
                         <button
                           type="button"
@@ -631,9 +750,9 @@ export default function TerritoryPanel({ token, role }: Props) {
                 </div>
                 <div style={{ marginTop: "6px", fontSize: "11px", color: "#6b7280" }}>
                   {isDrawingPolygon
-                    ? `${polygonPath.length} point${polygonPath.length === 1 ? "" : "s"} placed — add at least 3, then click Finish Polygon`
+                    ? `${polygonPath.length} point${polygonPath.length === 1 ? "" : "s"} — drag handles, Ctrl+Z undo, then Finish Polygon (min 3)`
                     : polygonPath.length > 0
-                      ? `${polygonPath.length} vertices — drag corners to adjust`
+                      ? `${polygonPath.length} vertices — drag corners or move the whole shape`
                       : "No polygon drawn yet — click Draw Polygon, then click corners on the map"}
                 </div>
               </div>
