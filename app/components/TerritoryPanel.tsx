@@ -4,7 +4,7 @@
  * Supports:
  * - zip territories
  * - polygon zones (territory / priority / exclusion)
- * - drawing + editing polygon boundaries
+ * - click-to-draw + editable polygon boundaries (no deprecated DrawingManager)
  */
 
 "use client";
@@ -66,6 +66,7 @@ export default function TerritoryPanel({ token, role }: Props) {
   const [tZoneType, setTZoneType] = useState<ZoneType>("territory");
   const [tZips, setTZips] = useState<string[]>([]);
   const [polygonPath, setPolygonPath] = useState<LatLng[]>([]);
+  const [isDrawingPolygon, setIsDrawingPolygon] = useState(false);
   const [assigningTech, setAssigningTech] = useState<string | null>(null);
   const [assignTerritory, setAssignTerritory] = useState<string>("");
   const [mapReady, setMapReady] = useState(false);
@@ -73,8 +74,11 @@ export default function TerritoryPanel({ token, role }: Props) {
 
   const mapRef = useRef<HTMLDivElement | null>(null);
   const mapObj = useRef<google.maps.Map | null>(null);
-  const drawingRef = useRef<google.maps.drawing.DrawingManager | null>(null);
   const editablePolyRef = useRef<google.maps.Polygon | null>(null);
+  const previewPolylineRef = useRef<google.maps.Polyline | null>(null);
+  const drawClickListenerRef = useRef<google.maps.MapsEventListener | null>(null);
+  const pathListenersRef = useRef<google.maps.MapsEventListener[]>([]);
+  const draftVerticesRef = useRef<LatLng[]>([]);
   const mapInitGen = useRef(0);
 
   const isOffice = role === "office" || role === "admin" || role === "owner";
@@ -107,11 +111,46 @@ export default function TerritoryPanel({ token, role }: Props) {
 
   useEffect(() => { load(); }, [load]);
 
-  function teardownMap() {
-    if (drawingRef.current) {
-      drawingRef.current.setMap(null);
-      drawingRef.current = null;
+  function clearPathListeners() {
+    pathListenersRef.current.forEach((l) => google.maps.event.removeListener(l));
+    pathListenersRef.current = [];
+  }
+
+  function attachPathSyncListeners(polygon: google.maps.Polygon) {
+    clearPathListeners();
+    const syncPath = () => {
+      const path =
+        polygon
+          .getPath()
+          .getArray()
+          .map((p) => ({ lat: p.lat(), lng: p.lng() })) ?? [];
+      setPolygonPath(path);
+    };
+    const path = polygon.getPath();
+    pathListenersRef.current = [
+      google.maps.event.addListener(path, "insert_at", syncPath),
+      google.maps.event.addListener(path, "set_at", syncPath),
+      google.maps.event.addListener(path, "remove_at", syncPath),
+    ];
+    syncPath();
+  }
+
+  function stopDrawingMode() {
+    setIsDrawingPolygon(false);
+    if (drawClickListenerRef.current) {
+      google.maps.event.removeListener(drawClickListenerRef.current);
+      drawClickListenerRef.current = null;
     }
+    if (previewPolylineRef.current) {
+      previewPolylineRef.current.setMap(null);
+      previewPolylineRef.current = null;
+    }
+    draftVerticesRef.current = [];
+  }
+
+  function teardownMap() {
+    stopDrawingMode();
+    clearPathListeners();
     if (editablePolyRef.current) {
       editablePolyRef.current.setMap(null);
       editablePolyRef.current = null;
@@ -128,10 +167,33 @@ export default function TerritoryPanel({ token, role }: Props) {
     setTZips([]);
     setPolygonPath([]);
     setMapLoadError(null);
+    stopDrawingMode();
+    clearPathListeners();
     if (editablePolyRef.current) {
       editablePolyRef.current.setMap(null);
       editablePolyRef.current = null;
     }
+  }
+
+  function createEditablePolygon(path: LatLng[]) {
+    if (!mapObj.current || path.length < 3) return;
+    stopDrawingMode();
+    if (editablePolyRef.current) {
+      editablePolyRef.current.setMap(null);
+      editablePolyRef.current = null;
+    }
+    const color = zoneColor(tZoneType);
+    editablePolyRef.current = new google.maps.Polygon({
+      map: mapObj.current,
+      paths: path,
+      editable: true,
+      fillColor: color,
+      fillOpacity: 0.15,
+      strokeColor: color,
+      strokeOpacity: 0.95,
+      strokeWeight: 2,
+    });
+    attachPathSyncListeners(editablePolyRef.current);
   }
 
   // Initialize polygon draw map when form is visible
@@ -150,10 +212,6 @@ export default function TerritoryPanel({ token, role }: Props) {
         await loadGoogleMaps();
         if (cancelled || gen !== mapInitGen.current || !mapRef.current) return;
 
-        if (!google.maps.drawing) {
-          throw new Error("Google Maps Drawing library failed to load. Enable “Maps JavaScript API” and Drawing in Google Cloud Console.");
-        }
-
         if (!mapObj.current) {
           mapObj.current = new google.maps.Map(mapRef.current, {
             center: MAP_CENTER,
@@ -165,49 +223,14 @@ export default function TerritoryPanel({ token, role }: Props) {
           });
         }
 
-        if (!drawingRef.current) {
-          drawingRef.current = new google.maps.drawing.DrawingManager({
-            drawingMode: null,
-            drawingControl: false,
-            polygonOptions: {
-              editable: true,
-              fillColor: zoneColor(tZoneType),
-              fillOpacity: 0.15,
-              strokeColor: zoneColor(tZoneType),
-              strokeOpacity: 0.95,
-              strokeWeight: 2,
-            },
-          });
-          drawingRef.current.setMap(mapObj.current);
-          google.maps.event.addListener(drawingRef.current, "overlaycomplete", (evt: google.maps.drawing.OverlayCompleteEvent) => {
-            if (evt.type !== google.maps.drawing.OverlayType.POLYGON) return;
-            if (editablePolyRef.current) editablePolyRef.current.setMap(null);
-            editablePolyRef.current = evt.overlay as google.maps.Polygon;
-            drawingRef.current?.setDrawingMode(null);
-
-            const syncPath = () => {
-              const path =
-                editablePolyRef.current
-                  ?.getPath()
-                  .getArray()
-                  .map((p) => ({ lat: p.lat(), lng: p.lng() })) ?? [];
-              setPolygonPath(path);
-            };
-            const path = editablePolyRef.current.getPath();
-            google.maps.event.addListener(path, "insert_at", syncPath);
-            google.maps.event.addListener(path, "set_at", syncPath);
-            google.maps.event.addListener(path, "remove_at", syncPath);
-            syncPath();
-          });
-        } else {
-          drawingRef.current.setMap(mapObj.current);
-        }
-
         if (editablePolyRef.current) {
           editablePolyRef.current.setOptions({
             fillColor: zoneColor(tZoneType),
             strokeColor: zoneColor(tZoneType),
           });
+        }
+        if (previewPolylineRef.current) {
+          previewPolylineRef.current.setOptions({ strokeColor: zoneColor(tZoneType) });
         }
 
         if (cancelled || gen !== mapInitGen.current) return;
@@ -242,28 +265,14 @@ export default function TerritoryPanel({ token, role }: Props) {
   // Restore polygon when editing
   useEffect(() => {
     if (!showForm || tMode !== "polygon" || !mapReady || !mapObj.current || polygonPath.length < 3) return;
-    if (editablePolyRef.current) return;
+    if (editablePolyRef.current || isDrawingPolygon) return;
 
-    editablePolyRef.current = new google.maps.Polygon({
-      map: mapObj.current,
-      paths: polygonPath,
-      editable: true,
-      fillColor: zoneColor(tZoneType),
-      fillOpacity: 0.15,
-      strokeColor: zoneColor(tZoneType),
-      strokeOpacity: 0.95,
-      strokeWeight: 2,
-    });
-    const path = editablePolyRef.current.getPath();
-    const syncPath = () =>
-      setPolygonPath(path.getArray().map((p) => ({ lat: p.lat(), lng: p.lng() })));
-    google.maps.event.addListener(path, "insert_at", syncPath);
-    google.maps.event.addListener(path, "set_at", syncPath);
-    google.maps.event.addListener(path, "remove_at", syncPath);
-  }, [showForm, tMode, tZoneType, polygonPath, mapReady]);
+    createEditablePolygon(polygonPath);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showForm, tMode, mapReady, polygonPath.length, isDrawingPolygon]);
 
   function startPolygonDraw() {
-    if (!drawingRef.current) {
+    if (!mapObj.current || !mapReady) {
       setError("Map is still loading. Wait a moment, then try Draw Polygon again.");
       return;
     }
@@ -271,8 +280,49 @@ export default function TerritoryPanel({ token, role }: Props) {
       editablePolyRef.current.setMap(null);
       editablePolyRef.current = null;
     }
+    clearPathListeners();
+    stopDrawingMode();
+
+    const color = zoneColor(tZoneType);
+    draftVerticesRef.current = [];
     setPolygonPath([]);
-    drawingRef.current.setDrawingMode(google.maps.drawing.OverlayType.POLYGON);
+    setIsDrawingPolygon(true);
+
+    previewPolylineRef.current = new google.maps.Polyline({
+      map: mapObj.current,
+      path: [],
+      strokeColor: color,
+      strokeOpacity: 0.95,
+      strokeWeight: 2,
+      clickable: false,
+    });
+
+    drawClickListenerRef.current = mapObj.current.addListener("click", (e: google.maps.MapMouseEvent) => {
+      if (!e.latLng) return;
+      const point = { lat: e.latLng.lat(), lng: e.latLng.lng() };
+      draftVerticesRef.current = [...draftVerticesRef.current, point];
+      setPolygonPath([...draftVerticesRef.current]);
+      previewPolylineRef.current?.setPath(draftVerticesRef.current);
+    });
+  }
+
+  function finishPolygonDraw() {
+    if (draftVerticesRef.current.length < 3) {
+      setError("Add at least 3 points before finishing the polygon.");
+      return;
+    }
+    setError(null);
+    createEditablePolygon(draftVerticesRef.current);
+  }
+
+  function cancelPolygonDraw() {
+    stopDrawingMode();
+    setPolygonPath([]);
+    if (editablePolyRef.current) {
+      editablePolyRef.current.setMap(null);
+      editablePolyRef.current = null;
+    }
+    clearPathListeners();
   }
 
   async function saveTerritory(e: React.FormEvent) {
@@ -358,15 +408,17 @@ export default function TerritoryPanel({ token, role }: Props) {
     setTMode(t.type);
     setTZips(t.zip_codes ?? []);
     setTZoneType(zoneTypeOf(t));
+    stopDrawingMode();
+    clearPathListeners();
+    if (editablePolyRef.current) {
+      editablePolyRef.current.setMap(null);
+      editablePolyRef.current = null;
+    }
     if (t.type === "polygon" && t.geometry?.coordinates?.[0]) {
       const path = (t.geometry.coordinates[0] as number[][])
         .slice(0, -1)
         .map(([lng, lat]) => ({ lat, lng }));
       setPolygonPath(path);
-      if (editablePolyRef.current) {
-        editablePolyRef.current.setMap(null);
-        editablePolyRef.current = null;
-      }
     } else {
       setPolygonPath([]);
     }
@@ -472,27 +524,66 @@ export default function TerritoryPanel({ token, role }: Props) {
               </div>
             ) : (
               <div style={{ marginBottom: "14px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", gap: "8px", flexWrap: "wrap" }}>
                   <div style={{ fontSize: "12px", color: "#6b7280" }}>
-                    Draw and edit polygon boundary on the map.
+                    Click corners on the map, then finish the polygon.
                   </div>
-                  <button
-                    type="button"
-                    onClick={startPolygonDraw}
-                    disabled={!mapReady}
-                    style={{
-                      padding: "7px 12px",
-                      background: mapReady ? "#0ea5e9" : "#9ca3af",
-                      color: "#fff",
-                      border: "none",
-                      borderRadius: "6px",
-                      fontSize: "12px",
-                      fontWeight: 600,
-                      cursor: mapReady ? "pointer" : "not-allowed",
-                    }}
-                  >
-                    Draw Polygon
-                  </button>
+                  <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      onClick={startPolygonDraw}
+                      disabled={!mapReady || isDrawingPolygon}
+                      style={{
+                        padding: "7px 12px",
+                        background: mapReady && !isDrawingPolygon ? "#0ea5e9" : "#9ca3af",
+                        color: "#fff",
+                        border: "none",
+                        borderRadius: "6px",
+                        fontSize: "12px",
+                        fontWeight: 600,
+                        cursor: mapReady && !isDrawingPolygon ? "pointer" : "not-allowed",
+                      }}
+                    >
+                      Draw Polygon
+                    </button>
+                    {isDrawingPolygon && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={finishPolygonDraw}
+                          disabled={polygonPath.length < 3}
+                          style={{
+                            padding: "7px 12px",
+                            background: polygonPath.length >= 3 ? "#0d9488" : "#9ca3af",
+                            color: "#fff",
+                            border: "none",
+                            borderRadius: "6px",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            cursor: polygonPath.length >= 3 ? "pointer" : "not-allowed",
+                          }}
+                        >
+                          Finish Polygon
+                        </button>
+                        <button
+                          type="button"
+                          onClick={cancelPolygonDraw}
+                          style={{
+                            padding: "7px 12px",
+                            background: "#e5e7eb",
+                            color: "#374151",
+                            border: "none",
+                            borderRadius: "6px",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
                 <div style={{ position: "relative" }}>
                   <div
@@ -537,7 +628,11 @@ export default function TerritoryPanel({ token, role }: Props) {
                   )}
                 </div>
                 <div style={{ marginTop: "6px", fontSize: "11px", color: "#6b7280" }}>
-                  {polygonPath.length > 0 ? `${polygonPath.length} vertices` : "No polygon drawn yet — click Draw Polygon, then click corners on the map"}
+                  {isDrawingPolygon
+                    ? `${polygonPath.length} point${polygonPath.length === 1 ? "" : "s"} placed — add at least 3, then click Finish Polygon`
+                    : polygonPath.length > 0
+                      ? `${polygonPath.length} vertices — drag corners to adjust`
+                      : "No polygon drawn yet — click Draw Polygon, then click corners on the map"}
                 </div>
               </div>
             )}

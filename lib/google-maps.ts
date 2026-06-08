@@ -1,6 +1,6 @@
 import { Loader } from "@googlemaps/js-api-loader";
 
-const LIBRARIES = ["marker", "geocoding", "drawing"] as const;
+const LIBRARIES = ["marker", "geocoding"] as const;
 
 let loadPromise: Promise<typeof google> | null = null;
 
@@ -12,9 +12,6 @@ export async function loadGoogleMaps(): Promise<typeof google> {
   }
 
   if (typeof window !== "undefined" && window.google?.maps) {
-    if (!window.google.maps.drawing && typeof window.google.maps.importLibrary === "function") {
-      await window.google.maps.importLibrary("drawing");
-    }
     return window.google;
   }
 
