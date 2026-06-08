@@ -59,7 +59,7 @@ export default function SiteHelpLauncher({ role, activePage }: Props) {
         onClick={() => setOpen(true)}
         style={{
           position: "fixed",
-          right: "20px",
+          left: "20px",
           bottom: "20px",
           zIndex: 900,
           width: "56px",
@@ -162,7 +162,49 @@ export default function SiteHelpLauncher({ role, activePage }: Props) {
                 {page.layman.plainEnglish}
               </p>
 
-              <HelpSection title="What you'll see on this page" items={page.layman.onThisPage} />
+              <div style={{ marginBottom: "18px" }}>
+                <h4 style={{ margin: "0 0 10px", fontSize: "13px", fontWeight: 700, color: "#0f766e", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                  Step by step
+                </h4>
+                <ol style={{ margin: 0, paddingLeft: "20px", color: "#334155", fontSize: "14px", lineHeight: 1.65 }}>
+                  {page.steps.map((s, i) => (
+                    <li key={s.title} style={{ marginBottom: "10px" }}>
+                      <strong style={{ color: "#0f172a" }}>{i + 1}. {s.title}</strong>
+                      <div style={{ color: "#475569", marginTop: "2px" }}>{s.detail}</div>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+
+              <div style={{ marginBottom: "18px" }}>
+                <h4 style={{ margin: "0 0 10px", fontSize: "13px", fontWeight: 700, color: "#0f766e", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                  Inputs & buttons on this page
+                </h4>
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  {page.inputs.map((inp) => (
+                    <div key={inp.name} style={{ padding: "10px 12px", background: "#f8fafc", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
+                      <div style={{ fontSize: "13px", fontWeight: 700, color: "#1e293b" }}>{inp.name}</div>
+                      <div style={{ fontSize: "13px", color: "#64748b", marginTop: "2px" }}>{inp.description}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ marginBottom: "18px" }}>
+                <h4 style={{ margin: "0 0 10px", fontSize: "13px", fontWeight: 700, color: "#0f766e", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                  Roles & permissions
+                </h4>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  {page.access.map((a) => (
+                    <div key={a.role} style={{ display: "flex", gap: "10px", fontSize: "13px", lineHeight: 1.5 }}>
+                      <span style={{ fontWeight: 700, color: "#0f766e", minWidth: "100px", flexShrink: 0 }}>{a.role}</span>
+                      <span style={{ color: "#475569" }}>{a.permissions}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <HelpSection title="What you'll see" items={page.layman.onThisPage} />
               <HelpSection title="What to try" items={page.layman.tryThis} />
 
               <details
@@ -175,7 +217,7 @@ export default function SiteHelpLauncher({ role, activePage }: Props) {
                 }}
               >
                 <summary style={{ cursor: "pointer", fontWeight: 600, fontSize: "13px", color: "#334155" }}>
-                  More detail
+                  Technical notes
                 </summary>
                 <ul style={{ margin: "10px 0 0", paddingLeft: "18px", fontSize: "13px", color: "#475569", lineHeight: 1.6 }}>
                   {page.bullets.map((b) => (

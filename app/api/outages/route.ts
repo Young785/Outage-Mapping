@@ -12,6 +12,7 @@ import { NextResponse } from "next/server";
 import { fetchAndNormalize, getLastSnapshot } from "@/lib/adapters";
 import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
 import { calculateScore, calculateScoreBreakdown, getWeights, countNearby } from "@/lib/priority";
+import { calculateV1RouteScore, computeClusterMap, type StormPhase } from "@/lib/routing-v1";
 import { reverseGeocode } from "@/lib/geocache";
 import { verifyJWT, extractBearerToken } from "@/lib/jwt";
 
@@ -255,39 +256,63 @@ export async function GET(req: Request) {
     } catch {}
   }
 
+  let stormPhase: StormPhase = "phase_1";
+  if (isSupabaseConfigured) {
+    try {
+      const db = getAdmin();
+      const { data: phaseRow } = await db.from("app_settings").select("value").eq("key", "storm_phase").maybeSingle();
+      const p = phaseRow?.value;
+      if (p === "phase_1" || p === "phase_2" || p === "phase_3") stormPhase = p;
+    } catch {}
+  }
+
+  const clusterMap = computeClusterMap(
+    filtered
+      .filter((o) => o.lat != null && o.lng != null)
+      .map((o) => ({ id: o.id, lat: o.lat!, lng: o.lng!, customers: o.customers ?? 0 }))
+  );
+
   const enriched = filtered.map((o) => {
     const densityNearby = countNearby(
       o.lat!,
       o.lng!,
       filtered.filter((x) => x.id !== o.id).map((x) => ({ lat: x.lat!, lng: x.lng! }))
     );
-    const score = calculateScore(
-      {
-        customers: o.customers,
-        outageType: o.outageType,
-        densityNearby,
-      },
-      weights
-    );
     const baseStatus = (dbStatusMap[o.id] as any) ?? "unvisited";
-    const scoreBreakdown = calculateScoreBreakdown(
-      {
-        customers: o.customers,
-        outageType: o.outageType,
-        densityNearby,
-        outageStatus: baseStatus,
-        firstSeenAt: dbMetaMap[o.id]?.first_seen_at ?? undefined,
-      },
-      weights
-    );
-    // isNew = true when this xcel/connexus dot has never been upserted to DB before
     const isNew = !dbStatusMap[o.id] && (o.source === "xcel" || o.source === "connexus");
+    const isHoneyHole =
+      baseStatus === "opportunity" || baseStatus === "wants_to_proceed"
+        ? (o.customers ?? 0) > 1
+        : false;
+
+    const v1 = calculateV1RouteScore(
+      {
+        id: o.id,
+        lat: o.lat!,
+        lng: o.lng!,
+        customers: o.customers ?? 0,
+        status: baseStatus,
+        source: o.source,
+        isNew,
+        isHoneyHole,
+      },
+      stormPhase,
+      clusterMap.get(String(o.id))
+    );
+
+    const scoreBreakdown = {
+      finalScore: v1.total,
+      urgency: 0,
+      parts: { ...v1.parts, densityLegacy: densityNearby > 0 ? Math.min(densityNearby, 5) * 4 : 0 },
+    };
+    const score = v1.total + (scoreBreakdown.parts.densityLegacy as number);
+    scoreBreakdown.finalScore = score;
     return {
       ...o,
       // Prefer DB-cached address over ArcGIS data (adapter doesn't provide streetAddress)
       streetAddress: dbAddressMap[o.id] ?? null,
       status: baseStatus,
-      priorityScore: isNew ? Math.max(score + 50, score) : score,
+      priorityScore: isNew ? Math.max(score + 15, score) : score,
       scoreBreakdown,
       isNew,
       milesFromCenter: haversineMiles(CENTER.lat, CENTER.lng, o.lat!, o.lng!),

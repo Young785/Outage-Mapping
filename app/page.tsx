@@ -1054,7 +1054,13 @@ export default function Page() {
       alert("Enable location access to use Route to Next.");
       return;
     }
-    const next = pickNextRouteStop(outages, userLocation);
+    const routable = outages.map((o) => ({
+      ...o,
+      inPriorityZone: zones.some((z) => z.type === "polygon" && zoneTypeOf(z) === "priority" && isInZone(o, z)),
+      inExclusionZone: zones.some((z) => z.type === "polygon" && zoneTypeOf(z) === "exclusion" && isInZone(o, z)),
+      isHoneyHole: (o.status === "opportunity" || o.status === "wants_to_proceed") && o.customers > 1,
+    }));
+    const next = pickNextRouteStop(routable, userLocation, stormPhase);
     if (!next) {
       alert("No actionable stops remaining on the map.");
       return;

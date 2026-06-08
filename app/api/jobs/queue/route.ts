@@ -7,6 +7,7 @@
 import { NextResponse } from "next/server";
 import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
 import { haversineMiles } from "@/lib/priority";
+import { calculateV1RouteScore, computeClusterMap, type StormPhase } from "@/lib/routing-v1";
 
 const ACTIVE_JOB_STATUSES = ["pending", "assigned", "in_progress"] as const;
 
@@ -205,6 +206,38 @@ export async function GET(req: Request) {
       });
     }
 
+    let stormPhase: StormPhase = "phase_1";
+    try {
+      const { data: phaseRow } = await db.from("app_settings").select("value").eq("key", "storm_phase").maybeSingle();
+      const p = phaseRow?.value;
+      if (p === "phase_1" || p === "phase_2" || p === "phase_3") stormPhase = p;
+    } catch {}
+
+    const clusterMap = computeClusterMap(
+      queueItems
+        .filter((i) => i.lat != null && i.lng != null)
+        .map((i) => ({ id: i.id, lat: i.lat!, lng: i.lng!, customers: i.customers }))
+    );
+
+    for (const item of queueItems) {
+      if (item.lat == null || item.lng == null) continue;
+      const v1 = calculateV1RouteScore(
+        {
+          id: item.id,
+          lat: item.lat,
+          lng: item.lng,
+          customers: item.customers,
+          status: item.status,
+          source: item.source,
+          isOfficeLead: item.type === "job" || item.source === "office",
+          driveMiles: item.distanceMiles ?? undefined,
+        },
+        stormPhase,
+        clusterMap.get(String(item.id))
+      );
+      item.priorityScore = v1.total;
+    }
+
     queueItems.sort((a, b) => {
       if (a.isConfirmed && !b.isConfirmed) return -1;
       if (!a.isConfirmed && b.isConfirmed) return 1;
@@ -213,7 +246,7 @@ export async function GET(req: Request) {
         return a.distanceMiles - b.distanceMiles;
       }
       if (sort === "value") {
-        return (b.customers ?? 0) - (a.customers ?? 0);
+        return (b.priorityScore ?? 0) - (a.priorityScore ?? 0);
       }
       if (sort === "smart") {
         const smartA = (a.priorityScore ?? 0) - (a.distanceMiles ?? 0) * 8;

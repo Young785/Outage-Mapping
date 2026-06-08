@@ -84,21 +84,19 @@ export default function PageHelp({ pageId }: Props) {
         </span>
       </button>
       {!collapsed && (
-        <ul
-          style={{
-            margin: 0,
-            padding: "0 16px 14px 44px",
-            color: "#065f46",
-            fontSize: "13px",
-            lineHeight: 1.65,
-          }}
-        >
-          {help.bullets.map((b) => (
-            <li key={b} style={{ marginBottom: "4px" }}>
-              {b}
-            </li>
-          ))}
-        </ul>
+        <div style={{ padding: "0 16px 14px 44px", color: "#065f46", fontSize: "13px", lineHeight: 1.65 }}>
+          <p style={{ margin: "0 0 10px", color: "#047857" }}>{help.layman.plainEnglish}</p>
+          <ol style={{ margin: "0 0 12px", paddingLeft: "18px" }}>
+            {help.steps.map((s, i) => (
+              <li key={s.title} style={{ marginBottom: "6px" }}>
+                <strong>{i + 1}. {s.title}</strong> — {s.detail}
+              </li>
+            ))}
+          </ol>
+          <div style={{ fontSize: "11px", color: "#0d9488", fontWeight: 600 }}>
+            Tip: use the ? button bottom-left for inputs and role permissions.
+          </div>
+        </div>
       )}
     </div>
   );

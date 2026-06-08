@@ -20,6 +20,12 @@ export type PageHelpContent = {
     onThisPage: string[];
     tryThis: string[];
   };
+  /** Numbered walkthrough for this page only */
+  steps: Array<{ title: string; detail: string }>;
+  /** Buttons, toggles, and fields on this page */
+  inputs: Array<{ name: string; description: string }>;
+  /** Who can see or change what */
+  access: Array<{ role: string; permissions: string }>;
 };
 
 export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
@@ -29,75 +35,100 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
     bullets: [
       "Stat cards count outages by status — watch Unvisited during Phase 1 hunting.",
       "Technician summary shows how many crews are available vs working.",
-      "Use this page at shift start; drill into Live Map or Job Queue for action.",
+      "Phase banner reflects Admin storm phase (Hunt → Dispatch → Cleanup).",
     ],
     layman: {
       headline: "Your storm morning briefing",
       plainEnglish:
-        "Think of this as the scoreboard at the start of a shift. It tells you how big the storm is, how many dots nobody has visited yet, and whether your crews are free or already working.",
-      onThisPage: [
-        "Number cards — each shows a count (unvisited dots, opportunities, jobs waiting, customers without power).",
-        "Technician summary — how many techs are available vs busy.",
-        "Phase banner at the top — reminds you if you're hunting (Phase 1), dispatching (Phase 2), or cleaning up (Phase 3).",
-      ],
-      tryThis: [
-        "Open this first when a storm starts to see how much work is out there.",
-        "If Unvisited is high, send techs to Live Map to hunt.",
-        "If sold jobs are climbing, switch focus to Job Queue for dispatch.",
-      ],
+        "This is the scoreboard at shift start: how many dots are unvisited, how many opportunities exist, and whether crews are free or working.",
+      onThisPage: ["Status count cards", "Technician availability summary", "Storm phase banner"],
+      tryThis: ["Open first when a storm starts", "If Unvisited is high → send techs to Live Map", "If sold jobs climb → focus Job Queue"],
     },
+    steps: [
+      { title: "Check the phase banner", detail: "Phase 1 = hunt new dots. Phase 2 = dispatch sold work. Phase 3 = cleanup and follow-ups." },
+      { title: "Read the stat cards", detail: "Unvisited = nobody has knocked yet. Opportunities = damage found but not sold. Queue count = dispatch-ready jobs." },
+      { title: "Glance at technician summary", detail: "Available (green) crews can take new assignments. Working (red) are on a job." },
+      { title: "Choose your next screen", detail: "Hunting → Live Map or Outages. Dispatch → Job Queue. Crew balance → Techs." },
+    ],
+    inputs: [
+      { name: "Stat cards", description: "Read-only counts — tap sidebar tabs to drill in." },
+      { name: "Phase banner", description: "Set in Admin → Storm Phase. Affects how Route to Next ranks stops." },
+    ],
+    access: [
+      { role: "Field Tech", permissions: "View dashboard and all stat cards." },
+      { role: "Office", permissions: "View dashboard; change storm phase in Admin." },
+      { role: "Admin / Owner", permissions: "Full dashboard + Admin controls." },
+    ],
   },
   map: {
     title: "Live Map",
     summary: "Primary field and office view for every outage dot in your radius.",
     bullets: [
-      "Click a dot to open details, then Investigate to submit the field form.",
-      "Toggle Xcel / Connexus in the sidebar to control which feeds appear.",
-      "Map layer toggles (hide completed, hide declined, previous storms) live in the sidebar. Route to Next picks the highest-value stop, not just the nearest dot.",
-      "Colors match the legend — gray badge = Unvisited; white circle with gray ring on the map.",
+      "Tap a dot → Quick Investigate form (outcome, power status, Google Navigation).",
+      "Route to Next uses V1 scoring: small clustered outages rank above large utility main-line events in Phase 1.",
+      "Hide non-critical markers toggle lives in sidebar Map Layers.",
+      "Collapsible legend — click Legend to shrink and free map space.",
     ],
     layman: {
       headline: "The map everyone works from",
       plainEnglish:
-        "Every power outage from the utility shows up as a dot. Tap a dot, knock on the door, fill out a quick form, and the dot changes color so the whole team knows what happened.",
-      onThisPage: [
-        "Colored dots — each is a real outage location from Xcel or Connexus.",
-        "Legend — explains what each color and shape means (unvisited, sold, door hanger, etc.).",
-        "Top buttons — Route to Next, Add Opportunity.",
-        "Sidebar — Data Sources (Xcel/Connexus) and Map Layers (hide completed, etc.).",
-      ],
-      tryThis: [
-        "Tap any dot → Investigate → pick an outcome (no answer, opportunity, sold, etc.).",
-        "Use Route to Next for the best next stop (sold jobs, office calls, and utility dots rank higher).",
-        "Red + button adds a new lead at an address you found in the field.",
-      ],
+        "Every utility outage is a dot. Tap it, fill the quick form, and the dot updates so the whole team knows what happened. Route to Next sends you to the best stop for the current storm phase — not just the nearest dot.",
+      onThisPage: ["Outage dots (shape = lead source, color = status)", "Collapsible legend", "Route to Next", "My Location / Satellite controls"],
+      tryThis: ["Tap dot → Google Navigation at top of form", "Route to Next during Phase 1 for small outage clusters", "Collapse legend for more map space"],
     },
+    steps: [
+      { title: "Pan and zoom the map", detail: "Use pinch/drag or mouse. Toggle Satellite for roof-line context." },
+      { title: "Tap an outage dot", detail: "Quick Investigate opens with customers affected, priority score, address, and Google Navigation." },
+      { title: "Submit investigation", detail: "Pick outcome (utility issue, no damage, opportunity, not a target). Opportunity unlocks door actions and power status." },
+      { title: "Use Route to Next", detail: "Picks the highest V1 score from your GPS: in Phase 1, clusters of 1–5 customer outages beat a single 80-customer main-line event." },
+      { title: "Adjust map layers", detail: "Sidebar → Hide non-critical markers removes declined, completed, thinking, temp power, and grounding dots." },
+    ],
+    inputs: [
+      { name: "Route to Next", description: "Scores all visible stops from your location using storm phase + cluster logic." },
+      { name: "Quick Investigate form", description: "Primary outcome, door action, power status, optional service details." },
+      { name: "Google Navigation", description: "Opens turn-by-turn in Google Maps app." },
+      { name: "Hide non-critical markers", description: "Sidebar toggle — keeps map focused on active storm work." },
+      { name: "Legend (collapsible)", description: "Top-left — explains dot shapes and colors." },
+      { name: "Data Sources", description: "Toggle Xcel / Connexus feeds in sidebar." },
+    ],
+    access: [
+      { role: "Field Tech", permissions: "View map, investigate dots, Route to Next, Add Opportunity." },
+      { role: "Office", permissions: "Same as tech + remove markers, simulation tools in Admin." },
+      { role: "Admin / Owner", permissions: "Full map access + all admin controls." },
+    ],
   },
   outages: {
     title: "Outages",
     summary: "Sortable list of every dot — your hunting board, not dispatch-ready jobs.",
     bullets: [
       "Filter by status or export CSV for office reporting.",
-      "Status column shows color-coded labels — Unvisited is gray.",
-      "View / Go / Investigate per row; change status from the dropdown if needed.",
-      "Sold or dispatch-ready work moves to Job Queue, not this list.",
+      "Priority score uses V1 logic — small clustered outages score higher than large main-line events.",
+      "Sold or dispatch-ready work appears in Job Queue instead.",
     ],
     layman: {
       headline: "Your hunting list — not the dispatch list",
-      plainEnglish:
-        "This is every outage dot in a spreadsheet-style view. Use it to see what's still unvisited, filter by neighborhood, or export for the office. Jobs that are sold and ready for a crew show up in Job Queue instead.",
-      onThisPage: [
-        "Table rows — one row per outage with address, status, and customer count.",
-        "Status badges — color tells you if it's unvisited, investigating, sold, etc.",
-        "Filters — narrow to one status or search by street/city.",
-        "Go / Investigate buttons — same actions as the map, without panning around.",
-      ],
-      tryThis: [
-        "Filter to Unvisited during Phase 1 to see what's left to knock.",
-        "Click Go to open that address on the map for navigation.",
-        "Don't look here for dispatch — check Job Queue once jobs are sold.",
-      ],
+      plainEnglish: "Spreadsheet view of every dot. Filter, export, navigate, or investigate without panning the map.",
+      onThisPage: ["Filter dropdown", "Status badges", "Go / Investigate / View buttons", "Export CSV"],
+      tryThis: ["Filter Unvisited in Phase 1", "Sort mentally by score column — higher = go first", "Export CSV for office reporting"],
     },
+    steps: [
+      { title: "Choose a filter", detail: "All Statuses or narrow to Unvisited, Investigating, etc." },
+      { title: "Scan priority score", detail: "Higher score = better hunting target for current storm phase." },
+      { title: "Go or Investigate", detail: "Go pans map + draws route line. Investigate opens the field form." },
+      { title: "Change status if needed", detail: "Office can override status from dropdown on each row." },
+    ],
+    inputs: [
+      { name: "Filter dropdown", description: "Limits list to one status." },
+      { name: "Export CSV", description: "Downloads all visible outages for reporting." },
+      { name: "Go", description: "Navigate to that address on Live Map." },
+      { name: "Investigate", description: "Opens Quick Investigate form." },
+      { name: "Status dropdown", description: "Manual status override (office use)." },
+    ],
+    access: [
+      { role: "Field Tech", permissions: "View, filter, Go, Investigate." },
+      { role: "Office", permissions: "All tech actions + status override + CSV export + Remove marker." },
+      { role: "Admin / Owner", permissions: "Full outages list access." },
+    ],
   },
   opportunities: {
     title: "Opportunities",
@@ -105,160 +136,221 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
     bullets: [
       "Door hangers, thinking customers, and verbal quotes stay here until sold.",
       "Navigate opens the location on Live Map.",
-      "When a job is sold or customer wants to proceed, it leaves this list for Job Queue.",
+      "When sold, work moves to Job Queue.",
     ],
     layman: {
       headline: "Warm leads — not ready to dispatch yet",
-      plainEnglish:
-        "These are homes where your tech found something interesting: left a door hanger, customer is thinking, or wants a quote later. Office follows up here until the job is sold and moves to the queue.",
-      onThisPage: [
-        "List of follow-up leads with address and status.",
-        "Door hanger, thinking, wants-to-proceed types stay here until sold.",
-        "Navigate — jump to that house on the map.",
-      ],
-      tryThis: [
-        "Office calls customers from this list during Phase 1 and early Phase 2.",
-        "Once sold, the job disappears from here and appears in Job Queue.",
-      ],
+      plainEnglish: "Homes where techs found damage or left door hangers. Office follows up until the job is sold.",
+      onThisPage: ["Follow-up lead list", "Navigate button", "Status per lead"],
+      tryThis: ["Office calls from this list in Phase 1–2", "Once sold → check Job Queue"],
     },
+    steps: [
+      { title: "Review the list", detail: "Each row is a confirmed or partial contact — not yet dispatch-ready." },
+      { title: "Navigate to follow up", detail: "Jump to that house on the map for a return visit." },
+      { title: "Investigate to update", detail: "Change outcome when customer decides (sold, declined, thinking)." },
+      { title: "Watch Job Queue", detail: "Sold jobs leave this list and appear in dispatch queue." },
+    ],
+    inputs: [
+      { name: "Navigate", description: "Opens location on Live Map." },
+      { name: "Investigate", description: "Update field outcome after follow-up visit." },
+    ],
+    access: [
+      { role: "Field Tech", permissions: "View, navigate, investigate own follow-ups." },
+      { role: "Office", permissions: "Full list access for phone follow-up." },
+      { role: "Admin / Owner", permissions: "Full access." },
+    ],
   },
   queue: {
     title: "Job Queue",
-    summary: "Dispatch-ready work only — assign techs, optimize routes, and find clusters.",
+    summary: "Dispatch-ready work — assign techs, optimize routes, find clusters.",
     bullets: [
-      "Sort by Priority, Distance, Value, or Smart before assigning.",
-      "Assign shows a recommended tech with score and reasons before you confirm.",
-      "Optimize Route and Find Clusters help plan efficient storm movement.",
+      "Sort by Priority, Distance, Value, or Smart (score minus distance).",
+      "Optimize Route builds a multi-stop plan; auto-reroutes when jobs complete or are skipped.",
+      "Phase 2+ elevates sold jobs and office call-ins above hunting targets.",
     ],
     layman: {
       headline: "The dispatch board — who goes where",
-      plainEnglish:
-        "Only jobs that are sold or ready for a crew show up here. Office picks the best tech, confirms dispatch, and can build an efficient driving order. Techs can optimize their own route too.",
-      onThisPage: [
-        "Job cards — sold work and office call-ins waiting for a crew.",
-        "Sort dropdown — priority, distance, value, or smart mix.",
-        "Assign — recommends nearest/best tech; you confirm before SMS goes out.",
-        "Optimize Route — orders stops using traffic-aware routing when available.",
-        "Find Clusters — groups nearby jobs so one crew hits a hotspot.",
-      ],
-      tryThis: [
-        "Office: Assign → review recommendation → Confirm Dispatch.",
-        "Tech: Optimize Route → Go Next Stop → Skip if you pass one.",
-        "Use Smart sort when you want high-value jobs that aren't too far.",
-      ],
+      plainEnglish: "Only sold or crew-ready jobs appear here. Assign techs, optimize driving order, skip stops, and the plan reroutes automatically.",
+      onThisPage: ["Sort chips", "Assign flow", "Optimize Route", "Find Clusters", "Go Next Stop"],
+      tryThis: ["Optimize Route → Go Next Stop", "Skip a stop → plan reroutes", "Smart sort for high-value nearby jobs"],
     },
+    steps: [
+      { title: "Pick a sort mode", detail: "Priority = score. Distance = nearest. Smart = score minus drive penalty." },
+      { title: "Optimize Route", detail: "Builds up to 8 stops using traffic-aware Google Routes when configured." },
+      { title: "Go Next Stop", detail: "Opens navigation to the first stop in the optimized plan." },
+      { title: "Skip a stop", detail: "Removes it from the plan and silently reroutes the remaining stops." },
+      { title: "Assign (office)", detail: "Recommend nearest/best tech → review reasons → Confirm Dispatch." },
+    ],
+    inputs: [
+      { name: "Sort: Priority / Distance / Value / Smart", description: "Changes queue order." },
+      { name: "Optimize Route", description: "Creates ordered multi-stop plan from your GPS." },
+      { name: "Find Clusters", description: "Groups nearby jobs into hotspot packs." },
+      { name: "Go Next Stop", description: "Navigate to first planned stop." },
+      { name: "Skip (per stop)", description: "Exclude stop and reroute remaining plan." },
+      { name: "Assign", description: "Office-only — recommend and confirm tech dispatch." },
+    ],
+    access: [
+      { role: "Field Tech", permissions: "View queue, sort, optimize route, Go Next Stop, Skip." },
+      { role: "Office", permissions: "All tech actions + Assign + New Job." },
+      { role: "Admin / Owner", permissions: "Full queue + dispatch controls." },
+    ],
   },
   techs: {
     title: "Techs",
     summary: "Live crew status and GPS — who is available and where they are.",
     bullets: [
-      "Status colors: green = available, red = working, amber = paused, gray = offline.",
-      "Locations refresh about every 30 seconds while the tech app is open.",
-      "Navigate to a tech or route from tech to their next assigned job.",
+      "Status: green = available, red = working, amber = paused, gray = offline.",
+      "GPS refreshes ~every 30 seconds while the app is open.",
+      "Next stop recommendation shown for available techs with location.",
     ],
     layman: {
       headline: "Where your crews are right now",
-      plainEnglish:
-        "See every tech on a mini-map and list: who's free, who's on a job, and where their phone last reported GPS. Updates about every 30 seconds while their app is open.",
-      onThisPage: [
-        "Status chips — Available (green), Working (red), Paused (amber), Offline (gray).",
-        "Last known location — from the tech's phone GPS.",
-        "Assigned job — what they're working on, if anything.",
-      ],
-      tryThis: [
-        "Before assigning, check who's Available and closest on the map.",
-        "If someone shows Offline, they may have closed the app.",
-      ],
+      plainEnglish: "See every tech's status and last GPS. Available techs show a recommended next stop based on queue priority.",
+      onThisPage: ["Status chips", "GPS location", "Next stop recommendation", "Go / Route buttons"],
+      tryThis: ["Check Available before assigning", "Route from tech GPS to their next job"],
     },
+    steps: [
+      { title: "Scan status counts", detail: "Available vs Working vs Offline at the top." },
+      { title: "Find an available tech", detail: "Green = can take a new assignment." },
+      { title: "Review next stop", detail: "System suggests highest-priority queue item from that tech's location." },
+      { title: "Navigate or Route", detail: "Go = your map to the job. Route = line from tech GPS to job." },
+    ],
+    inputs: [
+      { name: "Status chips", description: "Available, Working, Paused, Offline." },
+      { name: "Go", description: "Navigate to recommended stop." },
+      { name: "Route", description: "Draw route from tech location to job." },
+      { name: "Refresh", description: "Reload tech list and GPS." },
+    ],
+    access: [
+      { role: "Field Tech", permissions: "Hidden — office/admin only tab." },
+      { role: "Office", permissions: "View all techs, navigate, route." },
+      { role: "Admin / Owner", permissions: "Full tech panel access." },
+    ],
   },
   territories: {
     title: "Territories",
     summary: "ZIP or polygon zones that influence dispatch scoring.",
     bullets: [
-      "Draw or edit territories so assign recommendations prefer the right crew.",
-      "Jobs with a matching ZIP score higher for techs linked to that territory.",
+      "Draw polygon boundaries by clicking corners on the map — no deprecated Drawing library.",
+      "Click Draw Polygon → click corners → Finish Polygon → drag vertices to adjust.",
+      "Priority zones boost Route to Next and Assign scoring.",
     ],
     layman: {
       headline: "Draw zones so the right crew gets nearby jobs",
-      plainEnglish:
-        "Split the map into areas (ZIP codes or drawn shapes) and link techs to each zone. When office hits Assign, the system prefers techs who 'own' that territory.",
-      onThisPage: [
-        "Territory list — names and ZIP lists or polygon areas.",
-        "Map — draw or edit zone boundaries.",
-        "Tech assignment — which crew covers which zone.",
-      ],
-      tryThis: [
-        "Set territories before the storm so dispatch isn't guessing.",
-        "After drawing, link each tech to their home territory.",
-      ],
+      plainEnglish: "Create territory, priority, or exclusion zones. Link techs to territories so Assign prefers the right crew.",
+      onThisPage: ["+ New Boundary form", "Draw Polygon map", "Boundary list", "Tech assignment"],
+      tryThis: ["Draw Polygon → click corners → Finish Polygon", "Set zone type: Territory, Priority, or Exclusion", "Link techs to home territories"],
     },
+    steps: [
+      { title: "Click + New Boundary", detail: "Enter name, choose ZIP or Polygon, pick zone type (Territory / Priority / Exclusion)." },
+      { title: "Draw Polygon (if polygon mode)", detail: "Click Draw Polygon, then click each corner on the map. Click Finish Polygon after 3+ points." },
+      { title: "Adjust vertices", detail: "Drag corner points on the editable polygon to fine-tune the boundary." },
+      { title: "Create Boundary", detail: "Saves to the system — priority zones immediately affect routing scores." },
+      { title: "Assign techs", detail: "Link each tech to their home territory at the bottom of this page." },
+    ],
+    inputs: [
+      { name: "Boundary name", description: "Required label for the zone." },
+      { name: "ZIP / Polygon mode", description: "ZIP = enter codes. Polygon = draw on map." },
+      { name: "Zone type", description: "Territory (crew home), Priority (boost score), Exclusion (hide from routing)." },
+      { name: "Draw Polygon", description: "Starts click-to-draw mode on the map." },
+      { name: "Finish Polygon", description: "Closes shape after 3+ corner clicks." },
+      { name: "Tech territory dropdown", description: "Assigns a tech to a territory zone." },
+    ],
+    access: [
+      { role: "Field Tech", permissions: "Hidden — office/admin only tab." },
+      { role: "Office", permissions: "Create, edit, delete boundaries; assign tech territories." },
+      { role: "Admin / Owner", permissions: "Full territory management." },
+    ],
   },
   admin: {
     title: "Admin",
     summary: "Storm mode, data sources, integrations, cleanup, and exports.",
     bullets: [
-      "Set Storm Phase (1 hunt → 2 dispatch → 3 cleanup) and Temp-Out mode.",
-      "Adjust fetch interval, dispatch weights, and crew guardrails.",
-      "Run map cleanup, export CSVs, and enable simulation for training.",
+      "Storm Phase controls V1 routing priority (Phase 1 hunt → Phase 2 dispatch → Phase 3 cleanup).",
+      "Temp-Out mode prioritizes temp power workflow.",
+      "Simulation, cleanup, exports, and dispatch guardrails.",
     ],
     layman: {
       headline: "Storm control room — settings that affect everyone",
-      plainEnglish:
-        "This page controls how the whole app behaves during a storm: which utility feeds load, what phase you're in, how jobs get ranked, and when to clean up the map. Only office/admin should change these during a live event.",
-      onThisPage: [
-        "Data Sources — turn Xcel/Connexus feeds on; set how often data refreshes.",
-        "Storm Phase — Phase 1 hunt, Phase 2 dispatch, Phase 3 cleanup.",
-        "Temp-Out Mode — prioritize temporary power jobs (secure → temp power → return).",
-        "Dispatch Guardrails — max jobs per tech and overtime limits for Assign.",
-        "Priority Weights — numbers that control which jobs float to the top.",
-        "Simulation — practice with fake dots; never affects real customers when used correctly.",
-        "Storm Events — name and track a storm session; cleanup tools between events.",
-        "Exports — download CSV files for reporting.",
-      ],
-      tryThis: [
-        "Start of storm: Phase 1, check Xcel is ON, Save & Apply.",
-        "When sales ramp up: switch to Phase 2.",
-        "End of storm: Phase 3, Sweep Completed + Declined, export CSVs.",
-        "Hover any teal ? icon on this page for field-level help.",
-      ],
+      plainEnglish: "Controls storm phase, data feeds, job ranking weights, and cleanup tools. Only office/admin should change these during a live event.",
+      onThisPage: ["Storm Phase buttons", "Data Sources", "Temp-Out toggle", "Dispatch Guardrails", "Simulation", "Exports"],
+      tryThis: ["Storm start: Phase 1 + Xcel ON", "Sales ramp: Phase 2", "End: Phase 3 + cleanup sweep"],
     },
+    steps: [
+      { title: "Set Storm Phase", detail: "Phase 1 = hunt small clusters. Phase 2 = dispatch sold/office calls. Phase 3 = cleanup returns and follow-ups." },
+      { title: "Enable data sources", detail: "Turn Xcel/Connexus ON and set fetch interval." },
+      { title: "Save & Apply", detail: "Writes settings — phase change immediately affects Route to Next scoring." },
+      { title: "Configure guardrails", detail: "Max jobs per tech and overtime limits for Assign recommendations." },
+      { title: "Run cleanup when storm ends", detail: "Sweep completed/declined dots; export CSVs for records." },
+    ],
+    inputs: [
+      { name: "Storm Phase (1/2/3)", description: "Changes routing priority across map and queue." },
+      { name: "Temp-Out Mode", description: "Prioritizes temp power install → return workflow." },
+      { name: "Active Sources", description: "Xcel / Connexus outage feeds." },
+      { name: "Fetch Interval", description: "How often utility data refreshes." },
+      { name: "Dispatch Guardrails", description: "Max jobs per tech, overtime soft/hard limits." },
+      { name: "Simulation Mode", description: "Synthetic dots for training — not real customers." },
+    ],
+    access: [
+      { role: "Field Tech", permissions: "Hidden — office/admin only tab." },
+      { role: "Office", permissions: "View and change storm settings, sources, guardrails." },
+      { role: "Admin / Owner", permissions: "Full admin including simulation, cleanup, exports." },
+    ],
   },
   profile: {
     title: "Profile",
     summary: "Your account settings and sign-out.",
-    bullets: [
-      "Update name, phone, and password.",
-      "Sign out clears your session and returns to the public landing page.",
-    ],
+    bullets: ["Update name, phone, and password.", "Sign out clears session."],
     layman: {
       headline: "Your account",
-      plainEnglish: "Update your name, phone, or password. Sign out when you're done — especially on a shared device.",
-      onThisPage: ["Name and phone fields.", "Change password section.", "Sign out button."],
-      tryThis: ["Keep your phone current so dispatch SMS reaches you.", "Sign out at end of shift on shared tablets."],
+      plainEnglish: "Update contact info and password. Sign out on shared devices.",
+      onThisPage: ["Name / phone fields", "Password change", "Sign out"],
+      tryThis: ["Keep phone current for dispatch SMS", "Sign out on shared tablets"],
     },
+    steps: [
+      { title: "Update name or phone", detail: "Save so dispatch and SMS reach the right person." },
+      { title: "Change password", detail: "Enter current and new password if required by your org." },
+      { title: "Sign out", detail: "Clears session and returns to login screen." },
+    ],
+    inputs: [
+      { name: "Name / Phone", description: "Your display name and mobile for notifications." },
+      { name: "Change password", description: "Updates login credentials." },
+      { name: "Sign out", description: "Ends your session." },
+    ],
+    access: [
+      { role: "Field Tech", permissions: "Edit own profile and sign out." },
+      { role: "Office", permissions: "Edit own profile and sign out." },
+      { role: "Admin / Owner", permissions: "Edit own profile and sign out." },
+    ],
   },
   guide: {
     title: "Guide",
     summary: "Step-by-step navigation for every screen in the app.",
     bullets: [
-      "Use the sidebar sections to jump to a topic.",
-      "Admins see Login & Database setup at the bottom; tech and office see navigation only.",
-      "Open Platform docs for routing, API, and feature reference.",
+      "Sidebar sections jump to each topic.",
+      "Admins see Login & Database setup; techs see navigation only.",
+      "Use the ? button (bottom-left) for page-specific help on any screen.",
     ],
     layman: {
       headline: "Click-by-click walkthrough",
-      plainEnglish:
-        "A built-in manual for every screen in the app. Jump to any section in the sidebar. Admins also see database and login setup at the bottom.",
-      onThisPage: [
-        "Sidebar topics — jump to Dashboard, Map, Queue, etc.",
-        "Step lists — what to click in order.",
-        "Platform docs link — deeper technical reference.",
-      ],
-      tryThis: [
-        "New user? Read 'After Login' sections in order.",
-        "Admin only: scroll to Setup for dev logins and database notes.",
-      ],
+      plainEnglish: "Built-in manual for every screen. Use the bottom-left help button on any page for steps, inputs, and role permissions.",
+      onThisPage: ["Topic sidebar", "Step lists per screen", "Platform docs link"],
+      tryThis: ["New user: read After Login sections in order", "Use ? help button while on any page"],
     },
+    steps: [
+      { title: "Pick a topic in the sidebar", detail: "Dashboard, Map, Queue, etc." },
+      { title: "Follow the numbered steps", detail: "Each section explains clicks in order." },
+      { title: "Open Platform docs", detail: "Deeper technical reference for admins." },
+    ],
+    inputs: [
+      { name: "Sidebar topics", description: "Jump to any screen's guide section." },
+      { name: "Platform docs link", description: "Full technical documentation." },
+    ],
+    access: [
+      { role: "Field Tech", permissions: "Navigation guide sections." },
+      { role: "Office", permissions: "All guide sections." },
+      { role: "Admin / Owner", permissions: "All sections + Setup / database notes." },
+    ],
   },
 };
 

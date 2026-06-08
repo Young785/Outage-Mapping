@@ -137,6 +137,7 @@ export default function TerritoryPanel({ token, role }: Props) {
 
   function stopDrawingMode() {
     setIsDrawingPolygon(false);
+    mapObj.current?.setOptions({ draggable: true });
     if (drawClickListenerRef.current) {
       google.maps.event.removeListener(drawClickListenerRef.current);
       drawClickListenerRef.current = null;
@@ -287,6 +288,7 @@ export default function TerritoryPanel({ token, role }: Props) {
     draftVerticesRef.current = [];
     setPolygonPath([]);
     setIsDrawingPolygon(true);
+    mapObj.current.setOptions({ draggable: false });
 
     previewPolylineRef.current = new google.maps.Polyline({
       map: mapObj.current,

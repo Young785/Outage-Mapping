@@ -11,6 +11,7 @@
  * All weights are configurable from the Admin panel.
  */
 
+import { smallOutageScore } from "./routing-v1";
 import { getAdmin, isSupabaseConfigured } from "./supabase";
 
 export type PriorityWeights = {
@@ -117,8 +118,9 @@ export function calculateScore(
     ["opportunity", "wants_to_proceed", "door_hanger"].includes(outageStatus);
 
   let score = 0;
-  score += customers * weights.customers_multiplier;
-  score += urgency * weights.urgency_multiplier;
+  // V1: small outages rank higher; large utility main-line events rank lower
+  score += smallOutageScore(customers);
+  score += urgency * weights.urgency_multiplier * 0.5;
   if (isOfficeJob) score += weights.office_job_bonus;
   if (densityNearby > 0) score += weights.density_bonus * Math.min(densityNearby, 5);
   score += hoursSinceReported * weights.time_weight;
@@ -180,8 +182,8 @@ export function calculateScoreBreakdown(
     ["opportunity", "wants_to_proceed", "door_hanger"].includes(outageStatus);
 
   const parts: Record<string, number> = {
-    customers: customers * weights.customers_multiplier,
-    urgency: urgency * weights.urgency_multiplier,
+    smallOutage: smallOutageScore(customers),
+    urgency: urgency * weights.urgency_multiplier * 0.5,
     office_bonus: isOfficeJob ? weights.office_job_bonus : 0,
     density: densityNearby > 0 ? weights.density_bonus * Math.min(densityNearby, 5) : 0,
     age_time: hoursSinceReported * weights.time_weight,
