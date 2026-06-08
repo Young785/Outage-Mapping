@@ -4,7 +4,7 @@ export const ADMIN_SECTION_HELP: Record<string, string> = {
   dataSources:
     "Controls which utility feeds pull live outage dots onto the map. Save & Apply refreshes the map with your selection.",
   priorityWeights:
-    "Numbers used when ranking jobs and outages. Higher weights make that factor matter more in Job Queue sort and assign scoring.",
+    "Bonuses when office creates jobs (call-ins, line drops, honey holes). Route to Next and queue sort use V1 phase scoring separately — Storm Phase in Data Sources is the main rerouting control.",
   simulation:
     "Replaces live utility data with fake storm dots for training. Does not change real customer outages until you turn it off.",
   syntheticGenerator:

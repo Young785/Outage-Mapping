@@ -10,6 +10,11 @@ export type PageHelpId =
   | "profile"
   | "guide";
 
+export type HelpAudience = "all" | "office" | "tech";
+
+export type HelpStep = { title: string; detail: string; audience?: HelpAudience };
+export type HelpInput = { name: string; description: string; audience?: HelpAudience };
+
 export type PageHelpContent = {
   title: string;
   summary: string;
@@ -21,14 +26,53 @@ export type PageHelpContent = {
     tryThis: string[];
   };
   /** Numbered walkthrough for this page only */
-  steps: Array<{ title: string; detail: string }>;
+  steps: HelpStep[];
   /** Buttons, toggles, and fields on this page */
-  inputs: Array<{ name: string; description: string }>;
-  /** Who can see or change what */
+  inputs: HelpInput[];
+  /** Who can see or change what — used to tailor help, not shown as its own tab */
   access: Array<{ role: string; permissions: string }>;
   /** Storm-phase routing order (map / queue pages) */
   prioritization?: Array<{ phase: string; rules: string[] }>;
+  /** Admin rerouting flow — how V1 scoring and phase changes affect the field */
+  rerouting?: {
+    v1Formula: string;
+    whereUsed: string[];
+    customerTiers: string[];
+    clusterRule: string;
+    stormDayFlow: Array<{ when: string; actions: string[] }>;
+  };
 };
+
+export function isOfficeRole(role?: string): boolean {
+  return role === "office" || role === "admin" || role === "owner";
+}
+
+/** Keep only steps/inputs the signed-in user actually sees on this page. */
+export function filterHelpItems<T extends { audience?: HelpAudience }>(
+  items: T[],
+  role?: string
+): T[] {
+  return items.filter((item) => {
+    const aud = item.audience ?? "all";
+    if (aud === "all") return true;
+    if (aud === "office") return isOfficeRole(role);
+    if (aud === "tech") return role === "tech";
+    return true;
+  });
+}
+
+export function permissionsForRole(
+  page: PageHelpContent,
+  role?: string
+): string | undefined {
+  if (isOfficeRole(role)) {
+    if (role === "admin" || role === "owner") {
+      return page.access.find((a) => a.role === "Admin / Owner")?.permissions;
+    }
+    return page.access.find((a) => a.role === "Office")?.permissions;
+  }
+  return page.access.find((a) => a.role === "Field Tech")?.permissions;
+}
 
 export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
   dashboard: {
@@ -92,6 +136,9 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
       { name: "Quick Investigate form", description: "Primary outcome, door action, power-on-drop flag, optional service details. Updates dot color for the whole team." },
       { name: "Google Navigation", description: "Opens turn-by-turn directions in Google Maps." },
       { name: "My Location", description: "Centers the map on your GPS — required for Route to Next." },
+      { name: "Add Opportunity", description: "Field tech button — report damage at a location not on the utility feed.", audience: "tech" },
+      { name: "+ New Job", description: "Office button — create a call-in job from the header.", audience: "office" },
+      { name: "Remove marker", description: "Office action on a dot — hides it from the active map.", audience: "office" },
       { name: "Hide non-critical markers", description: "Sidebar toggle — hides dots that are not active storm work." },
       { name: "Legend (collapsible)", description: "Top-left — dot shapes (office vs utility) and colors (status)." },
       { name: "Data Sources", description: "Sidebar — toggle Xcel / Connexus utility feeds on or off." },
@@ -158,14 +205,15 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
       { title: "Choose a filter", detail: "All Statuses or narrow to Unvisited, Investigating, etc." },
       { title: "Scan priority score", detail: "Higher score = better hunting target for current storm phase." },
       { title: "Go or Investigate", detail: "Go pans map + draws route line. Investigate opens the field form." },
-      { title: "Change status if needed", detail: "Office can override status from dropdown on each row." },
+      { title: "Change status if needed", detail: "Override status from the dropdown on each row.", audience: "office" },
     ],
     inputs: [
       { name: "Filter dropdown", description: "Limits list to one status." },
-      { name: "Export CSV", description: "Downloads all visible outages for reporting." },
+      { name: "Export CSV", description: "Downloads all visible outages for reporting.", audience: "office" },
       { name: "Go", description: "Navigate to that address on Live Map." },
       { name: "Investigate", description: "Opens Quick Investigate form." },
-      { name: "Status dropdown", description: "Manual status override (office use)." },
+      { name: "Status dropdown", description: "Manual status override on each row.", audience: "office" },
+      { name: "Remove marker", description: "Hides the dot from the active map.", audience: "office" },
     ],
     access: [
       { role: "Field Tech", permissions: "View, filter, Go, Investigate." },
@@ -222,7 +270,7 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
       { title: "Optimize Route", detail: "Builds up to 8 stops using traffic-aware Google Routes when configured." },
       { title: "Go Next Stop", detail: "Opens navigation to the first stop in the optimized plan." },
       { title: "Skip a stop", detail: "Removes it from the plan and silently reroutes the remaining stops." },
-      { title: "Assign (office)", detail: "Recommend nearest/best tech → review reasons → Confirm Dispatch." },
+      { title: "Assign a tech", detail: "Recommend nearest/best tech → review reasons → Confirm Dispatch.", audience: "office" },
     ],
     inputs: [
       { name: "Sort: Priority / Distance / Value / Smart", description: "Changes queue order." },
@@ -230,7 +278,8 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
       { name: "Find Clusters", description: "Groups nearby jobs into hotspot packs." },
       { name: "Go Next Stop", description: "Navigate to first planned stop." },
       { name: "Skip (per stop)", description: "Exclude stop and reroute remaining plan." },
-      { name: "Assign", description: "Office-only — recommend and confirm tech dispatch." },
+      { name: "Assign", description: "Recommend and confirm tech dispatch.", audience: "office" },
+      { name: "+ New Job", description: "Create a call-in job from the header.", audience: "office" },
     ],
     access: [
       { role: "Field Tech", permissions: "View queue, sort, optimize route, Go Next Stop, Skip." },
@@ -335,37 +384,173 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
   },
   admin: {
     title: "Admin",
-    summary: "Storm mode, data sources, integrations, cleanup, and exports.",
+    summary: "Storm control room — phase, data feeds, V1 rerouting logic, priority weights, simulation, cleanup, and exports.",
     bullets: [
-      "Storm Phase controls V1 routing priority (Phase 1 hunt → Phase 2 dispatch → Phase 3 cleanup).",
-      "Temp-Out mode prioritizes temp power workflow.",
-      "Simulation, cleanup, exports, and dispatch guardrails.",
+      "Storm Phase is the master switch for V1 rerouting — changes what Route to Next and Job Queue prioritize.",
+      "Map/queue use V1 scoring (small clusters beat large main-line events in Phase 1). Priority Weights below tune legacy job-creation bonuses.",
+      "Territories priority zones and exclusion zones also feed into V1 zone score.",
+      "Simulation lets you test rerouting without touching live utility data.",
     ],
     layman: {
       headline: "Storm control room — settings that affect everyone",
-      plainEnglish: "Controls storm phase, data feeds, job ranking weights, and cleanup tools. Only office/admin should change these during a live event.",
-      onThisPage: ["Storm Phase buttons", "Data Sources", "Temp-Out toggle", "Dispatch Guardrails", "Simulation", "Exports"],
-      tryThis: ["Storm start: Phase 1 + Xcel ON", "Sales ramp: Phase 2", "End: Phase 3 + cleanup sweep"],
+      plainEnglish:
+        "This is where you steer the whole storm. Storm Phase tells the system whether crews should hunt new dots (Phase 1), run sold work (Phase 2), or finish cleanup (Phase 3). That phase instantly changes Route to Next on the map and sort order in Job Queue. Small clustered outages (six dots with 1–5 customers) rank above a single 80-customer utility main-line event in Phase 1 — by design. Use simulation to test rerouting before a live event.",
+      onThisPage: [
+        "Data Sources (Xcel / Connexus + fetch interval)",
+        "Storm Phase 1 / 2 / 3 buttons",
+        "Temp-Out Mode toggle",
+        "Dispatch Guardrails (max jobs, overtime limits)",
+        "Save & Apply",
+        "Priority Scoring Weights (10 fields + Save Weights)",
+        "Storm Simulation Mode + Apply Simulation",
+        "Synthetic Outage Generator",
+        "Load Real Snapshot into Test Mode",
+        "Storm Event Sessions + Map Cleanup",
+        "Data Storage metrics + Hot/Low-Yield zones + CSV exports",
+      ],
+      tryThis: [
+        "Before storm: Phase 1 → Xcel ON → Save & Apply → draw priority zones in Territories",
+        "When sales start: switch to Phase 2 → Save & Apply → watch Job Queue rise above hunting",
+        "Wind-down: Phase 3 + Temp-Out ON → cleanup sweep → export CSVs",
+        "Test rerouting: Simulation ON → Generate Clustered outages → Apply Simulation → Route to Next on map",
+      ],
+    },
+    rerouting: {
+      v1Formula:
+        "Priority Score = Lead Status + Storm Phase Weight + Zone Score + Small-Outage Score + Cluster Score + Utility-Confirmed Bonus + Power Status Bonus − Drive Time Penalty − Exclusion Penalty",
+      whereUsed: [
+        "Live Map → Route to Next (picks highest score from tech GPS)",
+        "Outages list → priority score column",
+        "Job Queue → Priority and Smart sort",
+        "Territories → priority zones boost score; exclusion zones hide dots",
+      ],
+      customerTiers: [
+        "1–4 customers = high priority (individual service / mast work)",
+        "5–10 customers = medium",
+        "11–50 customers = low (likely feeder issue)",
+        "50+ customers = very low (utility main-line — do not chase in Phase 1)",
+      ],
+      clusterRule:
+        "Six nearby outages with 1–5 customers each score far higher than one outage with 80 customers. Cluster score is full weight in Phase 1, reduced in Phase 2, minimal in Phase 3.",
+      stormDayFlow: [
+        {
+          when: "Storm starts — Phase 1 Hunting",
+          actions: [
+            "Set Phase 1 → Save & Apply",
+            "Enable Xcel (and Connexus if needed)",
+            "Techs use Route to Next — system favors honey holes and small-outage clusters",
+            "Draw priority zones in Territories over known hot areas",
+          ],
+        },
+        {
+          when: "Sales ramp — Phase 2 Capture / Dispatch",
+          actions: [
+            "Set Phase 2 → Save & Apply",
+            "Sold jobs and office call-ins jump above hunting targets",
+            "Office assigns from Job Queue; techs Optimize Route",
+            "Power-on-drop opportunities rank high",
+          ],
+        },
+        {
+          when: "Wind-down — Phase 3 Cleanup",
+          actions: [
+            "Set Phase 3 → Save & Apply",
+            "Turn Temp-Out Mode ON if crews are doing temp power returns",
+            "Temp power, grounding, and follow-ups rise; unvisited dots sink",
+            "Sweep completed dots; archive stale markers",
+          ],
+        },
+      ],
     },
     steps: [
-      { title: "Set Storm Phase", detail: "Phase 1 = hunt honey holes and small-outage clusters (large utility events rank low). Phase 2 = sold jobs and office call-ins first. Phase 3 = temp power, grounding, and follow-ups." },
-      { title: "Enable data sources", detail: "Turn Xcel/Connexus ON and set fetch interval." },
-      { title: "Save & Apply", detail: "Writes settings — phase change immediately affects Route to Next scoring." },
-      { title: "Configure guardrails", detail: "Max jobs per tech and overtime limits for Assign recommendations." },
-      { title: "Run cleanup when storm ends", detail: "Sweep completed/declined dots; export CSVs for records." },
+      { title: "Configure data sources", detail: "In Data Sources: check Xcel Energy (primary feed). Optionally enable Connexus. Set Fetch Interval (5–60 min) for how often utility dots refresh." },
+      { title: "Set Storm Phase", detail: "Click Phase 1 (Hunting), Phase 2 (Dispatch), or Phase 3 (Cleanup). This is the main rerouting control — it changes scoring for every tech immediately after Save & Apply." },
+      { title: "Toggle Temp-Out Mode if needed", detail: "Turn ON when crews are securing customers with temporary power and returning later. Boosts temp-power workflow in Phase 3." },
+      { title: "Set dispatch guardrails", detail: "Max Jobs/Tech, Overtime Soft Limit, and Overtime Hard Limit control how Assign recommends crews — prevents overload." },
+      { title: "Click Save & Apply", detail: "Required to push phase, sources, temp-out, and guardrails live. Phase banner on every page updates instantly." },
+      { title: "Tune priority weights (optional)", detail: "Priority Scoring Weights adjust bonuses when office creates jobs (office bonus, line drop, honey hole, etc.). Map Route to Next uses V1 phase logic separately — weights do not replace V1 cluster/small-outage tiers." },
+      { title: "Click Save Weights", detail: "Saves the 10 weight fields to the database for job creation and cron scoring." },
+      { title: "Test rerouting in simulation", detail: "Storm Simulation Mode → toggle ON → Generate Clustered or Honey Hole synthetic outages → Apply Simulation. Techs can Route to Next on fake data to verify phase logic." },
+      { title: "Start a storm event session", detail: "Name the event (e.g. June 2026 Derecho) and click Start Session for historical tracking." },
+      { title: "Cleanup when storm ends", detail: "Sweep Completed + Declined, Archive Stale (48h or 72h), export CSVs for records." },
     ],
     inputs: [
-      { name: "Storm Phase (1/2/3)", description: "Changes routing priority across map and queue." },
-      { name: "Temp-Out Mode", description: "Prioritizes temp power install → return workflow." },
-      { name: "Active Sources", description: "Xcel / Connexus outage feeds." },
-      { name: "Fetch Interval", description: "How often utility data refreshes." },
-      { name: "Dispatch Guardrails", description: "Max jobs per tech, overtime soft/hard limits." },
-      { name: "Simulation Mode", description: "Synthetic dots for training — not real customers." },
+      { name: "Xcel Energy (ArcGIS) checkbox", description: "Primary live outage feed. Must be ON for real storm hunting." },
+      { name: "Connexus Energy (ArcGIS) checkbox", description: "Secondary feed — requires CONNEXUS_ARCGIS_URL in server .env." },
+      { name: "Fetch Interval (minutes)", description: "How often the cron job re-fetches utility data (5–60 min)." },
+      { name: "Phase 1 — Hunting", description: "Rerouting favors priority zones, small-outage clusters, utility-confirmed dots. Large outages sink." },
+      { name: "Phase 2 — Dispatch", description: "Rerouting favors sold jobs, office call-ins, power-on-drop. Hunting clusters continue but rank lower." },
+      { name: "Phase 3 — Cleanup", description: "Rerouting favors sold jobs, temp power returns, grounding, office calls, then follow-ups." },
+      { name: "Temp-Out Mode", description: "When ON, temp-power install → return workflow scores higher across the app." },
+      { name: "Max Jobs / Tech", description: "Assign skips techs at or above this active job count." },
+      { name: "Overtime Soft Limit (hours)", description: "Techs above this get lower assign score — still assignable." },
+      { name: "Overtime Hard Limit (hours)", description: "Techs at/above this are skipped by auto-assign unless no one else fits." },
+      { name: "Save & Apply", description: "Pushes data sources, phase, temp-out, and guardrails live — triggers rerouting recalculation." },
+      { name: "Customers Multiplier", description: "Legacy job-creation weight. V1 map routing uses inverted small-outage tiers instead (small = high)." },
+      { name: "Urgency Multiplier", description: "Boosts score for urgent outage types when creating jobs." },
+      { name: "Office Job Bonus", description: "Flat bonus for office-entered call-in jobs." },
+      { name: "Density Bonus (per nearby outage)", description: "Extra points per nearby outage — rewards hotspot areas in legacy scoring." },
+      { name: "Time Weight (per hour)", description: "Points added per hour since outage first seen — older dots can rise." },
+      { name: "Confirmed Opportunity Bonus", description: "Large boost when damage is confirmed with customer contact." },
+      { name: "Wants-to-Proceed Bonus", description: "Boost when customer verbally wants to move forward." },
+      { name: "Honey Hole Bonus (multi-customer)", description: "Boost for multi-customer opportunity clusters." },
+      { name: "Line Drop Present Bonus", description: "Boost when investigation confirms a line down." },
+      { name: "Line Drop w/ Power Bonus", description: "Extra boost when line down still has partial power — dangerous, high close rate." },
+      { name: "Save Weights", description: "Writes all 10 priority weight fields to the database." },
+      { name: "Simulation ON/OFF toggle", description: "Replaces live utility data with synthetic storm dots for testing rerouting." },
+      { name: "Apply Simulation", description: "Activates or deactivates simulation mode on the map." },
+      { name: "Outage Count (10/25/50/100)", description: "How many synthetic dots to generate." },
+      { name: "Scenario Type (Mixed / Clustered / Sparse / Honey Hole)", description: "Shape of synthetic data — use Clustered or Honey Hole to test V1 cluster rerouting." },
+      { name: "Generate outages button", description: "Creates synthetic dataset — does not affect live feeds until simulation is applied." },
+      { name: "Load into Test (snapshots)", description: "Replay a saved real outage fetch as simulation data." },
+      { name: "Refresh Snapshots", description: "Reloads list of saved outage snapshots." },
+      { name: "Storm Event name + Start Session", description: "Names and begins a tracked storm session." },
+      { name: "End Event", description: "Closes the active storm session." },
+      { name: "Sweep Completed + Declined", description: "Removes finished/declined dots from active map — keeps DB history." },
+      { name: "Archive Stale (48h / 72h)", description: "Hides untouched dots from active map after 48 or 72 hours." },
+      { name: "Export CSV buttons", description: "Download outages (30d/90d), jobs (30d), or investigations (30d) for analysis." },
     ],
     access: [
       { role: "Field Tech", permissions: "Hidden — office/admin only tab." },
-      { role: "Office", permissions: "View and change storm settings, sources, guardrails." },
-      { role: "Admin / Owner", permissions: "Full admin including simulation, cleanup, exports." },
+      { role: "Office", permissions: "View and change storm settings, sources, guardrails, weights." },
+      { role: "Admin / Owner", permissions: "Full admin including simulation, synthetic generator, cleanup, exports." },
+    ],
+    prioritization: [
+      {
+        phase: "Phase 1 — Hunting (set in Admin)",
+        rules: [
+          "1. Priority zones / honey holes",
+          "2. Clusters of small customer-count outages",
+          "3. Utility-confirmed red-outline ArcGIS dots",
+          "4. Under-10-customer outages",
+          "5. Dots along the drive (closer = less penalty)",
+          "6. Regular white ArcGIS dots",
+          "Large outages intentionally deprioritized",
+        ],
+      },
+      {
+        phase: "Phase 2 — Capture / Dispatch",
+        rules: [
+          "1. Sold jobs",
+          "2. Office-entered calls",
+          "3. Power-on-drop opportunities",
+          "4. Utility-confirmed red-outline dots",
+          "5. Confirmed opportunities",
+          "6. Hunting targets / small clusters (below dispatch)",
+        ],
+      },
+      {
+        phase: "Phase 3 — Cleanup",
+        rules: [
+          "1. Sold jobs",
+          "2. Temp power / return-needed jobs",
+          "3. Return for grounding",
+          "4. Office calls",
+          "5. Utility-confirmed dots",
+          "6. Customer thinking / door hanger follow-ups",
+          "7. Remaining unvisited dots",
+        ],
+      },
     ],
   },
   profile: {
@@ -400,11 +585,11 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
     bullets: [
       "Sidebar sections jump to each topic.",
       "Admins see Login & Database setup; techs see navigation only.",
-      "Use the ? button (bottom-left) for page-specific help on any screen.",
+      "Use the help button (bottom-right) for page-specific help on any screen.",
     ],
     layman: {
       headline: "Click-by-click walkthrough",
-      plainEnglish: "Built-in manual for every screen. Use the bottom-left help button on any page for steps, inputs, and role permissions.",
+      plainEnglish: "Built-in manual for every screen. Use the bottom-right help button on any page for steps and inputs you can actually use.",
       onThisPage: ["Topic sidebar", "Step lists per screen", "Platform docs link"],
       tryThis: ["New user: read After Login sections in order", "Use ? help button while on any page"],
     },

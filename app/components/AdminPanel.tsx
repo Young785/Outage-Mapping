@@ -613,8 +613,9 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
       {/* ── Priority Weights ─────────────────────────────────────────── */}
       <div style={sectionStyle}>
         <SectionTitleWithTip title="Priority Scoring Weights" tip={ADMIN_SECTION_HELP.priorityWeights} />
-        <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#6b7280" }}>
-          Score = (customers × multiplier) + (urgency × weight) + office_bonus + density_bonus + (hours × time_weight) + confirmed_bonus
+        <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#6b7280", lineHeight: 1.55 }}>
+          Tunes bonuses when office <strong>creates jobs</strong> (call-ins, line drops, honey holes).
+          Live Map <strong>Route to Next</strong> and Job Queue use separate <strong>V1 phase scoring</strong> — small-outage clusters beat large utility events in Phase 1 regardless of these multipliers.
         </p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "16px" }}>
           {([
