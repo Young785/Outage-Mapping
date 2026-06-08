@@ -36,6 +36,7 @@ type Tech = {
 type Props = {
   token: string;
   role: string;
+  onSessionExpired?: (message?: string) => void;
 };
 
 const MAP_CENTER = { lat: 44.9778, lng: -93.265 };
@@ -52,7 +53,14 @@ function zoneColor(z: ZoneType): string {
   return "#0d9488";
 }
 
-export default function TerritoryPanel({ token, role }: Props) {
+function apiErrorMessage(res: Response, data: { error?: string }, fallback: string): string {
+  if (res.status === 401) {
+    return data.error || "Session expired — please sign in again.";
+  }
+  return data.error || fallback;
+}
+
+export default function TerritoryPanel({ token, role, onSessionExpired }: Props) {
   const [territories, setTerritories] = useState<Territory[]>([]);
   const [techs, setTechs] = useState<Tech[]>([]);
   const [loading, setLoading] = useState(true);
@@ -71,6 +79,7 @@ export default function TerritoryPanel({ token, role }: Props) {
   const [assignTerritory, setAssignTerritory] = useState<string>("");
   const [mapReady, setMapReady] = useState(false);
   const [mapLoadError, setMapLoadError] = useState<string | null>(null);
+  const [mapExpanded, setMapExpanded] = useState(false);
 
   const mapRef = useRef<HTMLDivElement | null>(null);
   const mapObj = useRef<google.maps.Map | null>(null);
@@ -185,6 +194,7 @@ export default function TerritoryPanel({ token, role }: Props) {
     setTZoneType("territory");
     setTZips([]);
     setPolygonPath([]);
+    setMapExpanded(false);
     setMapLoadError(null);
     stopDrawingMode();
     clearPathListeners();
@@ -299,6 +309,25 @@ export default function TerritoryPanel({ token, role }: Props) {
       cancelAnimationFrame(raf);
     };
   }, [showForm, tMode, tZoneType]);
+
+  // Resize map when expanding or window changes
+  useEffect(() => {
+    if (!mapReady || !mapObj.current) return;
+    const delays = [0, 80, 250];
+    const timers = delays.map((ms) =>
+      window.setTimeout(() => triggerMapResize(mapObj.current), ms)
+    );
+    return () => timers.forEach((t) => clearTimeout(t));
+  }, [mapExpanded, mapReady, showForm, tMode]);
+
+  useEffect(() => {
+    if (!mapExpanded) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMapExpanded(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mapExpanded]);
 
   // Restore polygon when editing
   useEffect(() => {
@@ -465,7 +494,10 @@ export default function TerritoryPanel({ token, role }: Props) {
         body: JSON.stringify(body),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      if (!res.ok) {
+        if (res.status === 401) onSessionExpired?.(apiErrorMessage(res, data, "Session expired"));
+        throw new Error(apiErrorMessage(res, data, "Failed to save boundary"));
+      }
 
       setSuccess(editingId ? "Boundary updated." : "Boundary created.");
       resetForm();
@@ -489,7 +521,10 @@ export default function TerritoryPanel({ token, role }: Props) {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Failed to delete");
+      if (!res.ok) {
+        if (res.status === 401) onSessionExpired?.(apiErrorMessage(res, data, "Session expired"));
+        throw new Error(apiErrorMessage(res, data, "Failed to delete"));
+      }
       setSuccess("Boundary deleted.");
       if (editingId === id) {
         resetForm();
@@ -537,7 +572,10 @@ export default function TerritoryPanel({ token, role }: Props) {
         body: JSON.stringify({ action: "assign_territory", techId, territoryId: territoryId || null }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Failed to assign territory");
+      if (!res.ok) {
+        if (res.status === 401) onSessionExpired?.(apiErrorMessage(res, data, "Session expired"));
+        throw new Error(apiErrorMessage(res, data, "Failed to assign territory"));
+      }
       setSuccess("Territory assigned");
       load();
     } catch (err: any) {
@@ -552,8 +590,10 @@ export default function TerritoryPanel({ token, role }: Props) {
     return <div style={{ textAlign: "center", padding: "48px", color: "#6b7280" }}>Loading boundaries…</div>;
   }
 
+  const mapHeight = mapExpanded ? "calc(100vh - 140px)" : "min(560px, 58vh)";
+
   return (
-    <div style={{ maxWidth: "900px" }}>
+    <div style={{ maxWidth: showForm && tMode === "polygon" ? "none" : "900px", width: "100%" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
         <div>
           <h2 style={{ margin: 0, fontSize: "18px", fontWeight: 700, color: "#1f2937" }}>Boundaries & Territories</h2>
@@ -569,6 +609,7 @@ export default function TerritoryPanel({ token, role }: Props) {
               if (!next) {
                 resetForm();
                 teardownMap();
+                setMapExpanded(false);
               }
             }}
             style={{ padding: "8px 16px", background: "#0d9488", color: "#fff", border: "none", borderRadius: "8px", fontSize: "14px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}
@@ -649,6 +690,24 @@ export default function TerritoryPanel({ token, role }: Props) {
                     >
                       Draw Polygon
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setMapExpanded((v) => !v)}
+                      disabled={!mapReady}
+                      title={mapExpanded ? "Exit large map (Esc)" : "Open large map for drawing"}
+                      style={{
+                        padding: "7px 12px",
+                        background: mapReady ? (mapExpanded ? "#0f766e" : "#f3f4f6") : "#e5e7eb",
+                        color: mapReady ? (mapExpanded ? "#fff" : "#374151") : "#9ca3af",
+                        border: `1px solid ${mapExpanded ? "#0d9488" : "#d1d5db"}`,
+                        borderRadius: "6px",
+                        fontSize: "12px",
+                        fontWeight: 600,
+                        cursor: mapReady ? "pointer" : "not-allowed",
+                      }}
+                    >
+                      {mapExpanded ? "Exit large map" : "Large map"}
+                    </button>
                     {isDrawingPolygon && (
                       <>
                         <button
@@ -706,10 +765,56 @@ export default function TerritoryPanel({ token, role }: Props) {
                     )}
                   </div>
                 </div>
-                <div style={{ position: "relative" }}>
+                <div
+                  style={
+                    mapExpanded
+                      ? {
+                          position: "fixed",
+                          inset: 0,
+                          zIndex: 950,
+                          background: "#fff",
+                          padding: "16px",
+                          display: "flex",
+                          flexDirection: "column",
+                          boxSizing: "border-box",
+                        }
+                      : { position: "relative" }
+                  }
+                >
+                  {mapExpanded && (
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", gap: "12px", flexShrink: 0 }}>
+                      <div style={{ fontSize: "15px", fontWeight: 700, color: "#1f2937" }}>
+                        Draw boundary — large map
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setMapExpanded(false)}
+                        style={{
+                          padding: "8px 14px",
+                          background: "#0d9488",
+                          color: "#fff",
+                          border: "none",
+                          borderRadius: "8px",
+                          fontSize: "13px",
+                          fontWeight: 600,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Done (Esc)
+                      </button>
+                    </div>
+                  )}
                   <div
                     ref={mapRef}
-                    style={{ width: "100%", height: "320px", borderRadius: "10px", border: "1px solid #d1d5db", background: "#e5e7eb" }}
+                    style={{
+                      width: "100%",
+                      height: mapHeight,
+                      minHeight: mapExpanded ? 400 : 360,
+                      borderRadius: "10px",
+                      border: "1px solid #d1d5db",
+                      background: "#e5e7eb",
+                      flex: mapExpanded ? 1 : undefined,
+                    }}
                   />
                   {!mapReady && !mapLoadError && (
                     <div
@@ -748,13 +853,15 @@ export default function TerritoryPanel({ token, role }: Props) {
                     </div>
                   )}
                 </div>
-                <div style={{ marginTop: "6px", fontSize: "11px", color: "#6b7280" }}>
-                  {isDrawingPolygon
-                    ? `${polygonPath.length} point${polygonPath.length === 1 ? "" : "s"} — drag handles, Ctrl+Z undo, then Finish Polygon (min 3)`
-                    : polygonPath.length > 0
-                      ? `${polygonPath.length} vertices — drag corners or move the whole shape`
-                      : "No polygon drawn yet — click Draw Polygon, then click corners on the map"}
-                </div>
+                {!mapExpanded && (
+                  <div style={{ marginTop: "6px", fontSize: "11px", color: "#6b7280" }}>
+                    {isDrawingPolygon
+                      ? `${polygonPath.length} point${polygonPath.length === 1 ? "" : "s"} — drag handles, Ctrl+Z undo, then Finish Polygon (min 3). Use Large map for more room.`
+                      : polygonPath.length > 0
+                        ? `${polygonPath.length} vertices — drag corners or move the whole shape`
+                        : "No polygon drawn yet — click Draw Polygon, then click corners. Use Large map if the view is too small."}
+                  </div>
+                )}
               </div>
             )}
 

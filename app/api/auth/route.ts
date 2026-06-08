@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { signJWT, hashPassword, verifyPassword, verifyJWT, extractBearerToken } from "@/lib/jwt";
+import { signJWT, hashPassword, verifyPassword, verifyJWT, extractBearerToken, jwtErrorMessage } from "@/lib/jwt";
 import { getAdmin } from "@/lib/supabase";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -70,8 +70,14 @@ export async function POST(req: Request) {
     if (action === "me") {
       const token = extractBearerToken(req.headers.get("authorization"));
       if (!token) return NextResponse.json({ error: "No token" }, { status: 401 });
-      const payload = verifyJWT(token);
-      return NextResponse.json({ user: { id: payload.sub, email: payload.email, name: payload.name, role: payload.role } });
+      try {
+        const payload = verifyJWT(token);
+        return NextResponse.json({
+          user: { id: payload.sub, email: payload.email, name: payload.name, role: payload.role },
+        });
+      } catch (err) {
+        return NextResponse.json({ error: jwtErrorMessage(err) }, { status: 401 });
+      }
     }
 
     // ── UPDATE PROFILE ─────────────────────────────────────────────────────

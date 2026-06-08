@@ -359,6 +359,7 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
       { name: "Boundary name", description: "Required label shown in the list and tech assignment dropdown." },
       { name: "ZIP / Polygon toggle", description: "ZIP = type zip codes manually. Polygon = draw the shape on the map." },
       { name: "Zone type dropdown", description: "Territory = crew home area. Priority = boosts Route to Next score inside zone. Exclusion = hides dots from routing." },
+      { name: "Large map", description: "Opens the draw map fullscreen (~full viewport) for easier corner placement. Press Esc or Done to exit." },
       { name: "Draw Polygon", description: "Enters click-to-draw mode — each map click adds a corner point." },
       { name: "Finish Polygon", description: "Closes the shape after 3+ corners. Enables vertex dragging." },
       { name: "Create / Update Boundary", description: "Saves the zone to the database and redraws it on the map." },

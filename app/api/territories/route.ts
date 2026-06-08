@@ -7,7 +7,7 @@
 
 import { NextResponse } from "next/server";
 import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
-import { verifyJWT, extractBearerToken } from "@/lib/jwt";
+import { verifyJWT, extractBearerToken, jwtErrorMessage } from "@/lib/jwt";
 
 export async function GET() {
   if (!isSupabaseConfigured) return NextResponse.json({ territories: [] });
@@ -27,8 +27,8 @@ export async function POST(req: Request) {
     if (!token) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     let payload;
-    try { payload = verifyJWT(token); } catch {
-      return NextResponse.json({ error: "Invalid token" }, { status: 401 });
+    try { payload = verifyJWT(token); } catch (err) {
+      return NextResponse.json({ error: jwtErrorMessage(err) }, { status: 401 });
     }
 
     if (!["office", "admin", "owner"].includes(payload.role)) {
@@ -60,8 +60,8 @@ export async function PATCH(req: Request) {
     if (!token) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     let payload;
-    try { payload = verifyJWT(token); } catch {
-      return NextResponse.json({ error: "Invalid token" }, { status: 401 });
+    try { payload = verifyJWT(token); } catch (err) {
+      return NextResponse.json({ error: jwtErrorMessage(err) }, { status: 401 });
     }
 
     if (!["office", "admin", "owner"].includes(payload.role)) {
@@ -100,8 +100,8 @@ export async function DELETE(req: Request) {
     if (!token) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     let payload;
-    try { payload = verifyJWT(token); } catch {
-      return NextResponse.json({ error: "Invalid token" }, { status: 401 });
+    try { payload = verifyJWT(token); } catch (err) {
+      return NextResponse.json({ error: jwtErrorMessage(err) }, { status: 401 });
     }
 
     if (!["office", "admin", "owner"].includes(payload.role)) {

@@ -112,6 +112,10 @@ export default function Page() {
   // Auth state
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [authBootstrapping, setAuthBootstrapping] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return !!(localStorage.getItem("fieldmap_token") && localStorage.getItem("fieldmap_user"));
+  });
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [preAuthScreen, setPreAuthScreen] = useState<"landing" | "auth">("landing");
   const [authLoading, setAuthLoading] = useState(false);
@@ -205,19 +209,46 @@ export default function Page() {
   const [reportingLocation, setReportingLocation] = useState(false);
   const [editingAddress, setEditingAddress] = useState("");
 
-  // ── Session restore ─────────────────────────────────────────────────────
+  // ── Session restore — validate token with server before trusting localStorage ──
   useEffect(() => {
-    const savedUser = localStorage.getItem("fieldmap_user");
-    const savedToken = localStorage.getItem("fieldmap_token");
-    if (savedUser && savedToken) {
+    const savedToken = localStorage.getItem("fieldmap_token")?.trim();
+    if (!savedToken) {
+      setAuthBootstrapping(false);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
       try {
-        setUser(JSON.parse(savedUser));
+        const res = await fetch("/api/auth", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${savedToken}`,
+          },
+          body: JSON.stringify({ action: "me" }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Session invalid");
+        if (cancelled) return;
+        setUser(data.user);
         setToken(savedToken);
+        localStorage.setItem("fieldmap_user", JSON.stringify(data.user));
       } catch {
+        if (cancelled) return;
         localStorage.removeItem("fieldmap_user");
         localStorage.removeItem("fieldmap_token");
+        setUser(null);
+        setToken(null);
+        setPreAuthScreen("auth");
+      } finally {
+        if (!cancelled) setAuthBootstrapping(false);
       }
-    }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // ── Fetch outages ────────────────────────────────────────────────────────
@@ -1168,6 +1199,17 @@ export default function Page() {
     setEmail(""); setPassword(""); setName(""); setPhone("");
   }
 
+  function handleSessionExpired(message?: string) {
+    localStorage.removeItem("fieldmap_user");
+    localStorage.removeItem("fieldmap_token");
+    setUser(null);
+    setToken(null);
+    setOutages([]);
+    setTechs([]);
+    setPreAuthScreen("auth");
+    setAuthError(message ?? "Session expired — please sign in again.");
+  }
+
   function handleUserUpdate(updatedUser: User, newToken: string) {
     setUser(updatedUser);
     setToken(newToken);
@@ -1423,6 +1465,14 @@ export default function Page() {
   });
 
   // ── Auth screen ──────────────────────────────────────────────────────────
+  if (authBootstrapping) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "system-ui", color: "#6b7280" }}>
+        Checking session…
+      </div>
+    );
+  }
+
   if (!user) {
     if (preAuthScreen === "landing") {
       return (
@@ -2181,7 +2231,7 @@ export default function Page() {
           {activeTab === "territories" && isOffice && token && (
             <div style={{ padding: isMobile ? "0" : "0", overflowY: "auto", flex: 1 }}>
               <PageHelp pageId="territories" />
-              <TerritoryPanel token={token} role={user?.role ?? "office"} />
+              <TerritoryPanel token={token} role={user?.role ?? "office"} onSessionExpired={handleSessionExpired} />
             </div>
           )}
 
