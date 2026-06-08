@@ -26,6 +26,8 @@ export type PageHelpContent = {
   inputs: Array<{ name: string; description: string }>;
   /** Who can see or change what */
   access: Array<{ role: string; permissions: string }>;
+  /** Storm-phase routing order (map / queue pages) */
+  prioritization?: Array<{ phase: string; rules: string[] }>;
 };
 
 export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
@@ -66,35 +68,76 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
     bullets: [
       "Tap a dot → Quick Investigate form (outcome, power status, Google Navigation).",
       "Route to Next uses V1 scoring: small clustered outages rank above large utility main-line events in Phase 1.",
+      "Customer count: 1–4 = high, 5–10 = medium, 11–50 = low, 50+ = very low — clusters of small outages beat one big outage.",
       "Hide non-critical markers toggle lives in sidebar Map Layers.",
       "Collapsible legend — click Legend to shrink and free map space.",
     ],
     layman: {
       headline: "The map everyone works from",
       plainEnglish:
-        "Every utility outage is a dot. Tap it, fill the quick form, and the dot updates so the whole team knows what happened. Route to Next sends you to the best stop for the current storm phase — not just the nearest dot.",
-      onThisPage: ["Outage dots (shape = lead source, color = status)", "Collapsible legend", "Route to Next", "My Location / Satellite controls"],
-      tryThis: ["Tap dot → Google Navigation at top of form", "Route to Next during Phase 1 for small outage clusters", "Collapse legend for more map space"],
+        "Every utility outage is a dot on the map. Tap a dot, fill out the quick form, and everyone sees the update. Route to Next does not just send you to the nearest dot — it picks the best stop for the current storm phase. In Phase 1 (Hunting), six nearby outages with 1–5 customers each rank higher than one outage with 80 customers, because big counts usually mean a utility main-line problem, not individual service work.",
+      onThisPage: ["Outage dots (shape = lead source, color = status)", "Collapsible legend", "Route to Next", "My Location / Satellite controls", "Phase banner"],
+      tryThis: ["Phase 1: Route to Next to find small outage clusters", "Tap dot → Google Navigation before you drive", "Collapse legend for more map space"],
     },
     steps: [
-      { title: "Pan and zoom the map", detail: "Use pinch/drag or mouse. Toggle Satellite for roof-line context." },
-      { title: "Tap an outage dot", detail: "Quick Investigate opens with customers affected, priority score, address, and Google Navigation." },
-      { title: "Submit investigation", detail: "Pick outcome (utility issue, no damage, opportunity, not a target). Opportunity unlocks door actions and power status." },
-      { title: "Use Route to Next", detail: "Picks the highest V1 score from your GPS: in Phase 1, clusters of 1–5 customer outages beat a single 80-customer main-line event." },
-      { title: "Adjust map layers", detail: "Sidebar → Hide non-critical markers removes declined, completed, thinking, temp power, and grounding dots." },
+      { title: "Check the phase banner", detail: "The bar at the top shows Phase 1 (Hunting), Phase 2 (Dispatch), or Phase 3 (Cleanup). This changes what Route to Next prioritizes." },
+      { title: "Pan and zoom the map", detail: "Use pinch/drag or mouse. Toggle Satellite in the bottom-right for roof-line context." },
+      { title: "Tap an outage dot", detail: "Quick Investigate opens with customers affected, priority score, address, and a Google Navigation button at the top." },
+      { title: "Submit your investigation", detail: "Pick an outcome: utility issue, no damage, opportunity, or not a target. If you found damage, log door action and whether power is still on the drop." },
+      { title: "Use Route to Next", detail: "From your GPS, scores every visible stop. Phase 1 favors honey holes and small-outage clusters. Phase 2 favors sold jobs and office call-ins. Phase 3 favors temp power and cleanup returns." },
+      { title: "Adjust map layers", detail: "Sidebar → Map Layers → Hide non-critical markers removes declined, completed, thinking, temp power, and grounding dots from view." },
     ],
     inputs: [
-      { name: "Route to Next", description: "Scores all visible stops from your location using storm phase + cluster logic." },
-      { name: "Quick Investigate form", description: "Primary outcome, door action, power status, optional service details." },
-      { name: "Google Navigation", description: "Opens turn-by-turn in Google Maps app." },
-      { name: "Hide non-critical markers", description: "Sidebar toggle — keeps map focused on active storm work." },
-      { name: "Legend (collapsible)", description: "Top-left — explains dot shapes and colors." },
-      { name: "Data Sources", description: "Toggle Xcel / Connexus feeds in sidebar." },
+      { name: "Route to Next", description: "Picks the highest V1 priority score from your GPS. Formula: Lead Status + Storm Phase + Zone + Small-Outage + Cluster + Utility Bonus + Power Bonus − Drive Time − Exclusion." },
+      { name: "Quick Investigate form", description: "Primary outcome, door action, power-on-drop flag, optional service details. Updates dot color for the whole team." },
+      { name: "Google Navigation", description: "Opens turn-by-turn directions in Google Maps." },
+      { name: "My Location", description: "Centers the map on your GPS — required for Route to Next." },
+      { name: "Hide non-critical markers", description: "Sidebar toggle — hides dots that are not active storm work." },
+      { name: "Legend (collapsible)", description: "Top-left — dot shapes (office vs utility) and colors (status)." },
+      { name: "Data Sources", description: "Sidebar — toggle Xcel / Connexus utility feeds on or off." },
+      { name: "Phase banner", description: "Read-only indicator of current storm phase (set in Admin)." },
     ],
     access: [
-      { role: "Field Tech", permissions: "View map, investigate dots, Route to Next, Add Opportunity." },
-      { role: "Office", permissions: "Same as tech + remove markers, simulation tools in Admin." },
-      { role: "Admin / Owner", permissions: "Full map access + all admin controls." },
+      { role: "Field Tech", permissions: "View map, investigate dots, Route to Next, Add Opportunity. Cannot remove markers or change storm phase." },
+      { role: "Office", permissions: "Everything a tech can do, plus remove markers and access Admin settings." },
+      { role: "Admin / Owner", permissions: "Full map access, storm phase control, simulation, and all admin tools." },
+    ],
+    prioritization: [
+      {
+        phase: "Phase 1 — Hunting",
+        rules: [
+          "1. Priority zones / honey holes",
+          "2. Clusters of small customer-count outages",
+          "3. Utility-confirmed red-outline ArcGIS dots",
+          "4. Under-10-customer outages",
+          "5. Dots along your drive (closer = higher)",
+          "6. Regular white ArcGIS dots",
+          "Large outages (50+ customers) are intentionally deprioritized",
+        ],
+      },
+      {
+        phase: "Phase 2 — Capture / Dispatch",
+        rules: [
+          "1. Sold jobs",
+          "2. Office-entered calls",
+          "3. Power-on-drop opportunities",
+          "4. Utility-confirmed red-outline dots",
+          "5. Confirmed opportunities",
+          "6. Hunting targets / small clusters (below dispatch work)",
+        ],
+      },
+      {
+        phase: "Phase 3 — Cleanup",
+        rules: [
+          "1. Sold jobs",
+          "2. Temp power / return-needed jobs",
+          "3. Return for grounding",
+          "4. Office calls",
+          "5. Utility-confirmed red-outline dots",
+          "6. Customer thinking / door hanger follow-ups",
+          "7. Remaining unvisited dots",
+        ],
+      },
     ],
   },
   outages: {
@@ -194,6 +237,17 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
       { role: "Office", permissions: "All tech actions + Assign + New Job." },
       { role: "Admin / Owner", permissions: "Full queue + dispatch controls." },
     ],
+    prioritization: [
+      {
+        phase: "Phase 2+ (Dispatch focus)",
+        rules: [
+          "Sold jobs and office call-ins rise to the top",
+          "Power-on-drop and confirmed opportunities next",
+          "Hunting clusters stay in the mix but rank below dispatch-ready work",
+          "Smart sort = priority score minus drive-time penalty",
+        ],
+      },
+    ],
   },
   techs: {
     title: "Techs",
@@ -229,37 +283,54 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
   },
   territories: {
     title: "Territories",
-    summary: "ZIP or polygon zones that influence dispatch scoring.",
+    summary: "Split the map into ZIP or drawn zones, then link crews so dispatch and Route to Next prefer the right tech.",
     bullets: [
       "Draw polygon boundaries by clicking corners on the map — no deprecated Drawing library.",
       "Click Draw Polygon → click corners → Finish Polygon → drag vertices to adjust.",
       "Priority zones boost Route to Next and Assign scoring.",
+      "Exclusion zones remove dots from routing recommendations.",
     ],
     layman: {
       headline: "Draw zones so the right crew gets nearby jobs",
-      plainEnglish: "Create territory, priority, or exclusion zones. Link techs to territories so Assign prefers the right crew.",
-      onThisPage: ["+ New Boundary form", "Draw Polygon map", "Boundary list", "Tech assignment"],
-      tryThis: ["Draw Polygon → click corners → Finish Polygon", "Set zone type: Territory, Priority, or Exclusion", "Link techs to home territories"],
+      plainEnglish:
+        "Split the map into areas using ZIP codes or drawn shapes. Link a technician to each area so when office assigns work — or when a tech hits Route to Next — the system prefers the crew that owns that territory. Priority zones (orange) boost hunting scores inside the boundary. Exclusion zones (red) hide areas from routing.",
+      onThisPage: ["Territory list with names and ZIP/polygon areas", "Map for drawing and editing zone boundaries", "Zone type picker (Territory / Priority / Exclusion)", "Tech assignment section at the bottom"],
+      tryThis: ["Set territories before a storm so dispatch has crew zones ready", "Draw a Priority zone over a honey hole to boost Route to Next there", "Link each tech to their home territory after drawing zones"],
     },
     steps: [
-      { title: "Click + New Boundary", detail: "Enter name, choose ZIP or Polygon, pick zone type (Territory / Priority / Exclusion)." },
-      { title: "Draw Polygon (if polygon mode)", detail: "Click Draw Polygon, then click each corner on the map. Click Finish Polygon after 3+ points." },
-      { title: "Adjust vertices", detail: "Drag corner points on the editable polygon to fine-tune the boundary." },
-      { title: "Create Boundary", detail: "Saves to the system — priority zones immediately affect routing scores." },
-      { title: "Assign techs", detail: "Link each tech to their home territory at the bottom of this page." },
+      { title: "Click + New Boundary", detail: "Opens the form. Give the zone a name, pick ZIP codes or Polygon mode, and choose zone type: Territory (crew home), Priority (score boost), or Exclusion (hide from routing)." },
+      { title: "Draw on the map (polygon mode)", detail: "Click Draw Polygon, then click each corner on the map to outline the area. Click Finish Polygon once you have at least 3 points." },
+      { title: "Fine-tune the shape", detail: "Drag the corner dots on the editable polygon to adjust the boundary. The preview updates live on the map." },
+      { title: "Save the boundary", detail: "Click Create Boundary. Priority zones immediately boost Route to Next scores inside that area. Exclusion zones stop dots there from being recommended." },
+      { title: "Assign techs to territories", detail: "Scroll to Tech Assignment at the bottom. Pick each crew member's home territory from the dropdown so Assign and dispatch scoring prefer the right owner." },
+      { title: "Edit or delete later", detail: "Click any boundary in the list to edit its name, shape, or ZIP codes. Delete removes the zone — tech assignments to that zone are cleared." },
     ],
     inputs: [
-      { name: "Boundary name", description: "Required label for the zone." },
-      { name: "ZIP / Polygon mode", description: "ZIP = enter codes. Polygon = draw on map." },
-      { name: "Zone type", description: "Territory (crew home), Priority (boost score), Exclusion (hide from routing)." },
-      { name: "Draw Polygon", description: "Starts click-to-draw mode on the map." },
-      { name: "Finish Polygon", description: "Closes shape after 3+ corner clicks." },
-      { name: "Tech territory dropdown", description: "Assigns a tech to a territory zone." },
+      { name: "+ New Boundary", description: "Opens the create/edit form for a new zone." },
+      { name: "Boundary name", description: "Required label shown in the list and tech assignment dropdown." },
+      { name: "ZIP / Polygon toggle", description: "ZIP = type zip codes manually. Polygon = draw the shape on the map." },
+      { name: "Zone type dropdown", description: "Territory = crew home area. Priority = boosts Route to Next score inside zone. Exclusion = hides dots from routing." },
+      { name: "Draw Polygon", description: "Enters click-to-draw mode — each map click adds a corner point." },
+      { name: "Finish Polygon", description: "Closes the shape after 3+ corners. Enables vertex dragging." },
+      { name: "Create / Update Boundary", description: "Saves the zone to the database and redraws it on the map." },
+      { name: "Boundary list (Edit / Delete)", description: "Manage existing zones — edit reopens the form, delete removes the zone." },
+      { name: "Tech territory dropdown", description: "Links a crew member to a territory zone for dispatch scoring." },
     ],
     access: [
-      { role: "Field Tech", permissions: "Hidden — office/admin only tab." },
-      { role: "Office", permissions: "Create, edit, delete boundaries; assign tech territories." },
-      { role: "Admin / Owner", permissions: "Full territory management." },
+      { role: "Field Tech", permissions: "This tab is hidden. Territories affect your Route to Next scores but you cannot create or edit zones." },
+      { role: "Office", permissions: "Create, edit, and delete boundaries. Assign techs to territories. Draw priority and exclusion zones." },
+      { role: "Admin / Owner", permissions: "Full territory management — same as Office with no restrictions." },
+    ],
+    prioritization: [
+      {
+        phase: "How zones affect routing",
+        rules: [
+          "Priority zones (orange) add a large score boost to outages inside the boundary",
+          "Exclusion zones (red) penalize or hide dots from Route to Next recommendations",
+          "Territory zones link techs so Assign prefers the crew who owns that area",
+          "Draw priority zones over known honey holes before Phase 1 hunting",
+        ],
+      },
     ],
   },
   admin: {
@@ -277,7 +348,7 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
       tryThis: ["Storm start: Phase 1 + Xcel ON", "Sales ramp: Phase 2", "End: Phase 3 + cleanup sweep"],
     },
     steps: [
-      { title: "Set Storm Phase", detail: "Phase 1 = hunt small clusters. Phase 2 = dispatch sold/office calls. Phase 3 = cleanup returns and follow-ups." },
+      { title: "Set Storm Phase", detail: "Phase 1 = hunt honey holes and small-outage clusters (large utility events rank low). Phase 2 = sold jobs and office call-ins first. Phase 3 = temp power, grounding, and follow-ups." },
       { title: "Enable data sources", detail: "Turn Xcel/Connexus ON and set fetch interval." },
       { title: "Save & Apply", detail: "Writes settings — phase change immediately affects Route to Next scoring." },
       { title: "Configure guardrails", detail: "Max jobs per tech and overtime limits for Assign recommendations." },

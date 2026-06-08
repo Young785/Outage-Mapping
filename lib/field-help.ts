@@ -23,11 +23,11 @@ export const ADMIN_FIELD_HELP: Record<string, string> = {
   fetchInterval:
     "How often the cron job re-fetches utility data (minutes). Lower = fresher map, more API calls.",
   stormPhase1:
-    "Hunting mode — techs investigate dots and build opportunities. Dispatch is secondary.",
+    "Hunting — prioritize honey holes and clusters of small outages (1–5 customers). Large utility main-line events (50+ customers) rank low. Six nearby small outages beat one 80-customer outage.",
   stormPhase2:
-    "Dispatch mode — sold jobs and queue work take priority. Office assigns crews actively.",
+    "Capture / Dispatch — sold jobs and office call-ins first, then power-on-drop, utility-confirmed dots, confirmed opportunities. Hunting clusters continue but rank below dispatch work.",
   stormPhase3:
-    "Cleanup mode — finish temp-outs, grounding, and remaining sold work. Map cleanup tools matter most.",
+    "Cleanup — sold jobs, temp power returns, grounding, office calls, then follow-ups and remaining unvisited dots.",
   tempOutMode:
     "When ON, temp-power jobs score higher and the workflow expects secure → temp power → return later.",
   maxJobsPerTech:

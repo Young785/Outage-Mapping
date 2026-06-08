@@ -1,14 +1,7 @@
 /**
- * Priority Scoring Engine
- *
- * Score = (customers × customers_multiplier)
- *       + (urgency × urgency_multiplier)
- *       + office_job_bonus      (if source = 'office')
- *       + density_bonus         (if nearby outages exist)
- *       + time_weight × hours_since_reported
- *       + confirmed_opportunity_bonus (if is_confirmed_opportunity)
- *
- * All weights are configurable from the Admin panel.
+ * Legacy priority scoring for job creation and cron sync.
+ * Map routing and queue sort use V1 phase-aware scoring in routing-v1.ts.
+ * Customer count uses inverted small-outage tiers (small = high, large = low).
  */
 
 import { smallOutageScore } from "./routing-v1";

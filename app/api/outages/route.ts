@@ -11,7 +11,7 @@
 import { NextResponse } from "next/server";
 import { fetchAndNormalize, getLastSnapshot } from "@/lib/adapters";
 import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
-import { calculateScore, calculateScoreBreakdown, getWeights, countNearby } from "@/lib/priority";
+import { countNearby } from "@/lib/priority";
 import { calculateV1RouteScore, computeClusterMap, type StormPhase } from "@/lib/routing-v1";
 import { reverseGeocode } from "@/lib/geocache";
 import { verifyJWT, extractBearerToken } from "@/lib/jwt";
@@ -126,8 +126,7 @@ export async function GET(req: Request) {
           haversineMiles(CENTER.lat, CENTER.lng, o.lat!, o.lng!) <= RADIUS_MILES
       );
 
-  // Enrich with priority scores + DB status + cached addresses (if configured)
-  const weights = await getWeights();
+  // Enrich with V1 priority scores + DB status + cached addresses (if configured)
   // Pull saved status AND street_address from DB so we return cached values
   let dbStatusMap: Record<string, string> = {};
   let dbAddressMap: Record<string, string> = {};
@@ -329,9 +328,30 @@ export async function GET(req: Request) {
     };
   });
 
+  const officeClusterMap = computeClusterMap(
+    officeMarkers
+      .filter((o) => o.lat != null && o.lng != null)
+      .map((o) => ({ id: o.id, lat: o.lat!, lng: o.lng!, customers: o.customers ?? 1 }))
+  );
+
   const officeItems = officeMarkers
     .filter((o) => o.lat != null && o.lng != null)
-    .map((o) => ({
+    .map((o) => {
+      const baseStatus = o.status ?? "unvisited";
+      const v1 = calculateV1RouteScore(
+        {
+          id: o.id,
+          lat: o.lat!,
+          lng: o.lng!,
+          customers: o.customers ?? 1,
+          status: baseStatus,
+          source: o.source ?? "office",
+          isOfficeLead: true,
+        },
+        stormPhase,
+        officeClusterMap.get(String(o.id))
+      );
+      return {
       id: o.id,
       source: o.source,
       lat: o.lat,
@@ -346,15 +366,9 @@ export async function GET(req: Request) {
       crewStatus: o.crew_status ?? null,
       outageImpact: o.outage_impact ?? null,
       streetAddress: o.street_address ?? null,
-      status: o.status ?? "unvisited",
-      priorityScore: o.priority_score ?? 0,
-      scoreBreakdown: calculateScoreBreakdown({
-        customers: o.customers ?? 1,
-        outageType: o.outage_type ?? "Office Lead",
-        isOfficeJob: o.source === "office",
-        outageStatus: o.status ?? "unvisited",
-        firstSeenAt: o.first_seen_at ?? undefined,
-      }, weights),
+      status: baseStatus,
+      priorityScore: v1.total,
+      scoreBreakdown: { finalScore: v1.total, urgency: 0, parts: v1.parts },
       milesFromCenter: haversineMiles(CENTER.lat, CENTER.lng, o.lat, o.lng),
       customerName: o.customer_name ?? null,
       customerPhone: o.customer_phone ?? null,
@@ -366,7 +380,8 @@ export async function GET(req: Request) {
       lastUpdatedAt: o.last_updated_at ?? null,
       isStaleMarker: !!o.first_seen_at
         && Date.now() - new Date(o.first_seen_at).getTime() > 48 * 60 * 60 * 1000,
-    }));
+    };
+    });
 
   const allEnriched = [...enriched, ...officeItems];
 

@@ -33,12 +33,12 @@ export type ClusterInfo = { neighborCount: number; clusterScore: number };
 const ARCGIS_SOURCES = new Set(["xcel", "connexus", "arcgis"]);
 const OFFICE_SOURCES = new Set(["office", "crm", "housecall"]);
 
-/** 1–4 high · 5–10 medium · 11–50 low · 50+ very low */
+/** 1–4 high · 5–10 medium · 11–50 low · 50+ very low (utility main-line events sink) */
 export function smallOutageScore(customers: number): number {
-  if (customers >= 50) return -55;
-  if (customers >= 11) return -30;
-  if (customers >= 5) return 8;
-  return 42;
+  if (customers >= 50) return -70;
+  if (customers >= 11) return -40;
+  if (customers >= 5) return 6;
+  return 45;
 }
 
 /** Count nearby small outages (≤10 customers) within radius — cluster = opportunity pack. */
@@ -67,10 +67,17 @@ export function computeClusterMap(
   return map;
 }
 
-function utilityConfirmedBonus(source?: string, status?: string, isNew?: boolean): number {
+function utilityConfirmedBonus(
+  source?: string,
+  status?: string,
+  isNew?: boolean,
+  phase: StormPhase = "phase_1"
+): number {
   if (status !== "unvisited") return 0;
-  if (source && ARCGIS_SOURCES.has(source)) return isNew ? 48 : 38;
-  return 0;
+  if (!source || !ARCGIS_SOURCES.has(source)) return 0;
+  if (phase === "phase_1") return isNew ? 52 : 28;
+  if (phase === "phase_2") return isNew ? 72 : 58;
+  return isNew ? 65 : 50;
 }
 
 function zoneScore(opts: { inPriorityZone?: boolean; isHoneyHole?: boolean }): number {
@@ -82,55 +89,61 @@ function zoneScore(opts: { inPriorityZone?: boolean; isHoneyHole?: boolean }): n
 
 function powerStatusBonus(powerOnLineDrop?: boolean, phase: StormPhase = "phase_1"): number {
   if (!powerOnLineDrop) return 0;
-  return phase === "phase_2" ? 75 : phase === "phase_3" ? 40 : 25;
+  return phase === "phase_2" ? 90 : phase === "phase_3" ? 45 : 20;
 }
 
 /** Phase-specific status ranking — sold/dispatch work rises in Phase 2/3. */
-function leadStatusScore(status: string, phase: StormPhase, source?: string): number {
+function leadStatusScore(
+  status: string,
+  phase: StormPhase,
+  source?: string,
+  powerOnLineDrop?: boolean
+): number {
   const isOffice = source && OFFICE_SOURCES.has(source);
 
   if (phase === "phase_3") {
-    if (status === "sold") return 320;
-    if (status === "temp_power") return 290;
-    if (status === "grounding") return 280;
-    if (isOffice) return 265;
-    if (status === "door_hanger") return 130;
-    if (status === "customer_thinking") return 125;
-    if (status === "wants_to_proceed") return 200;
-    if (status === "job_started") return 180;
-    if (status === "unvisited") return 55;
-    if (status === "opportunity") return 100;
+    if (status === "sold") return 340;
+    if (status === "temp_power") return 310;
+    if (status === "grounding") return 295;
+    if (isOffice) return 280;
+    if (status === "door_hanger") return 145;
+    if (status === "customer_thinking") return 140;
+    if (status === "wants_to_proceed") return 175;
+    if (status === "job_started") return 190;
+    if (status === "unvisited") return 50;
+    if (status === "opportunity") return 95;
     return 20;
   }
 
   if (phase === "phase_2") {
-    if (status === "sold") return 330;
-    if (isOffice) return 310;
-    if (status === "wants_to_proceed") return 280;
-    if (status === "opportunity") return 160;
-    if (status === "job_started") return 170;
-    if (status === "temp_power") return 200;
-    if (status === "grounding") return 190;
-    if (status === "door_hanger") return 90;
-    if (status === "customer_thinking") return 85;
-    if (status === "unvisited") return 70;
+    if (status === "sold") return 350;
+    if (isOffice) return 330;
+    if (powerOnLineDrop) return 305;
+    if (status === "wants_to_proceed") return 255;
+    if (status === "opportunity") return 235;
+    if (status === "job_started") return 220;
+    if (status === "temp_power") return 240;
+    if (status === "grounding") return 230;
+    if (status === "door_hanger") return 95;
+    if (status === "customer_thinking") return 90;
+    if (status === "unvisited") return 65;
     return 25;
   }
 
   // Phase 1 — Hunting: clusters & small outages beat large utility main-line events
-  if (status === "sold") return 45;
-  if (status === "wants_to_proceed") return 55;
-  if (status === "opportunity") return 50;
-  if (status === "door_hanger") return 48;
-  if (status === "customer_thinking") return 40;
-  if (status === "unvisited") return 52;
-  if (status === "investigating") return 18;
-  if (status === "job_started") return 35;
-  if (status === "temp_power") return 30;
-  if (status === "grounding") return 28;
-  if (isOffice) return 60;
+  if (status === "sold") return 40;
+  if (status === "wants_to_proceed") return 48;
+  if (status === "opportunity") return 46;
+  if (status === "door_hanger") return 44;
+  if (status === "customer_thinking") return 38;
+  if (status === "unvisited") return 50;
+  if (status === "investigating") return 15;
+  if (status === "job_started") return 32;
+  if (status === "temp_power") return 28;
+  if (status === "grounding") return 26;
+  if (isOffice) return 42;
   if (status === "no_opportunity" || status === "completed") return 0;
-  return 15;
+  return 12;
 }
 
 function stormPhaseWeight(phase: StormPhase): number {
@@ -151,31 +164,80 @@ function exclusionPenalty(inExclusionZone?: boolean, investigationResult?: strin
   return 0;
 }
 
-/** Under-10-customer bonus used heavily in Phase 1 hunting. */
+/** Under-10-customer bonus — Phase 1 hunting only. */
 function smallCountBonus(customers: number, phase: StormPhase): number {
-  if (phase !== "phase_1") return customers < 10 ? 8 : 0;
-  if (customers < 10) return 35;
+  if (phase !== "phase_1") return 0;
+  if (customers < 10) return 38;
   return 0;
 }
+
+/** Cluster packs matter most in Phase 1; dampen in dispatch/cleanup phases. */
+function clusterMultiplier(phase: StormPhase): number {
+  if (phase === "phase_1") return 1;
+  if (phase === "phase_2") return 0.3;
+  return 0.15;
+}
+
+export const PHASE_PRIORITY_GUIDE: Record<
+  StormPhase,
+  { title: string; priorities: string[] }
+> = {
+  phase_1: {
+    title: "Phase 1 — Hunting",
+    priorities: [
+      "Priority zones / honey holes",
+      "Clusters of small customer-count outages (e.g. six 1–5 customer dots nearby)",
+      "Utility-confirmed red-outline ArcGIS dots",
+      "Under-10-customer outages",
+      "Nearby dots along your drive (closer = less penalty)",
+      "Regular white ArcGIS dots",
+      "Do not chase large outages just because customer count is high",
+    ],
+  },
+  phase_2: {
+    title: "Phase 2 — Capture / Dispatch",
+    priorities: [
+      "Sold jobs",
+      "Office-entered calls",
+      "Power-on-drop opportunities",
+      "Utility-confirmed red-outline ArcGIS dots",
+      "Confirmed opportunities",
+      "Hunting targets / small clusters (continues, but below dispatch work)",
+    ],
+  },
+  phase_3: {
+    title: "Phase 3 — Cleanup",
+    priorities: [
+      "Sold jobs",
+      "Temp power / return-needed jobs",
+      "Return for grounding",
+      "Office calls",
+      "Utility-confirmed red-outline dots",
+      "Customer thinking / door hanger follow-ups",
+      "Remaining unvisited dots",
+    ],
+  },
+};
 
 export function calculateV1RouteScore(
   item: RoutableItem,
   phase: StormPhase,
   cluster?: ClusterInfo
 ): { total: number; parts: Record<string, number> } {
+  const rawCluster = cluster?.clusterScore ?? 0;
   const parts: Record<string, number> = {
-    leadStatus: leadStatusScore(item.status, phase, item.source),
+    leadStatus: leadStatusScore(item.status, phase, item.source, item.powerOnLineDrop),
     stormPhase: stormPhaseWeight(phase),
     zone: zoneScore(item),
     smallOutage: smallOutageScore(item.customers),
-    cluster: cluster?.clusterScore ?? 0,
-    utilityConfirmed: utilityConfirmedBonus(item.source, item.status, item.isNew),
+    cluster: Math.round(rawCluster * clusterMultiplier(phase) * 100) / 100,
+    utilityConfirmed: utilityConfirmedBonus(item.source, item.status, item.isNew, phase),
     powerStatus: powerStatusBonus(item.powerOnLineDrop, phase),
     smallCountBonus: smallCountBonus(item.customers, phase),
   };
 
   if (item.isOfficeLead || (item.source && OFFICE_SOURCES.has(item.source ?? ""))) {
-    parts.officeLead = phase === "phase_1" ? 55 : phase === "phase_2" ? 120 : 90;
+    parts.officeLead = phase === "phase_1" ? 35 : phase === "phase_2" ? 40 : 25;
   }
 
   parts.drivePenalty = -driveTimePenalty(item.driveMiles);

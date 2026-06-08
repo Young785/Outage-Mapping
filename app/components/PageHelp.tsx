@@ -94,7 +94,7 @@ export default function PageHelp({ pageId }: Props) {
             ))}
           </ol>
           <div style={{ fontSize: "11px", color: "#0d9488", fontWeight: 600 }}>
-            Tip: use the ? button bottom-left for inputs and role permissions.
+            Tip: use the help button (bottom-left) — tabs for Overview, Steps, Inputs, and your role permissions.
           </div>
         </div>
       )}

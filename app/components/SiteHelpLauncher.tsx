@@ -10,31 +10,44 @@ type Props = {
   activePage: PageHelpId;
 };
 
-function HelpSection({ title, items }: { title: string; items: string[] }) {
-  if (items.length === 0) return null;
-  return (
-    <div style={{ marginBottom: "18px" }}>
-      <h4 style={{ margin: "0 0 8px", fontSize: "13px", fontWeight: 700, color: "#0f766e", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-        {title}
-      </h4>
-      <ul style={{ margin: 0, paddingLeft: "18px", color: "#334155", fontSize: "14px", lineHeight: 1.65 }}>
-        {items.map((item) => (
-          <li key={item} style={{ marginBottom: "6px" }}>
-            {item}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
+type HelpSection = "overview" | "steps" | "inputs" | "access";
+
+const SECTION_LABELS: Record<HelpSection, string> = {
+  overview: "Overview",
+  steps: "Steps",
+  inputs: "Inputs",
+  access: "Roles",
+};
+
+function roleLabel(role?: string): string {
+  if (role === "admin" || role === "owner") return "Admin / Owner";
+  if (role === "office") return "Office";
+  return "Field Tech";
+}
+
+function matchesUserRole(accessRole: string, userRole?: string): boolean {
+  if (!userRole) return false;
+  if (accessRole === "Field Tech") return userRole === "tech";
+  if (accessRole === "Office") return userRole === "office";
+  if (accessRole === "Admin / Owner") return userRole === "admin" || userRole === "owner";
+  return false;
 }
 
 export default function SiteHelpLauncher({ role, activePage }: Props) {
   const [open, setOpen] = useState(false);
   const [viewPage, setViewPage] = useState<PageHelpId>(activePage);
-  const [showAllPages, setShowAllPages] = useState(false);
+  const [section, setSection] = useState<HelpSection>("overview");
+
+  const openHelp = () => {
+    setViewPage(activePage);
+    setSection("overview");
+    setOpen(true);
+  };
 
   useEffect(() => {
-    if (open) setViewPage(activePage);
+    if (open) {
+      setViewPage(activePage);
+    }
   }, [open, activePage]);
 
   useEffect(() => {
@@ -49,14 +62,15 @@ export default function SiteHelpLauncher({ role, activePage }: Props) {
   const allowedPages = pagesForRole(role);
   const page = PAGE_HELP[viewPage] ?? PAGE_HELP.dashboard;
   const isCurrentTab = viewPage === activePage;
+  const yourRole = roleLabel(role);
 
   return (
     <>
       <button
         type="button"
-        aria-label="Help for this page"
-        title="What does this page do?"
-        onClick={() => setOpen(true)}
+        aria-label={`Help for ${PAGE_HELP[activePage]?.title ?? "this page"}`}
+        title={`Help: ${PAGE_HELP[activePage]?.title ?? "this page"}`}
+        onClick={openHelp}
         style={{
           position: "fixed",
           left: "20px",
@@ -107,26 +121,27 @@ export default function SiteHelpLauncher({ role, activePage }: Props) {
           <div
             onClick={(e) => e.stopPropagation()}
             style={{
-              width: "min(640px, 100%)",
-              maxHeight: "min(88vh, 780px)",
-              overflow: "auto",
+              width: "min(680px, 100%)",
+              maxHeight: "min(90vh, 820px)",
+              overflow: "hidden",
+              display: "flex",
+              flexDirection: "column",
               background: "#fff",
               borderRadius: "16px",
               boxShadow: "0 24px 48px rgba(0,0,0,0.22)",
               border: "1px solid #e5e7eb",
             }}
           >
+            {/* Header */}
             <div
               style={{
-                position: "sticky",
-                top: 0,
+                flexShrink: 0,
                 background: "linear-gradient(180deg, #f0fdfa 0%, #fff 100%)",
                 borderBottom: "1px solid #e5e7eb",
-                padding: "18px 20px",
-                zIndex: 1,
+                padding: "18px 20px 0",
               }}
             >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", marginBottom: "14px" }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: "11px", fontWeight: 700, color: "#0d9488", textTransform: "uppercase", letterSpacing: "0.06em" }}>
                     {isCurrentTab ? "You are here" : "Page help"} · {page.title}
@@ -134,6 +149,10 @@ export default function SiteHelpLauncher({ role, activePage }: Props) {
                   <h2 style={{ margin: "6px 0 0", fontSize: "22px", fontWeight: 800, color: "#0f172a", lineHeight: 1.25 }}>
                     {page.layman.headline}
                   </h2>
+                  <p style={{ margin: "8px 0 0", fontSize: "13px", color: "#64748b" }}>
+                    Signed in as <strong style={{ color: "#334155" }}>{yourRole}</strong>
+                    {isCurrentTab ? " · help matches this screen" : " · viewing help for another page"}
+                  </p>
                 </div>
                 <button
                   type="button"
@@ -155,127 +174,253 @@ export default function SiteHelpLauncher({ role, activePage }: Props) {
                   ×
                 </button>
               </div>
+
+              {/* Section tabs */}
+              <div style={{ display: "flex", gap: "4px", overflowX: "auto", paddingBottom: "0" }}>
+                {(Object.keys(SECTION_LABELS) as HelpSection[]).map((key) => {
+                  const active = section === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setSection(key)}
+                      style={{
+                        padding: "10px 16px",
+                        border: "none",
+                        borderBottom: active ? "2px solid #0d9488" : "2px solid transparent",
+                        background: "transparent",
+                        color: active ? "#0f766e" : "#64748b",
+                        fontSize: "13px",
+                        fontWeight: active ? 700 : 500,
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                        marginBottom: "-1px",
+                      }}
+                    >
+                      {SECTION_LABELS[key]}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
-            <div style={{ padding: "20px" }}>
-              <p style={{ margin: "0 0 20px", fontSize: "15px", color: "#475569", lineHeight: 1.65 }}>
-                {page.layman.plainEnglish}
-              </p>
+            {/* Scrollable body */}
+            <div style={{ flex: 1, overflow: "auto", padding: "20px" }}>
+              {section === "overview" && (
+                <>
+                  <p style={{ margin: "0 0 16px", fontSize: "15px", color: "#334155", lineHeight: 1.7 }}>
+                    {page.layman.plainEnglish}
+                  </p>
+                  <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#475569", lineHeight: 1.65 }}>
+                    {page.summary}
+                  </p>
 
-              <div style={{ marginBottom: "18px" }}>
-                <h4 style={{ margin: "0 0 10px", fontSize: "13px", fontWeight: 700, color: "#0f766e", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-                  Step by step
-                </h4>
-                <ol style={{ margin: 0, paddingLeft: "20px", color: "#334155", fontSize: "14px", lineHeight: 1.65 }}>
+                  {page.prioritization && page.prioritization.length > 0 && (
+                    <div style={{ marginBottom: "16px" }}>
+                      <h4 style={{ margin: "0 0 10px", fontSize: "13px", fontWeight: 700, color: "#0f766e", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                        Prioritization on this page
+                      </h4>
+                      {page.prioritization.map((block) => (
+                        <div
+                          key={block.phase}
+                          style={{
+                            marginBottom: "10px",
+                            padding: "12px 14px",
+                            background: "#f0fdfa",
+                            border: "1px solid #99f6e4",
+                            borderRadius: "10px",
+                          }}
+                        >
+                          <div style={{ fontSize: "13px", fontWeight: 700, color: "#0f766e", marginBottom: "6px" }}>
+                            {block.phase}
+                          </div>
+                          <ol style={{ margin: 0, paddingLeft: "20px", color: "#334155", fontSize: "13px", lineHeight: 1.6 }}>
+                            {block.rules.map((rule) => (
+                              <li key={rule} style={{ marginBottom: "4px" }}>
+                                {rule}
+                              </li>
+                            ))}
+                          </ol>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div style={{ marginBottom: "12px" }}>
+                    <h4 style={{ margin: "0 0 8px", fontSize: "13px", fontWeight: 700, color: "#0f766e", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                      What you&apos;ll see on this page
+                    </h4>
+                    <ul style={{ margin: 0, paddingLeft: "18px", color: "#334155", fontSize: "14px", lineHeight: 1.65 }}>
+                      {page.layman.onThisPage.map((item) => (
+                        <li key={item} style={{ marginBottom: "6px" }}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div>
+                    <h4 style={{ margin: "0 0 8px", fontSize: "13px", fontWeight: 700, color: "#0f766e", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                      What to try first
+                    </h4>
+                    <ul style={{ margin: 0, paddingLeft: "18px", color: "#334155", fontSize: "14px", lineHeight: 1.65 }}>
+                      {page.layman.tryThis.map((item) => (
+                        <li key={item} style={{ marginBottom: "6px" }}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </>
+              )}
+
+              {section === "steps" && (
+                <ol style={{ margin: 0, paddingLeft: "0", listStyle: "none", color: "#334155", fontSize: "14px", lineHeight: 1.65 }}>
                   {page.steps.map((s, i) => (
-                    <li key={s.title} style={{ marginBottom: "10px" }}>
-                      <strong style={{ color: "#0f172a" }}>{i + 1}. {s.title}</strong>
-                      <div style={{ color: "#475569", marginTop: "2px" }}>{s.detail}</div>
+                    <li
+                      key={s.title}
+                      style={{
+                        marginBottom: "14px",
+                        padding: "14px 16px",
+                        background: "#f8fafc",
+                        border: "1px solid #e2e8f0",
+                        borderRadius: "10px",
+                        display: "flex",
+                        gap: "14px",
+                        alignItems: "flex-start",
+                      }}
+                    >
+                      <span
+                        style={{
+                          flexShrink: 0,
+                          width: "28px",
+                          height: "28px",
+                          borderRadius: "50%",
+                          background: "#0d9488",
+                          color: "#fff",
+                          fontSize: "13px",
+                          fontWeight: 700,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        {i + 1}
+                      </span>
+                      <div>
+                        <div style={{ fontWeight: 700, color: "#0f172a", marginBottom: "4px" }}>{s.title}</div>
+                        <div style={{ color: "#475569" }}>{s.detail}</div>
+                      </div>
                     </li>
                   ))}
                 </ol>
-              </div>
+              )}
 
-              <div style={{ marginBottom: "18px" }}>
-                <h4 style={{ margin: "0 0 10px", fontSize: "13px", fontWeight: 700, color: "#0f766e", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-                  Inputs & buttons on this page
-                </h4>
-                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              {section === "inputs" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                   {page.inputs.map((inp) => (
-                    <div key={inp.name} style={{ padding: "10px 12px", background: "#f8fafc", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
-                      <div style={{ fontSize: "13px", fontWeight: 700, color: "#1e293b" }}>{inp.name}</div>
-                      <div style={{ fontSize: "13px", color: "#64748b", marginTop: "2px" }}>{inp.description}</div>
+                    <div key={inp.name} style={{ padding: "14px 16px", background: "#f8fafc", borderRadius: "10px", border: "1px solid #e2e8f0" }}>
+                      <div style={{ fontSize: "14px", fontWeight: 700, color: "#1e293b", marginBottom: "4px" }}>{inp.name}</div>
+                      <div style={{ fontSize: "14px", color: "#475569", lineHeight: 1.55 }}>{inp.description}</div>
                     </div>
                   ))}
                 </div>
-              </div>
+              )}
 
-              <div style={{ marginBottom: "18px" }}>
-                <h4 style={{ margin: "0 0 10px", fontSize: "13px", fontWeight: 700, color: "#0f766e", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-                  Roles & permissions
-                </h4>
-                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                  {page.access.map((a) => (
-                    <div key={a.role} style={{ display: "flex", gap: "10px", fontSize: "13px", lineHeight: 1.5 }}>
-                      <span style={{ fontWeight: 700, color: "#0f766e", minWidth: "100px", flexShrink: 0 }}>{a.role}</span>
-                      <span style={{ color: "#475569" }}>{a.permissions}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <HelpSection title="What you'll see" items={page.layman.onThisPage} />
-              <HelpSection title="What to try" items={page.layman.tryThis} />
-
-              <details
-                style={{
-                  marginTop: "8px",
-                  padding: "12px 14px",
-                  background: "#f8fafc",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: "10px",
-                }}
-              >
-                <summary style={{ cursor: "pointer", fontWeight: 600, fontSize: "13px", color: "#334155" }}>
-                  Technical notes
-                </summary>
-                <ul style={{ margin: "10px 0 0", paddingLeft: "18px", fontSize: "13px", color: "#475569", lineHeight: 1.6 }}>
-                  {page.bullets.map((b) => (
-                    <li key={b} style={{ marginBottom: "4px" }}>
-                      {b}
-                    </li>
-                  ))}
-                </ul>
-              </details>
-
-              <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "20px", paddingTop: "16px" }}>
-                <button
-                  type="button"
-                  onClick={() => setShowAllPages((v) => !v)}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    padding: 0,
-                    fontSize: "13px",
-                    fontWeight: 700,
-                    color: "#0d9488",
-                    cursor: "pointer",
-                    marginBottom: showAllPages ? "12px" : 0,
-                  }}
-                >
-                  {showAllPages ? "Hide other pages ▲" : "Help for other pages ▼"}
-                </button>
-                {showAllPages && (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-                    {allowedPages.map((id) => {
-                      const p = PAGE_HELP[id];
-                      const active = id === viewPage;
+              {section === "access" && (
+                <>
+                  <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#475569", lineHeight: 1.6 }}>
+                    What each role can do on <strong>{page.title}</strong>. Your role is highlighted.
+                  </p>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                    {page.access.map((a) => {
+                      const isYou = matchesUserRole(a.role, role);
                       return (
-                        <button
-                          key={id}
-                          type="button"
-                          onClick={() => setViewPage(id)}
+                        <div
+                          key={a.role}
                           style={{
-                            padding: "8px 12px",
-                            borderRadius: "20px",
-                            border: `1px solid ${active ? "#0d9488" : "#e2e8f0"}`,
-                            background: active ? "#ccfbf1" : "#fff",
-                            color: active ? "#0f766e" : "#475569",
-                            fontSize: "12px",
-                            fontWeight: active ? 700 : 500,
-                            cursor: "pointer",
+                            padding: "14px 16px",
+                            borderRadius: "10px",
+                            border: isYou ? "2px solid #0d9488" : "1px solid #e2e8f0",
+                            background: isYou ? "#f0fdfa" : "#f8fafc",
                           }}
                         >
-                          {p.title}
-                          {id === activePage ? " · current" : ""}
-                        </button>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                            <span style={{ fontWeight: 700, color: "#0f766e", fontSize: "14px" }}>{a.role}</span>
+                            {isYou && (
+                              <span style={{ fontSize: "11px", fontWeight: 700, color: "#fff", background: "#0d9488", padding: "2px 8px", borderRadius: "10px" }}>
+                                You
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: "14px", color: "#475569", lineHeight: 1.55 }}>{a.permissions}</div>
+                        </div>
                       );
                     })}
                   </div>
-                )}
-              </div>
+                </>
+              )}
+            </div>
 
-              <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginTop: "20px" }}>
+            {/* Footer */}
+            <div
+              style={{
+                flexShrink: 0,
+                borderTop: "1px solid #e5e7eb",
+                padding: "14px 20px",
+                background: "#fafafa",
+              }}
+            >
+              {!isCurrentTab && (
+                <button
+                  type="button"
+                  onClick={() => { setViewPage(activePage); setSection("overview"); }}
+                  style={{
+                    width: "100%",
+                    marginBottom: "10px",
+                    padding: "8px 12px",
+                    background: "#ccfbf1",
+                    border: "1px solid #99f6e4",
+                    borderRadius: "8px",
+                    color: "#0f766e",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  ← Back to help for {PAGE_HELP[activePage]?.title ?? "current page"}
+                </button>
+              )}
+
+              <details style={{ marginBottom: "10px" }}>
+                <summary style={{ cursor: "pointer", fontSize: "12px", fontWeight: 600, color: "#64748b" }}>
+                  Browse help for other pages
+                </summary>
+                <div style={{ marginTop: "10px", display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                  {allowedPages.map((id) => {
+                    const p = PAGE_HELP[id];
+                    const active = id === viewPage;
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => { setViewPage(id); setSection("overview"); }}
+                        style={{
+                          padding: "6px 12px",
+                          borderRadius: "20px",
+                          border: `1px solid ${active ? "#0d9488" : "#e2e8f0"}`,
+                          background: active ? "#ccfbf1" : "#fff",
+                          color: active ? "#0f766e" : "#475569",
+                          fontSize: "12px",
+                          fontWeight: active ? 700 : 500,
+                          cursor: "pointer",
+                        }}
+                      >
+                        {p.title}
+                        {id === activePage ? " · here" : ""}
+                      </button>
+                    );
+                  })}
+                </div>
+              </details>
+
+              <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
                 <Link
                   href="/docs"
                   target="_blank"
