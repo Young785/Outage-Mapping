@@ -15,7 +15,7 @@ export const ROUTING_MODE_LABELS: Record<RoutingMode, { title: string; descripti
   },
 };
 
-export const DEFAULT_ROUTING_MODE: RoutingMode = "complicated";
+export const DEFAULT_ROUTING_MODE: RoutingMode = "simple";
 
 export function parseRoutingMode(value: unknown): RoutingMode {
   return value === "simple" ? "simple" : "complicated";

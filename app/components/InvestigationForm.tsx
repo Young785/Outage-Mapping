@@ -41,6 +41,7 @@ type OutageStatus =
 type PrimaryOutcome = "" | "utility_only" | "no_damage" | "not_target" | "opportunity_found";
 type OpportunityAction =
   | ""
+  | "no_contact"
   | "door_hanger"
   | "job_sold"
   | "job_started"
@@ -69,6 +70,8 @@ const SERVICE_SETUP_OPTIONS = [
 type Props = {
   outage: Outage;
   token: string | null;
+  /** When true, dismiss requires confirmation (pending visit gate). */
+  required?: boolean;
   onClose: () => void;
   onSubmitted: (
     outageId: number | string,
@@ -78,6 +81,7 @@ type Props = {
       customerIntent?: string;
       verbalPrice?: string;
       followUpStatus?: string;
+      noContactMade?: boolean;
     }
   ) => void;
 };
@@ -85,15 +89,17 @@ type Props = {
 function deriveStatus(
   primary: PrimaryOutcome,
   action: OpportunityAction,
-  startedSub: "" | "temp_power" | "return_grounding"
+  startedSub: "" | "temp_power" | "return_grounding" | "job_completed"
 ): OutageStatus {
   if (primary === "utility_only" || primary === "no_damage" || primary === "not_target") return "no_opportunity";
-  if (primary !== "opportunity_found") return "investigating";
+  if (primary !== "opportunity_found") return "unvisited";
 
+  if (action === "no_contact") return "opportunity";
   if (action === "door_hanger") return "door_hanger";
   if (action === "customer_declined") return "no_opportunity";
   if (action === "job_sold") return "sold";
   if (action === "job_started") {
+    if (startedSub === "job_completed") return "completed";
     if (startedSub === "return_grounding") return "grounding";
     if (startedSub === "temp_power") return "temp_power";
     return "job_started";
@@ -104,10 +110,10 @@ function deriveStatus(
 
 function applySeed(
   outage: Outage,
-  setters: {
+    setters: {
     setPrimary: (v: PrimaryOutcome) => void;
     setAction: (v: OpportunityAction) => void;
-    setStartedSub: (v: "" | "temp_power" | "return_grounding") => void;
+    setStartedSub: (v: "" | "temp_power" | "return_grounding" | "job_completed") => void;
     setThinkingIntent: (v: "" | "thinks_utility" | "wait_insurance" | "think_or_quotes") => void;
     setVerbalPrice: (v: string) => void;
   }
@@ -125,11 +131,11 @@ function applySeed(
   setters.setVerbalPrice(seed.verbalPrice);
 }
 
-export default function InvestigationForm({ outage, token, onClose, onSubmitted }: Props) {
+export default function InvestigationForm({ outage, token, required = false, onClose, onSubmitted }: Props) {
   const formRef = useRef<HTMLFormElement | null>(null);
   const [primary, setPrimary] = useState<PrimaryOutcome>("");
   const [action, setAction] = useState<OpportunityAction>("");
-  const [startedSub, setStartedSub] = useState<"" | "temp_power" | "return_grounding">("");
+  const [startedSub, setStartedSub] = useState<"" | "temp_power" | "return_grounding" | "job_completed">("");
   const [thinkingIntent, setThinkingIntent] = useState<
     "" | "thinks_utility" | "wait_insurance" | "think_or_quotes"
   >("");
@@ -188,11 +194,19 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
   const investigationResult =
     primary === "opportunity_found" ? "damage_found" : primary;
 
+  const noContactMade = action === "no_contact";
+
   const followUpStatus =
-    action === "job_sold"
+    action === "no_contact"
+      ? "no_contact"
+      : action === "job_sold"
       ? "sold"
-      : action === "job_started"
-        ? startedSub === "return_grounding"
+        : action === "job_started"
+          ? jobScope === "return_trip"
+            ? "return_trip"
+            : startedSub === "job_completed"
+          ? "completed"
+          : startedSub === "return_grounding"
           ? "return_grounding"
           : startedSub === "temp_power"
             ? "temp_power"
@@ -206,7 +220,9 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
               : "";
 
   const contactOutcome =
-    action === "door_hanger"
+    action === "no_contact"
+      ? "no_contact"
+      : action === "door_hanger"
       ? "unavailable"
       : ["job_sold", "job_started", "customer_thinking", "customer_declined"].includes(action)
         ? "spoke_customer"
@@ -273,6 +289,7 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
           estimatedTimeHours: null,
           techsRequired: techsRequired === "" ? null : techsRequired,
           verbalPriceQuoted: verbalPrice.trim() || null,
+          noContactMade,
           notes: fullNotes || null,
           newStatus,
         }),
@@ -288,6 +305,7 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
         customerIntent: customerIntent ?? undefined,
         verbalPrice: verbalPrice.trim() || undefined,
         followUpStatus: followUpStatus || undefined,
+        noContactMade: noContactMade || undefined,
       });
       onClose();
     } catch (err: unknown) {
@@ -395,6 +413,16 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
     formRef.current?.requestSubmit();
   }
 
+  function handleClose() {
+    if (required) {
+      const ok = window.confirm(
+        "You must submit an investigation before routing to the next stop. Close without saving?"
+      );
+      if (!ok) return;
+    }
+    onClose();
+  }
+
   const previewStatus = primary ? deriveStatus(primary, action, startedSub) : null;
   const STATUS_PREVIEW: Record<string, { color: string; stroke: string; label: string }> = {
     no_opportunity: { color: "#111827", stroke: "#111827", label: "Declined / No opportunity" },
@@ -455,7 +483,7 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
               )}
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleClose}
                 style={{ background: "#f3f4f6", border: "none", borderRadius: "8px", width: "36px", height: "36px", fontSize: "20px", cursor: "pointer", color: "#374151" }}
               >
                 ×
@@ -592,6 +620,11 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
             <>
               <p style={{ ...sectionHead, marginTop: "16px" }}>What happened?</p>
               <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <Chip
+                  selected={action === "no_contact"}
+                  onClick={() => { setAction("no_contact"); setStartedSub(""); setThinkingIntent(""); }}
+                  label="No contact made — damage confirmed, seller follow-up"
+                />
                 <Chip selected={action === "door_hanger"} onClick={() => { setAction("door_hanger"); setStartedSub(""); }} label="Door hanger left" />
                 <Chip selected={action === "job_sold"} onClick={() => { setAction("job_sold"); setStartedSub(""); }} label="Job sold" />
                 <Chip selected={action === "job_started"} onClick={() => { setAction("job_started"); }} label="Job started" />
@@ -600,6 +633,7 @@ export default function InvestigationForm({ outage, token, onClose, onSubmitted 
                     <Chip selected={startedSub === ""} onClick={() => setStartedSub("")} label="In progress" />
                     <Chip selected={startedSub === "temp_power"} onClick={() => setStartedSub("temp_power")} label="Temp power installed" />
                     <Chip selected={startedSub === "return_grounding"} onClick={() => setStartedSub("return_grounding")} label="Return for grounding" />
+                    <Chip selected={startedSub === "job_completed"} onClick={() => setStartedSub("job_completed")} label="Job completed" />
                   </div>
                 )}
                 <Chip selected={action === "customer_thinking"} onClick={() => { setAction("customer_thinking"); setStartedSub(""); }} label="Customer thinking" />

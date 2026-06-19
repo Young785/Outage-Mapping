@@ -2,7 +2,21 @@
 
 ## Default login credentials (local dev seed)
 
-After running `supabase/seed.sql` on your **local** database:
+After running `supabase/seed.sql` on your **local** database (password for all accounts: **`password123`**):
+
+| Email | Role | Field dispatch role |
+|-------|------|---------------------|
+| `owner@outage-mapping.com` | owner | — |
+| `admin@outage-mapping.com` | admin | — |
+| `office@outage-mapping.com` | office | — |
+| `tech@outage-mapping.com` | tech | Hunter (default) |
+| `tech2@outage-mapping.com` | tech | Hunter |
+| `tech3@outage-mapping.com` | tech | Hunter |
+| `seller@outage-mapping.com` | tech | Seller |
+| `installer@outage-mapping.com` | tech | Installer |
+| `finisher@outage-mapping.com` | tech | Finisher |
+
+Legacy shorthand (same password):
 
 | Email | Password | Role |
 |-------|----------|------|

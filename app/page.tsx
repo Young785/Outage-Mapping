@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { loadGoogleMaps } from "@/lib/google-maps";
 import InvestigationForm from "./components/InvestigationForm";
 import JobForm from "./components/JobForm";
@@ -15,10 +15,13 @@ import PageHelp from "./components/PageHelp";
 import SiteHelpLauncher from "./components/SiteHelpLauncher";
 import Link from "next/link";
 import type { PageHelpId } from "@/lib/page-help";
-import { STATUS_CONFIG, getStatusConfig, statusBadgeStyle, type OutageStatus } from "@/lib/outage-status";
+import { STATUS_CONFIG, getStatusConfig, getMarkerStyle, statusBadgeStyle, OUTAGE_FILTER_OPTIONS, isUnvisitedOnMap, type OutageStatus } from "@/lib/outage-status";
 import { loadSavedVisits, saveFieldVisit, type FieldVisitCache } from "@/lib/field-visit";
-import { pickNextRouteStop } from "@/lib/route-next";
+import { loadPendingVisit, savePendingVisit, clearPendingVisit, needsInvestigation } from "@/lib/pending-visit";
+import { pickNextRouteStop, type RoutingContext } from "@/lib/route-next";
 import type { RoutingMode } from "@/lib/routing-mode";
+import { territoryFromRow } from "@/lib/territory-match";
+import type { FieldDispatchRole, InstallerFallback } from "@/lib/field-dispatch-role";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 type Role = "office" | "tech" | "admin" | "owner";
@@ -45,6 +48,7 @@ type Outage = {
   etr?: string;
   crewStatus?: string;
   outageImpact?: string;
+  zipCode?: string | null;
   status: OutageStatus;
   source?: string;
   customerName?: string | null;
@@ -59,10 +63,14 @@ type Outage = {
   firstSeenAt?: string | null;
   lastUpdatedAt?: string | null;
   isStaleMarker?: boolean;
+  isPreviousStormMarker?: boolean;
+  stormEventId?: string | null;
   investigationResult?: string;
   customerIntent?: string;
   verbalPrice?: string;
   followUpStatus?: string;
+  noContactMade?: boolean;
+  needsReturnTrip?: boolean;
   scoreBreakdown?: {
     finalScore: number;
     urgency: number;
@@ -81,6 +89,9 @@ type Tech = {
   lng: number | null;
   currentJobName?: string | null;
   updatedAt?: string | null;
+  territoryId?: string | null;
+  dispatchRole?: FieldDispatchRole;
+  installerFallback?: InstallerFallback;
 };
 
 type BoundaryZone = {
@@ -144,7 +155,7 @@ export default function Page() {
   const [connexusEnabled, setConnexusEnabled] = useState(false);
   const [fetchIntervalMins, setFetchIntervalMins] = useState(5);
   const [stormPhase, setStormPhase] = useState<"phase_1" | "phase_2" | "phase_3">("phase_1");
-  const [routingMode, setRoutingMode] = useState<RoutingMode>("complicated");
+  const [routingMode, setRoutingMode] = useState<RoutingMode>("simple");
   const [tempOutMode, setTempOutMode] = useState(false);
   const [activeCallsInQueue, setActiveCallsInQueue] = useState(0);
 
@@ -161,7 +172,7 @@ export default function Page() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Filters
-  const [filterStatus, setFilterStatus] = useState<OutageStatus | "all">("all");
+  const [filterStatus, setFilterStatus] = useState<OutageStatus | "all" | "job_sold">("all");
   const [zones, setZones] = useState<BoundaryZone[]>([]);
 
   // Map refs
@@ -189,6 +200,7 @@ export default function Page() {
   // Modals
   const [showInvestigation, setShowInvestigation] = useState(false);
   const [investigatingOutage, setInvestigatingOutage] = useState<Outage | null>(null);
+  const [pendingVisitId, setPendingVisitId] = useState<string | null>(null);
   const [showJobForm, setShowJobForm] = useState(false);
   const [showDetail, setShowDetail] = useState(false);
   const [detailOutage, setDetailOutage] = useState<Outage | null>(null);
@@ -200,8 +212,12 @@ export default function Page() {
   const [reportCustomerName, setReportCustomerName] = useState("");
   const [reportCustomerPhone, setReportCustomerPhone] = useState("");
   const [reportCustomerEmail, setReportCustomerEmail] = useState("");
+  const [hideDoneMarkers, setHideDoneMarkers] = useState(true);
+  const [hideDeclinedMarkers, setHideDeclinedMarkers] = useState(true);
   const [hideNonCriticalMarkers, setHideNonCriticalMarkers] = useState(true);
   const [showStaleOnMap, setShowStaleOnMap] = useState(true);
+  const [stormVisibilityMode, setStormVisibilityMode] = useState<"active_only" | "active_and_previous" | "all">("active_and_previous");
+  const [activeStormEvent, setActiveStormEvent] = useState<{ id: string; name: string; started_at: string } | null>(null);
   const [legendCollapsed, setLegendCollapsed] = useState(false);
   const [reportAddressEdit, setReportAddressEdit] = useState("");
   const [reportStreet, setReportStreet] = useState("");
@@ -210,6 +226,10 @@ export default function Page() {
   const [reportZip, setReportZip] = useState("");
   const [reportingLocation, setReportingLocation] = useState(false);
   const [editingAddress, setEditingAddress] = useState("");
+  const [editingLat, setEditingLat] = useState("");
+  const [editingLng, setEditingLng] = useState("");
+  const [pinAdjustLabel, setPinAdjustLabel] = useState<string | null>(null);
+  const pinAdjustOutageRef = useRef<Outage | null>(null);
 
   // ── Session restore — validate token with server before trusting localStorage ──
   useEffect(() => {
@@ -269,6 +289,9 @@ export default function Page() {
       if (data.routingMode === "simple" || data.routingMode === "complicated") {
         setRoutingMode(data.routingMode);
       }
+      if (data.activeStormEvent) {
+        setActiveStormEvent(data.activeStormEvent);
+      }
 
       const items: Outage[] = (data.features ?? []).map((f: any) => {
         const attrs = f.attributes || f;
@@ -316,6 +339,11 @@ export default function Page() {
           firstSeenAt: attrs.firstSeenAt ?? f.firstSeenAt ?? null,
           lastUpdatedAt: attrs.lastUpdatedAt ?? f.lastUpdatedAt ?? null,
           isStaleMarker: attrs.isStaleMarker ?? f.isStaleMarker ?? false,
+          isPreviousStormMarker: attrs.isPreviousStormMarker ?? f.isPreviousStormMarker ?? false,
+          stormEventId: attrs.stormEventId ?? f.stormEventId ?? null,
+          noContactMade: saved.noContactMade ?? attrs.noContactMade ?? f.noContactMade ?? false,
+          needsReturnTrip: attrs.needsReturnTrip ?? f.needsReturnTrip ?? false,
+          zipCode: attrs.zipCode ?? f.zipCode ?? null,
         };
       }).filter(Boolean) as Outage[];
 
@@ -528,6 +556,15 @@ export default function Page() {
         infoWindowRef.current = new google.maps.InfoWindow();
 
         map.addListener("click", (e: google.maps.MapMouseEvent) => {
+          if (pinAdjustOutageRef.current && e.latLng) {
+            const target = pinAdjustOutageRef.current;
+            const newLat = e.latLng.lat();
+            const newLng = e.latLng.lng();
+            pinAdjustOutageRef.current = null;
+            setPinAdjustLabel(null);
+            void saveOutageLocation(target.id, newLat, newLng, target.streetAddress ?? null);
+            return;
+          }
           if (!isSimModeRef.current) return;
           if (!e.latLng) return;
           setManualOutageCoords({ lat: e.latLng.lat(), lng: e.latLng.lng() });
@@ -571,7 +608,7 @@ export default function Page() {
   useEffect(() => {
     if (!mapObj.current || !mapReady) return;
     placeOutageMarkers(outages);
-  }, [outages, mapReady, hideNonCriticalMarkers, showStaleOnMap]);
+  }, [outages, mapReady, hideDoneMarkers, hideDeclinedMarkers, hideNonCriticalMarkers, showStaleOnMap, stormVisibilityMode]);
 
   useEffect(() => {
     if (!mapObj.current || !mapReady) return;
@@ -639,7 +676,76 @@ export default function Page() {
 
   useEffect(() => {
     setEditingAddress(detailOutage?.streetAddress ?? "");
+    setEditingLat(detailOutage?.lat != null ? String(detailOutage.lat) : "");
+    setEditingLng(detailOutage?.lng != null ? String(detailOutage.lng) : "");
   }, [detailOutage?.id]);
+
+  async function saveOutageLocation(
+    id: number | string,
+    lat: number,
+    lng: number,
+    streetAddress?: string | null
+  ) {
+    if (!token) return;
+    try {
+      const res = await fetch("/api/outages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          id,
+          lat,
+          lng,
+          ...(streetAddress != null && streetAddress !== "" ? { streetAddress } : {}),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not save location");
+      setOutages((prev) =>
+        prev.map((o) =>
+          String(o.id) === String(id)
+            ? {
+                ...o,
+                lat,
+                lng,
+                ...(streetAddress != null && streetAddress !== "" ? { streetAddress } : {}),
+              }
+            : o
+        )
+      );
+      if (detailOutage && String(detailOutage.id) === String(id)) {
+        setDetailOutage((p) =>
+          p
+            ? {
+                ...p,
+                lat,
+                lng,
+                ...(streetAddress != null && streetAddress !== "" ? { streetAddress } : {}),
+              }
+            : p
+        );
+        setEditingLat(String(lat));
+        setEditingLng(String(lng));
+        if (streetAddress != null && streetAddress !== "") setEditingAddress(streetAddress);
+      }
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "Could not save location");
+    }
+  }
+
+  function startPinAdjust(outage: Outage) {
+    pinAdjustOutageRef.current = outage;
+    setPinAdjustLabel(outage.streetAddress?.split(",")[0] ?? `Outage #${outage.id}`);
+    setShowDetail(false);
+    setActiveTab("map");
+  }
+
+  function cancelPinAdjust() {
+    pinAdjustOutageRef.current = null;
+    setPinAdjustLabel(null);
+  }
 
   // ── Connexus sidebar toggle syncs activeSources ──────────────────────────
   useEffect(() => {
@@ -709,6 +815,67 @@ export default function Page() {
     };
   }, [token, user, activeTab, stormPhase, tempOutMode]);
 
+  useEffect(() => {
+    const pending = loadPendingVisit();
+    setPendingVisitId(pending?.outageId ?? null);
+  }, []);
+
+  useEffect(() => {
+    resolvePendingVisitIfCleared();
+  }, [outages, pendingVisitId]);
+
+  function markPendingVisit(outage: Outage) {
+    if (!user || user.role !== "tech") return;
+    if (!needsInvestigation(outage.status)) return;
+    savePendingVisit(outage.id);
+    setPendingVisitId(String(outage.id));
+  }
+
+  function resolvePendingVisitIfCleared() {
+    if (!pendingVisitId) return;
+    const pending = outages.find((o) => String(o.id) === pendingVisitId);
+    if (!pending || !needsInvestigation(pending.status)) {
+      clearPendingVisit();
+      setPendingVisitId(null);
+    }
+  }
+
+  function requirePendingInvestigation(): boolean {
+    resolvePendingVisitIfCleared();
+    if (!pendingVisitId) return true;
+    const pending = outages.find((o) => String(o.id) === pendingVisitId);
+    if (!pending) {
+      clearPendingVisit();
+      setPendingVisitId(null);
+      return true;
+    }
+    openInvestigation(pending);
+    alert("Submit an investigation for your current stop before routing to the next one.");
+    return false;
+  }
+
+  function openInvestigation(outage: Outage) {
+    if (user?.role === "tech" && pendingVisitId && String(outage.id) !== pendingVisitId) {
+      const pending = outages.find((o) => String(o.id) === pendingVisitId);
+      if (pending && needsInvestigation(pending.status)) {
+        alert("Finish investigating your current stop before opening another.");
+        setInvestigatingOutage(pending);
+        setShowInvestigation(true);
+        return;
+      }
+    }
+    setInvestigatingOutage(outage);
+    setShowInvestigation(true);
+  }
+
+  const routeBlockedByPending =
+    user?.role === "tech" &&
+    !!pendingVisitId &&
+    (() => {
+      const pending = outages.find((o) => String(o.id) === pendingVisitId);
+      return !!pending && needsInvestigation(pending.status);
+    })();
+
   function mergeOutageWithVisit(o: Outage, visit?: FieldVisitCache): Outage {
     if (!visit) return o;
     return {
@@ -718,6 +885,7 @@ export default function Page() {
       customerIntent: visit.customerIntent ?? o.customerIntent,
       verbalPrice: visit.verbalPrice ?? o.verbalPrice,
       followUpStatus: visit.followUpStatus ?? o.followUpStatus,
+      noContactMade: visit.noContactMade ?? o.noContactMade,
     };
   }
 
@@ -808,21 +976,22 @@ export default function Page() {
 
     const visible = data.filter((o) => {
       if (o.investigationResult === "not_target") return false;
+      if (stormVisibilityMode === "active_only" && o.isPreviousStormMarker) return false;
+      if (!showStaleOnMap && o.isStaleMarker && stormVisibilityMode !== "all") return false;
+      if (hideDoneMarkers && o.status === "completed") return false;
+      if (hideDeclinedMarkers && o.status === "no_opportunity") return false;
       if (hideNonCriticalMarkers) {
-        if (o.status === "completed") return false;
         if (o.status === "customer_thinking") return false;
         if (o.status === "temp_power") return false;
         if (o.status === "grounding") return false;
-        if (o.status === "no_opportunity") return false;
       }
-      if (!showStaleOnMap && o.isStaleMarker) return false;
       const excluded = zones.some((z) => z.type === "polygon" && zoneTypeOf(z) === "exclusion" && isInZone(o, z));
       if (excluded) return false;
       return true;
     });
 
     visible.forEach((outage) => {
-      const cfg = getStatusConfig(outage.status);
+      const cfg = getMarkerStyle(outage.status, { noContactMade: outage.noContactMade });
 
       // Honey hole: opportunity with >1 customer → bigger marker + label
       const isHoneyHole =
@@ -841,8 +1010,8 @@ export default function Page() {
       const isUnvisitedArcGIS = outage.status === "unvisited" && isArcGIS;
 
       const fillColor = (isNewArcGIS || isUnvisitedArcGIS) ? "#ffffff" : cfg.color;
-      const stale = outage.isStaleMarker === true;
-      const strokeColor = stale ? "#9ca3af" : ((isNewArcGIS || isUnvisitedArcGIS) ? "#dc2626" : cfg.strokeColor);
+      const faded = outage.isPreviousStormMarker === true || (outage.isStaleMarker === true && stormVisibilityMode !== "all");
+      const strokeColor = faded ? "#9ca3af" : ((isNewArcGIS || isUnvisitedArcGIS) ? "#dc2626" : cfg.strokeColor);
       const strokeWeight = isNewArcGIS ? 4 : (isHoneyHole ? 4 : 3);
 
       const marker = new google.maps.Marker({
@@ -852,7 +1021,7 @@ export default function Page() {
         icon: {
           path: markerPathForOutage(outage),
           fillColor,
-          fillOpacity: stale ? 0.35 : 1,
+          fillOpacity: faded ? 0.35 : 1,
           strokeColor,
           strokeWeight,
           scale: baseSize,
@@ -865,8 +1034,11 @@ export default function Page() {
 
       marker.addListener("click", () => {
         infoWindowRef.current?.close();
-        setInvestigatingOutage(outage);
-        setShowInvestigation(true);
+        if (user?.role === "tech") {
+          openInvestigation(outage);
+        } else {
+          showInfoWindow(outage, marker);
+        }
       });
 
       markersRef.current.push(marker);
@@ -980,6 +1152,9 @@ export default function Page() {
       value != null && value !== ""
         ? `<div style="font-size:12px;color:#374151;margin-bottom:3px"><b>${label}:</b> ${value}</div>`
         : "";
+    const assignedBadge = outage.assignedTechName
+      ? `<div style="font-size:12px;color:#0d9488;font-weight:700;margin-bottom:8px;padding:6px 10px;background:#f0fdfa;border:1px solid #99f6e4;border-radius:6px">Assigned tech: ${outage.assignedTechName}</div>`
+      : "";
     const content = `
       <div style="font-family:system-ui;padding:12px;min-width:280px;max-width:320px">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
@@ -987,6 +1162,7 @@ export default function Page() {
           <strong style="font-size:14px;line-height:1.3">${outage.streetAddress?.split(",")[0] ?? outage.city ?? `Outage #${outage.id}`}</strong>
         </div>
         <div style="font-size:11px;color:#6b7280;margin-bottom:8px">${outage.streetAddress ?? "Address resolving…"}</div>
+        ${assignedBadge}
         <div style="border-top:1px solid #f0f0f0;padding-top:8px;margin-bottom:8px">
           ${row("Customers affected", outage.customers)}
           ${row("Outage type", outage.outageType)}
@@ -1047,9 +1223,14 @@ export default function Page() {
   // This fires even when activeTab is already "map", fixing repeat-navigate bug.
   function navigateToLatLng(lat: number, lng: number, _label?: string, outage?: Outage) {
     openGoogleMapsDirections({ lat, lng }, userLocation);
-    // Bundle userLocation at click-time so the route line closure always has the right value
     navTargetRef.current = { lat, lng, userLoc: userLocation, outage: outage ?? null };
-    if (outage) setSelectedOutage(outage);
+    if (outage) {
+      setSelectedOutage(outage);
+      markPendingVisit(outage);
+      if (user?.role === "tech" && needsInvestigation(outage.status)) {
+        openInvestigation(outage);
+      }
+    }
     setActiveTab("map");
     setNavVersion((v) => v + 1);
   }
@@ -1110,18 +1291,52 @@ export default function Page() {
     URL.revokeObjectURL(url);
   }
 
+  const myRoutingContext = useMemo((): RoutingContext => {
+    const base: RoutingContext = {
+      hideStaleMarkers: !showStaleOnMap,
+      tempOutMode,
+    };
+    if (!user || user.role !== "tech") return base;
+
+    const me = techs.find((t) => t.userId === user.id);
+    if (!me) return { ...base, dispatchRole: "hunter" };
+
+    let territory = null;
+    if (me.territoryId) {
+      const zone = zones.find((z) => z.id === me.territoryId);
+      if (zone) {
+        territory = territoryFromRow({ zip_codes: zone.zip_codes, geometry: zone.geometry });
+      }
+    }
+
+    return {
+      ...base,
+      dispatchRole: me.dispatchRole ?? "hunter",
+      installerFallback: me.installerFallback ?? "hunter",
+      territory,
+    };
+  }, [user, techs, zones, showStaleOnMap, tempOutMode]);
+
   function routeToNext() {
     if (!userLocation) {
       alert("Enable location access to use Route to Next.");
       return;
     }
+    if (!requirePendingInvestigation()) return;
     const routable = outages.map((o) => ({
       ...o,
       inPriorityZone: zones.some((z) => z.type === "polygon" && zoneTypeOf(z) === "priority" && isInZone(o, z)),
       inExclusionZone: zones.some((z) => z.type === "polygon" && zoneTypeOf(z) === "exclusion" && isInZone(o, z)),
       isHoneyHole: (o.status === "opportunity" || o.status === "wants_to_proceed") && o.customers > 1,
     }));
-    const next = pickNextRouteStop(routable, userLocation, stormPhase, undefined, routingMode);
+    const next = pickNextRouteStop(
+      routable,
+      userLocation,
+      stormPhase,
+      loadSavedVisits(),
+      routingMode,
+      myRoutingContext
+    );
     if (!next) {
       alert("No actionable stops remaining on the map.");
       return;
@@ -1437,8 +1652,7 @@ export default function Page() {
           return [...prev, newOutage];
         });
         fetchOutages();
-        setInvestigatingOutage(newOutage);
-        setShowInvestigation(true);
+        openInvestigation(newOutage);
       } else {
         alert(data.error ?? "Failed to report");
       }
@@ -1449,8 +1663,7 @@ export default function Page() {
   // ── Stats ────────────────────────────────────────────────────────────────
   const stats = {
     total: outages.length,
-    unvisited:       outages.filter((o) => o.status === "unvisited").length,
-    investigating:   outages.filter((o) => o.status === "investigating").length,
+    unvisited:       outages.filter((o) => isUnvisitedOnMap(o.status)).length,
     noOpportunity:   outages.filter((o) => o.status === "no_opportunity").length,
     opportunity:     outages.filter((o) => o.status === "opportunity").length,
     doorHanger:      outages.filter((o) => o.status === "door_hanger").length,
@@ -1461,15 +1674,18 @@ export default function Page() {
     tempPower:       outages.filter((o) => o.status === "temp_power").length,
     grounding:       outages.filter((o) => o.status === "grounding").length,
     completed:       outages.filter((o) => o.status === "completed").length,
-    // Legacy aliases kept for dashboard cards
-    investigated: outages.filter((o) => o.status === "investigating").length,
+    // Legacy alias — investigating rows count as unvisited on the map
+    investigated: outages.filter((o) => isUnvisitedOnMap(o.status)).length,
     inProgress:   outages.filter((o) => ["opportunity","door_hanger","wants_to_proceed","temp_power","grounding"].includes(o.status)).length,
     totalCustomers: outages.reduce((s, o) => s + (o.customers ?? 0), 0),
   };
 
-  const filteredOutages = outages.filter((o) =>
-    filterStatus === "all" || o.status === filterStatus
-  );
+  const filteredOutages = outages.filter((o) => {
+    if (filterStatus === "all") return true;
+    if (filterStatus === "job_sold") return o.status === "sold" || o.status === "wants_to_proceed";
+    if (filterStatus === "unvisited") return isUnvisitedOnMap(o.status);
+    return o.status === filterStatus;
+  });
 
   // ── Role-based tab visibility ────────────────────────────────────────────
   const isOffice = user?.role === "office" || user?.role === "admin" || user?.role === "owner";
@@ -1711,13 +1927,40 @@ export default function Page() {
           </label>
           <div style={{ fontSize: "11px", fontWeight: 600, color: "#9ca3af", margin: "12px 0 8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Map Layers</div>
           <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px", cursor: "pointer" }}
+            onClick={() => setHideDoneMarkers((v) => !v)}>
+            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>Hide Done</span>
+            <div style={toggleCss(hideDoneMarkers, "#6b7280")}><div style={toggleKnobCss(hideDoneMarkers)} /></div>
+          </label>
+          <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px", cursor: "pointer" }}
+            onClick={() => setHideDeclinedMarkers((v) => !v)}>
+            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>Hide Declined</span>
+            <div style={toggleCss(hideDeclinedMarkers, "#6b7280")}><div style={toggleKnobCss(hideDeclinedMarkers)} /></div>
+          </label>
+          <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px", cursor: "pointer" }}
             onClick={() => setHideNonCriticalMarkers((v) => !v)}>
             <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>Hide non-critical markers</span>
             <div style={toggleCss(hideNonCriticalMarkers, "#6b7280")}><div style={toggleKnobCss(hideNonCriticalMarkers)} /></div>
           </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "6px" }}>
+            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>Storm visibility</span>
+            <select
+              value={stormVisibilityMode}
+              onChange={(e) => setStormVisibilityMode(e.target.value as typeof stormVisibilityMode)}
+              style={{ padding: "7px 8px", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "12px", color: "#374151" }}
+            >
+              <option value="active_only">Active storm only</option>
+              <option value="active_and_previous">Active + previous (faded)</option>
+              <option value="all">All storms</option>
+            </select>
+          </label>
+          {activeStormEvent && (
+            <div style={{ fontSize: "11px", color: "#0d9488", marginBottom: "6px", fontWeight: 600 }}>
+              Active: {activeStormEvent.name}
+            </div>
+          )}
           <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}
             onClick={() => setShowStaleOnMap((v) => !v)}>
-            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>Show previous storms</span>
+            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>Show 48h+ stale dots</span>
             <div style={toggleCss(showStaleOnMap, "#6b7280")}><div style={toggleKnobCss(showStaleOnMap)} /></div>
           </label>
         </div>
@@ -1849,7 +2092,15 @@ export default function Page() {
               </button>
             )}
             {activeTab === "map" && (
-              <button onClick={routeToNext} style={btnCss("#0d9488")}>
+              <button
+                onClick={routeToNext}
+                disabled={routeBlockedByPending}
+                title={routeBlockedByPending ? "Submit investigation for current stop first" : undefined}
+                style={{
+                  ...btnCss("#0d9488"),
+                  ...(routeBlockedByPending ? { opacity: 0.45, cursor: "not-allowed" } : {}),
+                }}
+              >
                 {isMobile ? "→" : "Route to Next"}
               </button>
             )}
@@ -1909,6 +2160,39 @@ export default function Page() {
               <span>Active calls: <b>{activeCallsInQueue}</b></span>
               <span>Sold: <b>{stats.sold}</b></span>
             </div>
+          </div>
+        )}
+
+        {pinAdjustLabel && activeTab === "map" && (
+          <div style={{ padding: "10px 20px", background: "#eff6ff", borderBottom: "1px solid #bfdbfe", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+            <span style={{ fontSize: "12px", fontWeight: 700, color: "#1d4ed8" }}>
+              Tap the map to set the pin for {pinAdjustLabel}
+            </span>
+            <button
+              type="button"
+              onClick={cancelPinAdjust}
+              style={{ padding: "6px 12px", background: "#fff", border: "1px solid #bfdbfe", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer", color: "#1e40af" }}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+
+        {pendingVisitId && user?.role === "tech" && activeTab === "map" && (
+          <div style={{ padding: "10px 20px", background: "#fef3c7", borderBottom: "1px solid #fcd34d", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+            <span style={{ fontSize: "12px", fontWeight: 700, color: "#92400e" }}>
+              Investigation required — clear your current stop before Route to Next
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                const pending = outages.find((o) => String(o.id) === pendingVisitId);
+                if (pending) openInvestigation(pending);
+              }}
+              style={{ padding: "6px 12px", background: "#d97706", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}
+            >
+              Open investigation
+            </button>
           </div>
         )}
 
@@ -2128,9 +2412,10 @@ export default function Page() {
               {/* Filters + CSV export */}
               <div style={{ background: "#fff", borderRadius: "10px", padding: "14px 18px", marginBottom: "16px", display: "flex", gap: "16px", alignItems: "center", flexWrap: "wrap", boxShadow: "0 1px 3px rgba(0,0,0,0.07)" }}>
                 <span style={{ fontSize: "13px", fontWeight: 600, color: "#374151" }}>Filter:</span>
-                <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value as any)} style={{ padding: "7px 12px", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "13px" }}>
-                  <option value="all">All Statuses</option>
-                  {Object.entries(STATUS_CONFIG).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value as OutageStatus | "all" | "job_sold")} style={{ padding: "7px 12px", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "13px" }}>
+                  {OUTAGE_FILTER_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
                 </select>
                 <span style={{ fontSize: "13px", color: "#6b7280" }}>{filteredOutages.length} results</span>
                 <button onClick={exportOutagesCSV} style={{ marginLeft: "auto", padding: "7px 14px", background: "#fff", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "12px", fontWeight: 600, color: "#374151", cursor: "pointer" }}>
@@ -2163,7 +2448,7 @@ export default function Page() {
                           <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
                             <button onClick={() => { setDetailOutage(o); setShowDetail(true); }} style={smBtnCss("#0d9488")}>View</button>
                             <button onClick={() => navigateToLatLng(o.lat, o.lng, o.streetAddress, o)} style={smBtnCss("#0ea5e9")}>Navigate</button>
-                            <button onClick={() => { setInvestigatingOutage(o); setShowInvestigation(true); }} style={smBtnCss("#7c3aed")}>Investigate</button>
+                            <button onClick={() => openInvestigation(o)} style={smBtnCss("#7c3aed")}>Investigate</button>
                             <select value={o.status} onChange={(e) => updateStatus(o.id, e.target.value as OutageStatus)}
                               style={{ padding: "5px 8px", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "11px", cursor: "pointer", flex: 1 }}>
                               {Object.entries(STATUS_CONFIG).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
@@ -2204,7 +2489,7 @@ export default function Page() {
                                 <div style={{ display: "flex", gap: "5px", flexWrap: "wrap" }}>
                                   <button onClick={() => { setDetailOutage(o); setShowDetail(true); }} style={smBtnCss("#0d9488")}>View</button>
                                   <button onClick={() => navigateToLatLng(o.lat, o.lng, o.streetAddress, o)} style={smBtnCss("#0ea5e9")}>Go</button>
-                                  <button onClick={() => { setInvestigatingOutage(o); setShowInvestigation(true); }} style={smBtnCss("#7c3aed")}>Investigate</button>
+                                  <button onClick={() => openInvestigation(o)} style={smBtnCss("#7c3aed")}>Investigate</button>
                                   <select value={o.status} onChange={(e) => updateStatus(o.id, e.target.value as OutageStatus)}
                                     style={{ padding: "5px 8px", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "11px", cursor: "pointer" }}>
                                     {Object.entries(STATUS_CONFIG).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
@@ -2228,14 +2513,14 @@ export default function Page() {
               <PageHelp pageId="opportunities" />
               <OpportunitiesList
                 outages={outages}
+                token={token}
+                isOffice={isOffice}
+                onUpdated={fetchOutages}
                 onNavigate={(lat, lng, addr) => {
                   navigateToLatLng(lat, lng, addr);
                   gotoTab("map");
                 }}
-                onInvestigate={(o) => {
-                  setInvestigatingOutage(o as Outage);
-                  setShowInvestigation(true);
-                }}
+                onInvestigate={(o) => openInvestigation(o as Outage)}
               />
             </div>
           )}
@@ -2321,8 +2606,20 @@ export default function Page() {
         <InvestigationForm
           outage={investigatingOutage}
           token={token}
+          required={
+            user?.role === "tech" &&
+            !!pendingVisitId &&
+            String(investigatingOutage.id) === pendingVisitId &&
+            needsInvestigation(investigatingOutage.status)
+          }
           onClose={() => { setShowInvestigation(false); setInvestigatingOutage(null); }}
-          onSubmitted={(id, newStatus, visit) => updateStatus(id, newStatus as OutageStatus, visit)}
+          onSubmitted={(id, newStatus, visit) => {
+            updateStatus(id, newStatus as OutageStatus, visit);
+            if (String(id) === pendingVisitId) {
+              clearPendingVisit();
+              setPendingVisitId(null);
+            }
+          }}
         />
       )}
 
@@ -2396,27 +2693,55 @@ export default function Page() {
                 <input
                   value={editingAddress}
                   onChange={(e) => setEditingAddress(e.target.value)}
-                  placeholder={`${detailOutage.lat?.toFixed(5)}, ${detailOutage.lng?.toFixed(5)}`}
-                  style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "13px", color: "#374151" }}
+                  placeholder="Street address"
+                  style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "13px", color: "#374151", marginBottom: "8px" }}
                 />
-                <button
-                  onClick={async () => {
-                    await fetch("/api/outages", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-                      body: JSON.stringify({ id: detailOutage.id, status: detailOutage.status, streetAddress: editingAddress }),
-                    });
-                    setDetailOutage((p) => (p ? { ...p, streetAddress: editingAddress } : p));
-                    setOutages((prev) => prev.map((o) => (o.id === detailOutage.id ? { ...o, streetAddress: editingAddress } : o)));
-                  }}
-                  style={{ marginTop: "8px", padding: "7px 10px", background: "#0d9488", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}
-                >
-                  Save Address
-                </button>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "8px" }}>
+                  <input
+                    value={editingLat}
+                    onChange={(e) => setEditingLat(e.target.value)}
+                    placeholder="Latitude"
+                    style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "13px", color: "#374151" }}
+                  />
+                  <input
+                    value={editingLng}
+                    onChange={(e) => setEditingLng(e.target.value)}
+                    placeholder="Longitude"
+                    style={{ width: "100%", padding: "8px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "13px", color: "#374151" }}
+                  />
+                </div>
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                  <button
+                    onClick={async () => {
+                      const lat = Number(editingLat);
+                      const lng = Number(editingLng);
+                      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+                        alert("Enter valid latitude and longitude.");
+                        return;
+                      }
+                      await saveOutageLocation(detailOutage.id, lat, lng, editingAddress);
+                    }}
+                    style={{ padding: "7px 10px", background: "#0d9488", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}
+                  >
+                    Save location
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => startPinAdjust(detailOutage)}
+                    style={{ padding: "7px 10px", background: "#2563eb", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}
+                  >
+                    Tap map to move pin
+                  </button>
+                </div>
               </div>
+              {detailOutage.needsReturnTrip && (
+                <div style={{ padding: "10px 12px", background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: "8px", marginBottom: "16px", fontSize: "12px", fontWeight: 600, color: "#92400e" }}>
+                  Return trip required — Finisher priority target
+                </div>
+              )}
               <div style={{ display: "flex", gap: "10px" }}>
                 <button onClick={() => { navigateToLatLng(detailOutage.lat, detailOutage.lng, detailOutage.streetAddress, detailOutage); setShowDetail(false); }} style={{ flex: 1, padding: "11px", background: "#0ea5e9", color: "#fff", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>Navigate</button>
-                <button onClick={() => { setInvestigatingOutage(detailOutage); setShowDetail(false); setShowInvestigation(true); }} style={{ flex: 1, padding: "11px", background: "#0d9488", color: "#fff", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>Investigate</button>
+                <button onClick={() => { setShowDetail(false); openInvestigation(detailOutage); }} style={{ flex: 1, padding: "11px", background: "#0d9488", color: "#fff", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>Investigate</button>
                 {isOffice && (
                   <button onClick={() => removeMarker(detailOutage.id)} style={{ flex: 1, padding: "11px", background: "#ef4444", color: "#fff", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>
                     Remove Dot

@@ -10,17 +10,10 @@ import {
   postHousecallJobNote,
   verifyHousecallSignature,
 } from "@/lib/housecall";
+import { housecallMarkerId, markerStatusFromHousecall, syncHousecallIntake } from "@/lib/housecall-intake";
 
 function normalizeJob(jobOrPayload: any): any {
   return jobOrPayload?.job ?? jobOrPayload?.data ?? jobOrPayload;
-}
-
-function statusToMarker(jobStatus: string | null, leadSource: string | null): string {
-  const s = (jobStatus ?? "").toLowerCase();
-  if (["completed", "closed"].includes(s)) return "completed";
-  if (["scheduled", "accepted", "booked"].includes(s)) return "sold";
-  if (leadSource === "self_generated") return "opportunity";
-  return "unvisited";
 }
 
 export async function POST(req: Request) {
@@ -73,7 +66,7 @@ export async function POST(req: Request) {
 
     const leadSource = leadSourceFromTags(tags);
     const externalStatus = String(job?.status ?? job?.job_status ?? "");
-    const markerStatus = statusToMarker(externalStatus, leadSource);
+    const markerStatus = markerStatusFromHousecall(externalStatus, leadSource);
     const customerName = job?.customer?.name ?? job?.customer_name ?? job?.name ?? null;
     const customerPhone = job?.customer?.phone ?? job?.customer_phone ?? null;
     const address = job?.address?.full ?? job?.address ?? job?.customer_address ?? null;
@@ -81,7 +74,7 @@ export async function POST(req: Request) {
     const lng = job?.address?.lng ?? job?.lng ?? null;
     const assignedTechName = job?.assigned_tech?.name ?? job?.employee?.name ?? null;
     const notes = job?.notes ?? job?.description ?? null;
-    const markerId = `hcp-${jobId}`;
+    const markerId = housecallMarkerId(jobId);
 
     if (db) {
       const { data: existing } = await db
@@ -91,24 +84,19 @@ export async function POST(req: Request) {
         .maybeSingle();
       const priorStatus = existing?.status ?? null;
 
-      await db.from("outages").upsert({
-        id: markerId,
-        external_job_id: jobId,
-        source: "office",
-        lat: lat ?? 0,
-        lng: lng ?? 0,
-        street_address: address,
-        customer_name: customerName,
-        customer_phone: customerPhone,
-        lead_source: leadSource,
-        assigned_tech_name: assignedTechName,
-        office_notes: notes,
-        external_job_status: externalStatus,
-        status: markerStatus,
-        is_active: true,
-        first_seen_at: new Date().toISOString(),
-        last_updated_at: new Date().toISOString(),
-      }, { onConflict: "id" });
+      await syncHousecallIntake(db, {
+        externalJobId: String(jobId),
+        leadSource,
+        externalStatus,
+        markerStatus,
+        customerName,
+        customerPhone,
+        address,
+        lat,
+        lng,
+        assignedTechName,
+        notes,
+      });
 
       const converted = ["scheduled", "accepted", "booked"].includes(externalStatus.toLowerCase());
       const conversionType = leadSource === "self_generated" ? "self_generated" : null;

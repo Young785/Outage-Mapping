@@ -17,6 +17,8 @@ import { calculateSimpleRouteScore } from "@/lib/routing-simple";
 import { getRoutingMode } from "@/lib/routing-mode";
 import { reverseGeocode } from "@/lib/geocache";
 import { verifyJWT, extractBearerToken } from "@/lib/jwt";
+import { getActiveStormEvent, isPreviousStormMarker } from "@/lib/storm-events";
+import { syncLinkedJobLocation } from "@/lib/marker-location";
 
 const CENTER = { lat: 44.9778, lng: -93.265 };
 const RADIUS_MILES = 40;
@@ -141,7 +143,7 @@ export async function GET(req: Request) {
       const ids = filtered.map((o) => o.id);
       // Migration-007 columns that may not exist on older Supabase schemas.
       const M007_COLS = "customer_name, customer_phone, lead_source, assigned_tech_name, office_notes, external_job_status";
-      const BASE_META_COLS = "id, status, street_address, priority_score, first_seen_at, source";
+      const BASE_META_COLS = "id, status, street_address, priority_score, first_seen_at, source, zip_code, no_contact_made, needs_return_trip, storm_event_id";
       const BASE_OFFICE_COLS = "id, source, lat, lng, street_address, city, county, state, customers, outage_type, cause, etr, crew_status, outage_impact, status, priority_score, first_seen_at";
 
       if (ids.length > 0) {
@@ -217,7 +219,7 @@ export async function GET(req: Request) {
         const existing = new Set((officeRows ?? []).map((r) => String(r.id)));
         const mapJobStatusToOutageStatus = (status: string | null) => {
           if (status === "completed") return "completed";
-          if (status === "assigned" || status === "in_progress") return "investigating";
+          if (status === "assigned" || status === "in_progress") return "unvisited";
           return "unvisited";
         };
         const synthesized = officeJobs
@@ -258,7 +260,9 @@ export async function GET(req: Request) {
   }
 
   let stormPhase: StormPhase = "phase_1";
+  let tempOutMode = false;
   const routingMode = await getRoutingMode();
+  const activeStormEvent = await getActiveStormEvent();
   const priorityWeights = routingMode === "simple" ? await getWeights() : null;
 
   if (isSupabaseConfigured) {
@@ -267,6 +271,8 @@ export async function GET(req: Request) {
       const { data: phaseRow } = await db.from("app_settings").select("value").eq("key", "storm_phase").maybeSingle();
       const p = phaseRow?.value;
       if (p === "phase_1" || p === "phase_2" || p === "phase_3") stormPhase = p;
+      const { data: tempRow } = await db.from("app_settings").select("value").eq("key", "temp_out_mode").maybeSingle();
+      tempOutMode = tempRow?.value === true || tempRow?.value === "true";
     } catch {}
   }
 
@@ -299,7 +305,8 @@ export async function GET(req: Request) {
       const milesFromCenter = haversineMiles(CENTER.lat, CENTER.lng, o.lat!, o.lng!);
       const simple = calculateSimpleRouteScore(
         { status: baseStatus, customers: o.customers ?? 0, source: o.source },
-        milesFromCenter
+        milesFromCenter,
+        { tempOutMode }
       );
       const legacy = calculateScoreBreakdown(
         {
@@ -331,7 +338,8 @@ export async function GET(req: Request) {
           isHoneyHole,
         },
         stormPhase,
-        clusterMap.get(String(o.id))
+        clusterMap.get(String(o.id)),
+        { tempOutMode }
       );
 
       scoreBreakdown = {
@@ -358,6 +366,17 @@ export async function GET(req: Request) {
       assignedTechName: dbMetaMap[o.id]?.assigned_tech_name ?? null,
       officeNotes: dbMetaMap[o.id]?.office_notes ?? null,
       externalJobStatus: dbMetaMap[o.id]?.external_job_status ?? null,
+      zipCode: dbMetaMap[o.id]?.zip_code ?? o.zipCode ?? null,
+      noContactMade: dbMetaMap[o.id]?.no_contact_made ?? false,
+      needsReturnTrip: dbMetaMap[o.id]?.needs_return_trip ?? false,
+      stormEventId: dbMetaMap[o.id]?.storm_event_id ?? null,
+      isPreviousStormMarker: isPreviousStormMarker(
+        {
+          stormEventId: dbMetaMap[o.id]?.storm_event_id,
+          firstSeenAt: dbMetaMap[o.id]?.first_seen_at,
+        },
+        activeStormEvent
+      ),
       firstSeenAt: dbMetaMap[o.id]?.first_seen_at ?? null,
       lastUpdatedAt: dbMetaMap[o.id]?.last_updated_at ?? null,
       isStaleMarker: !!dbMetaMap[o.id]?.first_seen_at
@@ -386,7 +405,8 @@ export async function GET(req: Request) {
       if (routingMode === "simple") {
         const simple = calculateSimpleRouteScore(
           { status: baseStatus, customers: o.customers ?? 1, source: o.source ?? "office" },
-          milesFromCenter
+          milesFromCenter,
+          { tempOutMode }
         );
         priorityScore = simple.total;
         scoreBreakdown = { finalScore: simple.total, urgency: 0, parts: simple.parts };
@@ -402,7 +422,8 @@ export async function GET(req: Request) {
             isOfficeLead: true,
           },
           stormPhase,
-          officeClusterMap.get(String(o.id))
+          officeClusterMap.get(String(o.id)),
+          { tempOutMode }
         );
         priorityScore = v1.total;
         scoreBreakdown = { finalScore: v1.total, urgency: 0, parts: v1.parts };
@@ -498,6 +519,7 @@ export async function GET(req: Request) {
     errors: errors.length ? errors : undefined,
     isStale,
     routingMode,
+    activeStormEvent,
   });
 }
 
@@ -512,10 +534,30 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
-    const { id, status, notes, streetAddress } = body;
+    const { id, status, notes, streetAddress, lat, lng } = body;
 
-    if (!id || !status) {
-      return NextResponse.json({ error: "id and status are required" }, { status: 400 });
+    if (!id) {
+      return NextResponse.json({ error: "id is required" }, { status: 400 });
+    }
+    if (
+      status === undefined &&
+      streetAddress === undefined &&
+      lat === undefined &&
+      lng === undefined &&
+      notes === undefined
+    ) {
+      return NextResponse.json({ error: "status, streetAddress, lat/lng, or notes required" }, { status: 400 });
+    }
+
+    if (lat !== undefined || lng !== undefined) {
+      if (lat == null || lng == null || !Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) {
+        return NextResponse.json({ error: "lat and lng must both be valid numbers" }, { status: 400 });
+      }
+      const latN = Number(lat);
+      const lngN = Number(lng);
+      if (latN < -90 || latN > 90 || lngN < -180 || lngN > 180) {
+        return NextResponse.json({ error: "lat/lng out of range" }, { status: 400 });
+      }
     }
 
     const validStatuses = [
@@ -523,14 +565,27 @@ export async function POST(req: Request) {
       "door_hanger", "wants_to_proceed", "customer_thinking", "sold",
       "job_started", "temp_power", "grounding", "completed",
     ];
-    if (!validStatuses.includes(status)) {
+    if (status && !validStatuses.includes(status)) {
       return NextResponse.json({ error: "Invalid status value" }, { status: 400 });
     }
 
     if (isSupabaseConfigured) {
       const db = getAdmin();
-      const update: any = { status, last_updated_at: new Date().toISOString() };
-      if (streetAddress) update.street_address = streetAddress;
+      let statusToWrite = status;
+      if (!statusToWrite) {
+        const { data: existing } = await db.from("outages").select("status").eq("id", String(id)).maybeSingle();
+        statusToWrite = existing?.status ?? "unvisited";
+      }
+      const update: any = { last_updated_at: new Date().toISOString() };
+      if (status) update.status = status;
+      else update.status = statusToWrite;
+      if (streetAddress !== undefined) update.street_address = streetAddress;
+      if (notes !== undefined) update.cause = notes;
+      if (lat !== undefined && lng !== undefined) {
+        update.lat = Number(lat);
+        update.lng = Number(lng);
+      }
+      if (status === "completed") update.needs_return_trip = false;
       // Persist lead_source so the square shape survives later status changes.
 
       console.log("[outages POST] update payload for id=", id, "→", update);
@@ -547,6 +602,14 @@ export async function POST(req: Request) {
       if (error) {
         console.error("[outages POST] update failed:", error.message);
         return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+
+      if (lat !== undefined && lng !== undefined) {
+        try {
+          await syncLinkedJobLocation(db, String(id), Number(lat), Number(lng), streetAddress ?? null);
+        } catch (syncErr) {
+          console.warn("[outages POST] linked job location sync failed:", syncErr);
+        }
       }
 
       // Read it back so we can see if lead_source actually landed.

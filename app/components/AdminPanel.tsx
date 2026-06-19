@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback } from "react";
 import FieldTip, { LabelWithTip, SectionTitleWithTip } from "./FieldTip";
 import { ADMIN_FIELD_HELP, ADMIN_SECTION_HELP } from "@/lib/field-help";
-import PlatformRoutingPanel from "./PlatformRoutingPanel";
+2import PlatformRoutingPanel from "./PlatformRoutingPanel";
 import type { RoutingMode } from "@/lib/routing-mode";
 
 type Weights = {
@@ -199,6 +199,32 @@ export default function AdminPanel({ token, role, routingMode, onRoutingModeChan
       const a = document.createElement("a");
       a.href = url;
       a.download = `${kind}-${sinceDays}d-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setMessage({ type: "error", text: err.message });
+    }
+  }
+
+  async function downloadStormExport(eventId: string, eventName: string, format: "csv" | "geojson") {
+    try {
+      const res = await fetch(`/api/storm-events/${eventId}/export?format=${format}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || "Storm export failed");
+      }
+      const text = await res.text();
+      const mime = format === "geojson" ? "application/geo+json" : "text/csv;charset=utf-8;";
+      const blob = new Blob([text], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const safe = (eventName || "storm").replace(/[^a-z0-9_-]+/gi, "-").toLowerCase();
+      a.download = `${safe}-outages.${format === "geojson" ? "geojson" : "csv"}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -863,8 +889,24 @@ export default function AdminPanel({ token, role, routingMode, onRoutingModeChan
               {stormEvents.filter((e) => e.ended_at).map((e) => (
                 <div key={e.id} style={{ padding: "10px 14px", background: "#f9fafb", borderRadius: "8px", border: "1px solid #e5e7eb" }}>
                   <div style={{ fontWeight: 600, color: "#1f2937", fontSize: "13px" }}>{e.name}</div>
-                  <div style={{ fontSize: "11px", color: "#9ca3af" }}>
+                  <div style={{ fontSize: "11px", color: "#9ca3af", marginBottom: "8px" }}>
                     {new Date(e.started_at).toLocaleDateString()} → {new Date(e.ended_at!).toLocaleDateString()}
+                  </div>
+                  <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      onClick={() => downloadStormExport(e.id, e.name, "csv")}
+                      style={{ padding: "5px 10px", background: "#0ea5e9", color: "#fff", border: "none", borderRadius: "6px", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}
+                    >
+                      Export CSV
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => downloadStormExport(e.id, e.name, "geojson")}
+                      style={{ padding: "5px 10px", background: "#0d9488", color: "#fff", border: "none", borderRadius: "6px", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}
+                    >
+                      Export GeoJSON
+                    </button>
                   </div>
                 </div>
               ))}

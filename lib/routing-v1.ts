@@ -7,6 +7,7 @@
  *   − Drive Time Penalty − Exclusion Penalty
  */
 
+import type { FieldDispatchRole } from "./field-dispatch-role";
 import { haversineMiles } from "./priority";
 
 export type StormPhase = "phase_1" | "phase_2" | "phase_3";
@@ -26,6 +27,8 @@ export type RoutableItem = {
   isHoneyHole?: boolean;
   isOfficeLead?: boolean;
   driveMiles?: number;
+  noContactMade?: boolean;
+  needsReturnTrip?: boolean;
 };
 
 export type ClusterInfo = { neighborCount: number; clusterScore: number };
@@ -90,6 +93,38 @@ function zoneScore(opts: { inPriorityZone?: boolean; isHoneyHole?: boolean }): n
 function powerStatusBonus(powerOnLineDrop?: boolean, phase: StormPhase = "phase_1"): number {
   if (!powerOnLineDrop) return 0;
   return phase === "phase_2" ? 90 : phase === "phase_3" ? 45 : 20;
+}
+
+export type ScoreOptions = {
+  /** When true, temp-power and return-for-grounding stops rank higher. */
+  tempOutMode?: boolean;
+  /** Seller-specific ranking tweaks within the eligible pool. */
+  dispatchRole?: FieldDispatchRole;
+};
+
+/** Boost no-contact opportunities and de-prioritize tire-kickers for Sellers. */
+function sellerRoleBonus(
+  item: Pick<RoutableItem, "status" | "noContactMade">,
+  role?: FieldDispatchRole
+): number {
+  if (role !== "seller") return 0;
+  if (item.status === "opportunity" && item.noContactMade) return 115;
+  if (item.status === "opportunity") return 30;
+  if (item.status === "door_hanger") return 50;
+  if (item.status === "customer_thinking") return -60;
+  return 0;
+}
+
+function finisherRoleBonus(
+  item: Pick<RoutableItem, "status" | "needsReturnTrip">,
+  role?: FieldDispatchRole
+): number {
+  if (role !== "finisher") return 0;
+  if (item.needsReturnTrip) return 130;
+  if (item.status === "temp_power") return 85;
+  if (item.status === "grounding") return 80;
+  if (item.status === "job_started") return 45;
+  return 0;
 }
 
 /** Phase-specific status ranking — sold/dispatch work rises in Phase 2/3. */
@@ -219,10 +254,19 @@ export const PHASE_PRIORITY_GUIDE: Record<
   },
 };
 
+function tempOutModeBonus(status: string, phase: StormPhase, tempOutMode?: boolean): number {
+  if (!tempOutMode) return 0;
+  if (status === "temp_power") return phase === "phase_1" ? 220 : 95;
+  if (status === "grounding") return phase === "phase_1" ? 200 : 85;
+  if (status === "sold") return 35;
+  return 0;
+}
+
 export function calculateV1RouteScore(
   item: RoutableItem,
   phase: StormPhase,
-  cluster?: ClusterInfo
+  cluster?: ClusterInfo,
+  options: ScoreOptions = {}
 ): { total: number; parts: Record<string, number> } {
   const rawCluster = cluster?.clusterScore ?? 0;
   const parts: Record<string, number> = {
@@ -242,6 +286,9 @@ export function calculateV1RouteScore(
 
   parts.drivePenalty = -driveTimePenalty(item.driveMiles);
   parts.exclusionPenalty = -exclusionPenalty(item.inExclusionZone, item.investigationResult, item.status);
+  parts.tempOutMode = tempOutModeBonus(item.status, phase, options.tempOutMode);
+  parts.sellerRole = sellerRoleBonus(item, options.dispatchRole);
+  parts.finisherRole = finisherRoleBonus(item, options.dispatchRole);
 
   const total = Math.round(
     Object.values(parts).reduce((s, n) => s + n, 0) * 100

@@ -12,6 +12,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { loadGoogleMaps, triggerMapResize } from "@/lib/google-maps";
 import ZipCodePicker from "./ZipCodePicker";
+import {
+  DISPATCH_ROLE_LABELS,
+  type FieldDispatchRole,
+  type InstallerFallback,
+} from "@/lib/field-dispatch-role";
 
 type ZoneType = "territory" | "priority" | "exclusion";
 type LatLng = { lat: number; lng: number };
@@ -31,6 +36,8 @@ type Tech = {
   email: string;
   status: string;
   territoryId: string | null;
+  dispatchRole: FieldDispatchRole;
+  installerFallback: InstallerFallback;
 };
 
 type Props = {
@@ -76,6 +83,7 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
   const [polygonPath, setPolygonPath] = useState<LatLng[]>([]);
   const [isDrawingPolygon, setIsDrawingPolygon] = useState(false);
   const [assigningTech, setAssigningTech] = useState<string | null>(null);
+  const [assigningRole, setAssigningRole] = useState<string | null>(null);
   const [assignTerritory, setAssignTerritory] = useState<string>("");
   const [mapReady, setMapReady] = useState(false);
   const [mapLoadError, setMapLoadError] = useState<string | null>(null);
@@ -111,6 +119,8 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
           email: t.email,
           status: t.status,
           territoryId: t.territoryId ?? null,
+          dispatchRole: t.dispatchRole ?? "hunter",
+          installerFallback: t.installerFallback ?? "hunter",
         }))
       );
     } catch (err: any) {
@@ -586,6 +596,38 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
     }
   }
 
+  async function assignDispatchRole(
+    techId: string,
+    role: FieldDispatchRole,
+    fallback?: InstallerFallback
+  ) {
+    setAssigningRole(techId);
+    setError(null);
+    try {
+      const res = await fetch("/api/techs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          action: "assign_dispatch_role",
+          techId,
+          dispatchRole: role,
+          ...(fallback !== undefined ? { installerFallback: fallback } : {}),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (res.status === 401) onSessionExpired?.(apiErrorMessage(res, data, "Session expired"));
+        throw new Error(apiErrorMessage(res, data, "Failed to assign dispatch role"));
+      }
+      setSuccess("Dispatch role updated");
+      load();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setAssigningRole(null);
+    }
+  }
+
   if (loading) {
     return <div style={{ textAlign: "center", padding: "48px", color: "#6b7280" }}>Loading boundaries…</div>;
   }
@@ -944,17 +986,18 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
       {isOffice && techs.length > 0 && (
         <div>
           <h3 style={{ fontSize: "14px", fontWeight: 600, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.05em", margin: "0 0 12px" }}>
-            Assign Techs to Territories
+            Assign Techs — Territory & Dispatch Role
           </h3>
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
             {techs.map((tech) => {
               const current = territories.find((t) => t.id === tech.territoryId);
+              const roleMeta = DISPATCH_ROLE_LABELS[tech.dispatchRole];
               return (
-                <div key={tech.userId} style={{ display: "flex", alignItems: "center", gap: "12px", background: "#fff", border: "1px solid #e5e7eb", borderRadius: "10px", padding: "12px 16px" }}>
-                  <div style={{ flex: 1 }}>
+                <div key={tech.userId} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "12px", background: "#fff", border: "1px solid #e5e7eb", borderRadius: "10px", padding: "12px 16px" }}>
+                  <div style={{ flex: "1 1 180px", minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: "13px", color: "#1f2937" }}>{tech.name}</div>
                     <div style={{ fontSize: "12px", color: "#6b7280" }}>
-                      {current ? `Currently: ${current.name}` : "No territory assigned"}
+                      {current ? `Territory: ${current.name}` : "No territory"} · Role: {roleMeta.title}
                     </div>
                   </div>
                   <select
@@ -964,13 +1007,38 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
                       assignTechTerritory(tech.userId, e.target.value);
                     }}
                     disabled={assigningTech === tech.userId}
-                    style={{ padding: "7px 10px", border: "1px solid #d1d5db", borderRadius: "7px", fontSize: "13px", color: "#374151", minWidth: "160px" }}
+                    style={{ padding: "7px 10px", border: "1px solid #d1d5db", borderRadius: "7px", fontSize: "13px", color: "#374151", minWidth: "140px" }}
                   >
-                    <option value="">— Unassigned —</option>
+                    <option value="">— Territory —</option>
                     {territories.filter((t) => zoneTypeOf(t) === "territory").map((t) => (
                       <option key={t.id} value={t.id}>{t.name}</option>
                     ))}
                   </select>
+                  <select
+                    value={tech.dispatchRole}
+                    onChange={(e) => assignDispatchRole(tech.userId, e.target.value as FieldDispatchRole)}
+                    disabled={assigningRole === tech.userId}
+                    title={roleMeta.description}
+                    style={{ padding: "7px 10px", border: "1px solid #d1d5db", borderRadius: "7px", fontSize: "13px", color: "#374151", minWidth: "120px" }}
+                  >
+                    {(Object.keys(DISPATCH_ROLE_LABELS) as FieldDispatchRole[]).map((r) => (
+                      <option key={r} value={r}>{DISPATCH_ROLE_LABELS[r].title}</option>
+                    ))}
+                  </select>
+                  {tech.dispatchRole === "installer" && (
+                    <select
+                      value={tech.installerFallback}
+                      onChange={(e) =>
+                        assignDispatchRole(tech.userId, "installer", e.target.value as InstallerFallback)
+                      }
+                      disabled={assigningRole === tech.userId}
+                      title="Fallback when no sold-job targets remain"
+                      style={{ padding: "7px 10px", border: "1px solid #d1d5db", borderRadius: "7px", fontSize: "12px", color: "#6b7280", minWidth: "130px" }}
+                    >
+                      <option value="hunter">Fallback: Hunter</option>
+                      <option value="seller">Fallback: Seller</option>
+                    </select>
+                  )}
                 </div>
               );
             })}

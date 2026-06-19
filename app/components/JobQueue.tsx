@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import QueueItemDrawer, { type QueueDrawerItem } from "./QueueItemDrawer";
 
 const TERMINAL_QUEUE_STATUSES = new Set([
   "completed",
@@ -36,6 +37,9 @@ type QueueItem = {
   jobType: string | null;
   customerPhone: string | null;
   assignedTechId: string | null;
+  assignedTechName: string | null;
+  notes: string | null;
+  sortOrder: number | null;
   priority: number | null;
   createdAt: string;
 };
@@ -78,6 +82,11 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
   const rerouteInFlight = useRef(false);
   const [clustering, setClustering] = useState(false);
   const [clusterPlan, setClusterPlan] = useState<Array<{ id: string; size: number; avgPriority: number; centroid: { lat: number; lng: number }; topStop?: { lat: number; lng: number; label?: string; priorityScore?: number } }>>([]);
+  const [selectedItem, setSelectedItem] = useState<QueueDrawerItem | null>(null);
+  const [techOptions, setTechOptions] = useState<Array<{ userId: string; name: string }>>([]);
+  const [reordering, setReordering] = useState(false);
+
+  const isOffice = role === "office" || role === "admin" || role === "owner";
 
   const loadQueue = useCallback(async () => {
     setLoading(true);
@@ -105,6 +114,18 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
   }, [sort, userLocation, token]);
 
   useEffect(() => { loadQueue(); }, [loadQueue]);
+
+  useEffect(() => {
+    if (!isOffice) return;
+    fetch("/api/techs", { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.json())
+      .then((d) => {
+        setTechOptions(
+          (d.techs ?? []).map((t: { userId: string; name: string }) => ({ userId: t.userId, name: t.name }))
+        );
+      })
+      .catch(() => {});
+  }, [isOffice, token]);
   useEffect(() => {
     if (routingMode === "simple") {
       setRoutePlan(null);
@@ -126,6 +147,52 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
   }, []);
 
   const filtered = queue.filter((item) => filter === "all" || item.type === filter);
+
+  function openDrawer(item: QueueItem) {
+    if (!isOffice) return;
+    setSelectedItem({
+      id: item.id,
+      type: item.type,
+      displayName: item.displayName,
+      address: item.address,
+      status: item.status,
+      customerPhone: item.customerPhone,
+      assignedTechId: item.assignedTechId,
+      assignedTechName: item.assignedTechName,
+      notes: item.notes,
+      lat: item.lat,
+      lng: item.lng,
+    });
+  }
+
+  async function moveJob(item: QueueItem, direction: -1 | 1) {
+    const jobItems = filtered.filter((i) => i.type === "job");
+    const idx = jobItems.findIndex((i) => i.id === item.id);
+    if (idx < 0) return;
+    const swapIdx = idx + direction;
+    if (swapIdx < 0 || swapIdx >= jobItems.length) return;
+    const reordered = [...jobItems];
+    const tmp = reordered[idx];
+    reordered[idx] = reordered[swapIdx];
+    reordered[swapIdx] = tmp;
+    setReordering(true);
+    try {
+      const res = await fetch("/api/jobs/queue/reorder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ orderedJobIds: reordered.map((i) => i.id) }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Reorder failed");
+      }
+      loadQueue();
+    } catch (err: unknown) {
+      setRouteError(err instanceof Error ? err.message : "Reorder failed");
+    } finally {
+      setReordering(false);
+    }
+  }
 
   async function findClosestTech(item: QueueItem) {
     if (!item.lat || !item.lng) return;
@@ -569,6 +636,9 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
                       <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                         {item.address ?? "No address"} {item.customerPhone && `· ${item.customerPhone}`}
                       </div>
+                      {item.assignedTechName && (
+                        <div style={{ fontSize: "11px", color: "#0d9488", marginTop: "4px", fontWeight: 600 }}>Tech: {item.assignedTechName}</div>
+                      )}
                       <div style={{ display: "flex", gap: "6px", marginTop: "6px", flexWrap: "wrap" }}>
                         {item.isConfirmed && <span style={{ padding: "2px 6px", background: "#dbeafe", color: "#1e40af", borderRadius: "4px", fontSize: "10px", fontWeight: 700 }}>CONFIRMED</span>}
                         {item.inTerritory && <span style={{ padding: "2px 6px", background: "#d1fae5", color: "#059669", borderRadius: "4px", fontSize: "10px", fontWeight: 700 }}>IN TERRITORY</span>}
@@ -583,6 +653,17 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
                     </div>
 
                     <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                      {isOffice && (
+                        <button type="button" onClick={() => openDrawer(item)} style={{ padding: "8px 12px", background: "#f3f4f6", color: "#374151", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "12px", fontWeight: 600 }}>
+                          Edit
+                        </button>
+                      )}
+                      {isOffice && item.type === "job" && (
+                        <>
+                          <button type="button" disabled={reordering} onClick={() => moveJob(item, -1)} style={{ padding: "8px 10px", background: "#fff", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "12px" }}>↑</button>
+                          <button type="button" disabled={reordering} onClick={() => moveJob(item, 1)} style={{ padding: "8px 10px", background: "#fff", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "12px" }}>↓</button>
+                        </>
+                      )}
                       {item.lat && item.lng && (
                         <button onClick={() => onNavigate(item.lat!, item.lng!, item.address ?? undefined)} style={{ padding: "8px 12px", background: "#0ea5e9", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600 }}>
                           Go
@@ -637,6 +718,9 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
                   <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {item.address ?? "No address"} {item.customerPhone && `· ${item.customerPhone}`}
                   </div>
+                  {item.assignedTechName && (
+                    <div style={{ fontSize: "11px", color: "#0d9488", marginTop: "4px", fontWeight: 600 }}>Tech: {item.assignedTechName}</div>
+                  )}
                 </div>
 
                 {/* Metrics */}
@@ -670,6 +754,17 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
 
                 {/* Actions */}
                 <div style={{ display: "flex", gap: "6px", flexShrink: 0, minWidth: 150, justifyContent: "flex-end" }}>
+                  {isOffice && (
+                    <button type="button" onClick={() => openDrawer(item)} style={{ padding: "8px 12px", background: "#f3f4f6", color: "#374151", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
+                      Edit
+                    </button>
+                  )}
+                  {isOffice && item.type === "job" && (
+                    <>
+                      <button type="button" disabled={reordering} onClick={() => moveJob(item, -1)} title="Move up" style={{ padding: "8px 10px", background: "#fff", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "12px", cursor: "pointer" }}>↑</button>
+                      <button type="button" disabled={reordering} onClick={() => moveJob(item, 1)} title="Move down" style={{ padding: "8px 10px", background: "#fff", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "12px", cursor: "pointer" }}>↓</button>
+                    </>
+                  )}
                   {item.lat && item.lng && (
                     <button
                       onClick={() => onNavigate(item.lat!, item.lng!, item.address ?? undefined)}
@@ -717,6 +812,18 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
             );
           })}
         </div>
+      )}
+
+      {selectedItem && (
+        <QueueItemDrawer
+          item={selectedItem}
+          token={token}
+          techs={techOptions}
+          onClose={() => setSelectedItem(null)}
+          onSaved={loadQueue}
+          onDeleted={loadQueue}
+          onNavigate={onNavigate}
+        />
       )}
     </div>
   );

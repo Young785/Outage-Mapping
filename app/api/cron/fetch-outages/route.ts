@@ -11,6 +11,7 @@ import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
 import { fetchAndNormalize } from "@/lib/adapters";
 import { reverseGeocode } from "@/lib/geocache";
 import { calculateScore, getWeights } from "@/lib/priority";
+import { getActiveStormEvent } from "@/lib/storm-events";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -74,7 +75,13 @@ export async function GET(req: Request) {
 
   // Upsert into outages table
   if (enriched.length > 0) {
-    const rows = enriched.map((o) => ({
+    const activeStorm = await getActiveStormEvent();
+    const ids = enriched.map((o) => o.id);
+    const { data: existingRows } = await db.from("outages").select("id").in("id", ids);
+    const existingIds = new Set((existingRows ?? []).map((r) => r.id));
+
+    const rows = enriched.map((o) => {
+      const base: Record<string, unknown> = {
       id: o.id,
       source: o.source,
       lat: o.lat,
@@ -92,7 +99,12 @@ export async function GET(req: Request) {
       priority_score: o.priorityScore ?? 0,
       is_simulation: false,
       updated_at: new Date().toISOString(),
-    }));
+      };
+      if (activeStorm && !existingIds.has(o.id)) {
+        base.storm_event_id = activeStorm.id;
+      }
+      return base;
+    });
 
     const { error: upsertErr } = await db
       .from("outages")

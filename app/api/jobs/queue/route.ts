@@ -10,6 +10,7 @@ import { haversineMiles } from "@/lib/priority";
 import { calculateV1RouteScore, computeClusterMap, type StormPhase } from "@/lib/routing-v1";
 import { calculateSimpleRouteScore } from "@/lib/routing-simple";
 import { getRoutingMode } from "@/lib/routing-mode";
+import { isInTerritory, territoryFromRow } from "@/lib/territory-match";
 
 const ACTIVE_JOB_STATUSES = ["pending", "assigned", "in_progress"] as const;
 
@@ -22,7 +23,7 @@ const OUTAGE_QUEUE_STATUSES = [
 ] as const;
 
 const OUTAGE_SELECT =
-  "id, lat, lng, city, county, customers, outage_type, cause, etr, status, priority_score, street_address, source, first_seen_at";
+  "id, lat, lng, city, county, customers, outage_type, cause, etr, status, priority_score, street_address, source, first_seen_at, zip_code";
 
 function estimateDriveMinutes(miles: number | null): number | null {
   if (miles == null) return null;
@@ -67,7 +68,10 @@ export async function GET(req: Request) {
       /* app_settings optional on fresh DB */
     }
 
-    let jobsQuery = db.from("jobs").select("*").in("status", [...ACTIVE_JOB_STATUSES]);
+    let jobsQuery = db
+      .from("jobs")
+      .select("*, assigned_tech:users!assigned_tech_id(id, name)")
+      .in("status", [...ACTIVE_JOB_STATUSES]);
     jobsQuery = isSimulation ? jobsQuery.eq("is_simulation", true) : jobsQuery.eq("is_simulation", false);
 
     const { data: jobs, error: jobsErr } = await jobsQuery;
@@ -104,25 +108,23 @@ export async function GET(req: Request) {
       );
     }
 
-    let techTerritoryZips: string[] | null = null;
+    let techTerritory: ReturnType<typeof territoryFromRow> | null = null;
     if (techId) {
       const { data: techRow, error: techErr } = await db
         .from("technicians")
-        .select("territory_id")
+        .select("territory_id, territories(zip_codes, geometry)")
         .eq("user_id", techId)
         .maybeSingle();
       if (!techErr && techRow?.territory_id) {
-        const { data: terr } = await db
-          .from("territories")
-          .select("zip_codes")
-          .eq("id", techRow.territory_id)
-          .maybeSingle();
-        techTerritoryZips = terr?.zip_codes ?? null;
+        const terr = techRow.territories as { zip_codes?: string[] | null; geometry?: { coordinates?: number[][][] } | null } | null;
+        if (terr) techTerritory = territoryFromRow(terr);
       }
     }
 
-    function inTerritory(_lat: number | null, _lng: number | null): boolean {
-      return techTerritoryZips == null || techTerritoryZips.length === 0;
+    function inTerritory(lat: number | null, lng: number | null, zipCode?: string | null): boolean {
+      if (!techTerritory) return true;
+      if (lat == null || lng == null) return false;
+      return isInTerritory({ lat, lng, zipCode }, techTerritory);
     }
 
     type QueueItem = {
@@ -143,6 +145,9 @@ export async function GET(req: Request) {
       jobType: string | null;
       customerPhone: string | null;
       assignedTechId: string | null;
+      assignedTechName: string | null;
+      notes: string | null;
+      sortOrder: number | null;
       priority: number | null;
       createdAt: string;
     };
@@ -172,6 +177,9 @@ export async function GET(req: Request) {
         jobType: j.job_type,
         customerPhone: j.customer_phone,
         assignedTechId: j.assigned_tech_id,
+        assignedTechName: (j.assigned_tech as { name?: string } | null)?.name ?? null,
+        notes: j.notes ?? null,
+        sortOrder: j.sort_order ?? null,
         priority: j.priority ?? null,
         createdAt: j.created_at,
       });
@@ -199,21 +207,27 @@ export async function GET(req: Request) {
         isConfirmed: false,
         distanceMiles: dist ? Math.round(dist * 10) / 10 : null,
         estimatedMinutes: estimateDriveMinutes(dist),
-        inTerritory: inTerritory(o.lat, o.lng),
+        inTerritory: inTerritory(o.lat, o.lng, o.zip_code ?? null),
         jobType: o.outage_type,
         customerPhone: null,
         assignedTechId: null,
+        assignedTechName: null,
+        notes: o.cause ?? null,
+        sortOrder: null,
         priority: null,
         createdAt: o.first_seen_at,
       });
     }
 
     let stormPhase: StormPhase = "phase_1";
+    let tempOutMode = false;
     const routingMode = await getRoutingMode();
     try {
       const { data: phaseRow } = await db.from("app_settings").select("value").eq("key", "storm_phase").maybeSingle();
       const p = phaseRow?.value;
       if (p === "phase_1" || p === "phase_2" || p === "phase_3") stormPhase = p;
+      const { data: tempRow } = await db.from("app_settings").select("value").eq("key", "temp_out_mode").maybeSingle();
+      tempOutMode = tempRow?.value === true || tempRow?.value === "true";
     } catch {}
 
     const clusterMap =
@@ -230,7 +244,8 @@ export async function GET(req: Request) {
       if (routingMode === "simple") {
         const simple = calculateSimpleRouteScore(
           { status: item.status, customers: item.customers, source: item.source },
-          item.distanceMiles ?? 0
+          item.distanceMiles ?? 0,
+          { tempOutMode }
         );
         item.priorityScore = simple.total;
       } else {
@@ -246,7 +261,8 @@ export async function GET(req: Request) {
             driveMiles: item.distanceMiles ?? undefined,
           },
           stormPhase,
-          clusterMap.get(String(item.id))
+          clusterMap.get(String(item.id)),
+          { tempOutMode }
         );
         item.priorityScore = v1.total;
       }
@@ -255,6 +271,12 @@ export async function GET(req: Request) {
     const effectiveSort = routingMode === "simple" && (sort === "smart" || sort === "value") ? "distance" : sort;
 
     queueItems.sort((a, b) => {
+      const ao = a.sortOrder;
+      const bo = b.sortOrder;
+      if (ao != null && bo != null && ao !== bo) return ao - bo;
+      if (ao != null && bo == null) return -1;
+      if (ao == null && bo != null) return 1;
+
       if (a.isConfirmed && !b.isConfirmed) return -1;
       if (!a.isConfirmed && b.isConfirmed) return 1;
 

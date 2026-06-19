@@ -6,6 +6,7 @@
 import { NextResponse } from "next/server";
 import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
 import { verifyJWT, extractBearerToken } from "@/lib/jwt";
+import { parseDispatchRole, parseInstallerFallback } from "@/lib/field-dispatch-role";
 
 export async function GET() {
   if (!isSupabaseConfigured) {
@@ -16,7 +17,7 @@ export async function GET() {
     const db = getAdmin();
     const { data, error } = await db
       .from("technicians")
-      .select("*, users(id, name, email, phone, role), territories(id, name)")
+      .select("*, users(id, name, email, phone, role), territories(id, name, zip_codes, geometry)")
       .order("updated_at", { ascending: false });
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -47,6 +48,10 @@ export async function GET() {
       currentJobName: t.current_job_id ? (jobMap[t.current_job_id] ?? "Active Job") : null,
       territoryId: t.territory_id,
       territoryName: (t.territories as any)?.name ?? null,
+      territoryZipCodes: (t.territories as any)?.zip_codes ?? null,
+      territoryGeometry: (t.territories as any)?.geometry ?? null,
+      dispatchRole: parseDispatchRole(t.dispatch_role),
+      installerFallback: parseInstallerFallback(t.installer_fallback),
       workingSince: t.working_since ?? null,
       completedCount: t.completed_count ?? 0,
       returnTripCount: t.return_trip_count ?? 0,
@@ -70,7 +75,7 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
-    const { action, status, lat, lng, techId, territoryId } = body;
+    const { action, status, lat, lng, techId, territoryId, dispatchRole, installerFallback } = body;
 
     if (!isSupabaseConfigured) {
       return NextResponse.json({ success: true, stored: false });
@@ -78,9 +83,12 @@ export async function POST(req: Request) {
 
     const db = getAdmin();
 
+    const canManageDispatch =
+      payload.role === "office" || payload.role === "admin" || payload.role === "owner";
+
     // Office/admin can assign territory to any tech
     if (action === "assign_territory") {
-      if (payload.role !== "office" && payload.role !== "admin") {
+      if (!canManageDispatch) {
         return NextResponse.json({ error: "Office role required to assign territories" }, { status: 403 });
       }
       if (!techId) return NextResponse.json({ error: "techId required" }, { status: 400 });
@@ -88,6 +96,21 @@ export async function POST(req: Request) {
         .from("technicians")
         .update({ territory_id: territoryId ?? null, updated_at: new Date().toISOString() })
         .eq("user_id", techId);
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ success: true });
+    }
+
+    if (action === "assign_dispatch_role") {
+      if (!canManageDispatch) {
+        return NextResponse.json({ error: "Office role required to assign dispatch roles" }, { status: 403 });
+      }
+      if (!techId) return NextResponse.json({ error: "techId required" }, { status: 400 });
+      const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+      if (dispatchRole !== undefined) update.dispatch_role = parseDispatchRole(dispatchRole);
+      if (installerFallback !== undefined) {
+        update.installer_fallback = parseInstallerFallback(installerFallback);
+      }
+      const { error } = await db.from("technicians").update(update).eq("user_id", techId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
       return NextResponse.json({ success: true });
     }

@@ -30,11 +30,11 @@ export const STATUS_CONFIG: Record<OutageStatus, StatusStyle> = {
     badgeText: "#374151",
   },
   investigating: {
-    color: "#a855f7",
-    strokeColor: "#7e22ce",
-    bg: "#faf5ff",
-    label: "Investigating",
-    badgeText: "#6b21a8",
+    color: "#ffffff",
+    strokeColor: "#6b7280",
+    bg: "#e5e7eb",
+    label: "Unvisited",
+    badgeText: "#374151",
   },
   no_opportunity: {
     color: "#111827",
@@ -44,11 +44,11 @@ export const STATUS_CONFIG: Record<OutageStatus, StatusStyle> = {
     badgeText: "#111827",
   },
   opportunity: {
-    color: "#ffffff",
-    strokeColor: "#f97316",
-    bg: "#fff7ed",
-    label: "Opportunity Found",
-    badgeText: "#c2410c",
+    color: "#a855f7",
+    strokeColor: "#7e22ce",
+    bg: "#faf5ff",
+    label: "Opportunity Found / No Contact Made",
+    badgeText: "#6b21a8",
   },
   door_hanger: {
     color: "#ec4899",
@@ -109,7 +109,37 @@ export const STATUS_CONFIG: Record<OutageStatus, StatusStyle> = {
 };
 
 export function getStatusConfig(status: string | undefined | null): StatusStyle {
-  return STATUS_CONFIG[status as OutageStatus] ?? STATUS_CONFIG.unvisited;
+  const normalized = status === "investigating" ? "unvisited" : status;
+  return STATUS_CONFIG[normalized as OutageStatus] ?? STATUS_CONFIG.unvisited;
+}
+
+/** True for dots that still need a field investigation (includes legacy DB status). */
+export function isUnvisitedOnMap(status: string | undefined | null): boolean {
+  return status === "unvisited" || status === "investigating";
+}
+
+/** Map marker colors — opportunity uses purple when no customer contact was made. */
+export function getMarkerStyle(
+  status: string | undefined | null,
+  opts?: { noContactMade?: boolean }
+): StatusStyle {
+  const base = getStatusConfig(status);
+  if (status === "opportunity" && opts?.noContactMade) {
+    return {
+      color: "#a855f7",
+      strokeColor: "#7e22ce",
+      bg: "#faf5ff",
+      label: "Opportunity Found / No Contact Made",
+      badgeText: "#6b21a8",
+    };
+  }
+  if (status === "opportunity") {
+    return {
+      ...base,
+      label: "Opportunity Found",
+    };
+  }
+  return base;
 }
 
 export function statusBadgeStyle(cfg: StatusStyle): Record<string, string | number> {
@@ -125,3 +155,14 @@ export function statusBadgeStyle(cfg: StatusStyle): Record<string, string | numb
     whiteSpace: "nowrap",
   };
 }
+
+/** Outage list filter — dedupes Job Sold (sold + wants_to_proceed). */
+export const OUTAGE_FILTER_OPTIONS: { value: OutageStatus | "all" | "job_sold"; label: string }[] = [
+  { value: "all", label: "All Statuses" },
+  ...(
+    Object.entries(STATUS_CONFIG) as [OutageStatus, StatusStyle][]
+  )
+    .filter(([k]) => k !== "sold" && k !== "wants_to_proceed" && k !== "investigating")
+    .map(([k, v]) => ({ value: k, label: v.label })),
+  { value: "job_sold", label: "Job Sold" },
+];

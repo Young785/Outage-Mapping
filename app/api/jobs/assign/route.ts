@@ -12,6 +12,7 @@ import { verifyJWT, extractBearerToken } from "@/lib/jwt";
 import { haversineMiles } from "@/lib/priority";
 import { notifyDispatchAssigned } from "@/lib/notifications";
 import { canDispatch } from "@/lib/dispatch-roles";
+import { findTerritoriesForLocation } from "@/lib/territory-match";
 
 export async function POST(req: Request) {
   try {
@@ -70,19 +71,18 @@ export async function POST(req: Request) {
       targetAddress = job?.customer_address ?? null;
     }
 
+    const { data: territories } = await db
+      .from("territories")
+      .select("id, zip_codes, geometry");
+
+    const matchingTerritoryIds = findTerritoriesForLocation(
+      { lat: targetLat, lng: targetLng, zipCode: targetZip },
+      territories ?? []
+    );
+
     let inTerritoryTechs: typeof techs = [];
-    let matchingTerritoryIds: string[] = [];
-    if (targetZip) {
-      const { data: territories } = await db
-        .from("territories")
-        .select("id, zip_codes")
-        .not("zip_codes", "is", null);
-      matchingTerritoryIds = (territories ?? [])
-        .filter((t) => (t.zip_codes as string[]).includes(targetZip!))
-        .map((t) => t.id);
-      if (matchingTerritoryIds.length > 0) {
-        inTerritoryTechs = techs.filter((t) => matchingTerritoryIds.includes(t.territory_id));
-      }
+    if (matchingTerritoryIds.length > 0) {
+      inTerritoryTechs = techs.filter((t) => matchingTerritoryIds.includes(t.territory_id));
     }
 
     // Dispatch guardrails (configurable in app_settings; defaults are storm-safe).
@@ -162,9 +162,10 @@ export async function POST(req: Request) {
     }).sort((a, b) => b.score - a.score);
 
     const chosen = scored[0];
+    const chosenTechName = (chosen.tech.users as { name?: string } | null)?.name ?? "Unknown";
     const recommended = {
       techId: chosen.tech.user_id,
-      techName: (chosen.tech.users as any)?.name ?? "Unknown",
+      techName: chosenTechName,
       techEmail: (chosen.tech.users as any)?.email ?? null,
       distanceMiles: Math.round(chosen.distance * 10) / 10,
       currentLat: chosen.tech.current_lat,
@@ -211,11 +212,17 @@ export async function POST(req: Request) {
           priority_score: 0,
           created_by: payload.sub,
         });
-        // Set outage status to investigating when a tech is dispatched
         await db.from("outages").update({
-          status: "investigating",
+          assigned_tech_name: chosenTechName,
           last_updated_at: new Date().toISOString(),
         }).eq("id", itemId);
+      }
+
+      if (itemType === "job") {
+        await db.from("outages").update({
+          assigned_tech_name: chosenTechName,
+          last_updated_at: new Date().toISOString(),
+        }).eq("id", `office-${itemId}`);
       }
 
       await db.from("technicians").update({

@@ -40,14 +40,16 @@ export default function JobForm({ token, onClose, onCreated }: Props) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!address.street.trim() || !address.city.trim() || !address.state.trim() || !address.zip.trim()) {
-      setError("Street, city, state, and ZIP are required.");
+    if (!address.street.trim() || !address.city.trim() || !address.state.trim()) {
+      setError("Street, city, and state are required.");
       return;
     }
     setSubmitting(true);
     setError(null);
 
-    const customerAddress = `${address.street.trim()}, ${address.city.trim()}, ${address.state.trim()} ${address.zip.trim()}`;
+    const customerAddress = [address.street.trim(), address.city.trim(), address.state.trim(), address.zip.trim()]
+      .filter(Boolean)
+      .join(", ");
 
     try {
       const res = await fetch("/api/jobs", {

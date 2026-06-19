@@ -48,6 +48,7 @@ export async function POST(
       photos = [],
       // New structured fields (§6)
       investigationResult,
+      noContactMade,
       customersAffected,
       customerHasPower,
       lineDrop,
@@ -78,7 +79,7 @@ export async function POST(
     ];
     const statusToSet = (newStatus && validStatuses.includes(newStatus))
       ? newStatus
-      : "investigating";
+      : "unvisited";
 
     if (!isSupabaseConfigured) {
       return NextResponse.json({ success: true, stored: false, newStatus: statusToSet });
@@ -121,7 +122,7 @@ export async function POST(
       // for office synthesized rows or the row itself is meaningless on map.
       const baseCommon: Record<string, unknown> = {
         id: outageId,
-        status: "investigating",
+        status: "unvisited",
         last_updated_at: new Date().toISOString(),
         is_active: true,
         county: "Unknown",
@@ -217,6 +218,7 @@ export async function POST(
       estimatedTimeHours !== "" && estimatedTimeHours != null && `est_hours=${estimatedTimeHours}`,
       techsRequired !== "" && techsRequired != null && `techs=${techsRequired}`,
       newStatus && `derived_status=${newStatus}`,
+      noContactMade != null && `no_contact_made=${noContactMade}`,
       verbalPriceQuoted && `verbal_price=${verbalPriceQuoted}`,
     ]
       .filter(Boolean)
@@ -307,6 +309,16 @@ export async function POST(
     if (honeyHole && honeyHoleHomes != null && honeyHoleHomes > 0) {
       outageUpdate.customers = honeyHoleHomes;
     }
+    if (noContactMade === true) {
+      outageUpdate.no_contact_made = true;
+    } else if (statusToSet !== "opportunity") {
+      outageUpdate.no_contact_made = false;
+    }
+    if (difficultJob === true && statusToSet !== "completed") {
+      outageUpdate.needs_return_trip = true;
+    } else if (statusToSet === "completed") {
+      outageUpdate.needs_return_trip = false;
+    }
 
     // Surface update errors instead of swallowing them. If the DB is missing
     // lead_source (migration 007 not applied / PostgREST cache stale), retry
@@ -318,6 +330,18 @@ export async function POST(
         console.warn("[investigate] lead_source write rejected:", upd.error.message);
         const { lead_source: _drop, ...withoutLeadSource } = outageUpdate;
         const retry = await db.from("outages").update(withoutLeadSource).eq("id", outageId);
+        if (retry.error) {
+          console.warn("[investigate] outage status update failed:", retry.error.message);
+        }
+      } else if (upd.error && /no_contact_made/.test(upd.error.message ?? "") && "no_contact_made" in outageUpdate) {
+        const { no_contact_made: _drop, ...withoutNoContact } = outageUpdate;
+        const retry = await db.from("outages").update(withoutNoContact).eq("id", outageId);
+        if (retry.error) {
+          console.warn("[investigate] outage status update failed:", retry.error.message);
+        }
+      } else if (upd.error && /needs_return_trip/.test(upd.error.message ?? "") && "needs_return_trip" in outageUpdate) {
+        const { needs_return_trip: _drop, ...withoutReturn } = outageUpdate;
+        const retry = await db.from("outages").update(withoutReturn).eq("id", outageId);
         if (retry.error) {
           console.warn("[investigate] outage status update failed:", retry.error.message);
         }

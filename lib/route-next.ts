@@ -1,43 +1,34 @@
-import { pickBestRouteStop, type StormPhase } from "./routing-v1";
-import { pickSimpleRouteStop } from "./routing-simple";
+import { type StormPhase } from "./routing-v1";
 import type { RoutingMode } from "./routing-mode";
-import { isRoutingExcluded, loadSavedVisits, type FieldVisitCache } from "./field-visit";
+import { loadSavedVisits, type FieldVisitCache } from "./field-visit";
+import {
+  buildEligiblePool,
+  pickFromEligiblePool,
+  type PipelineMarker,
+  type RoutingContext,
+} from "./routing-pipeline";
 
-export type RoutableOutage = {
-  id: number | string;
-  lat: number;
-  lng: number;
-  status: string;
-  customers: number;
-  priorityScore?: number;
-  source?: string;
-  isNew?: boolean;
-  investigationResult?: string;
-  powerOnLineDrop?: boolean;
-  inPriorityZone?: boolean;
-  inExclusionZone?: boolean;
-  isHoneyHole?: boolean;
-};
+export type RoutableOutage = PipelineMarker;
 
 /**
- * Pick the highest-value next stop using the active platform routing mode.
+ * Pick the next stop using operational filters first, then scoring within the eligible pool.
+ *
+ * Filter order: Territory → Role → Exclusions → Scoring → Distance
  */
 export function pickNextRouteStop<T extends RoutableOutage>(
   outages: T[],
   userLocation: { lat: number; lng: number },
   phase: StormPhase = "phase_1",
   visits: Record<string, FieldVisitCache> = loadSavedVisits(),
-  mode: RoutingMode = "complicated"
+  mode: RoutingMode = "complicated",
+  context: RoutingContext = {}
 ): T | null {
-  if (mode === "simple") {
-    return pickSimpleRouteStop(outages, userLocation, visits);
-  }
-  return pickBestRouteStop(
-    outages,
-    userLocation,
-    phase,
-    (o) => isRoutingExcluded(o, visits) || !!o.inExclusionZone
-  );
+  const pool = buildEligiblePool(outages, visits, context);
+  if (!pool.length) return null;
+  return pickFromEligiblePool(pool, userLocation, phase, mode, {
+    tempOutMode: context.tempOutMode,
+    dispatchRole: context.dispatchRole,
+  });
 }
 
-export { type StormPhase, type RoutingMode };
+export { type StormPhase, type RoutingMode, type RoutingContext };

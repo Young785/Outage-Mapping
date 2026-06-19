@@ -6,6 +6,7 @@
 import { NextResponse } from "next/server";
 import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
 import { verifyJWT, extractBearerToken } from "@/lib/jwt";
+import { setActiveStormEventId } from "@/lib/storm-events";
 
 function requireOffice(req: Request) {
   const token = extractBearerToken(req.headers.get("authorization"));
@@ -69,6 +70,7 @@ export async function POST(req: Request) {
       .select("*")
       .single();
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    await setActiveStormEventId(data.id);
     return NextResponse.json({ success: true, event: data });
   }
 
@@ -78,6 +80,7 @@ export async function POST(req: Request) {
       .update({ ended_at: new Date().toISOString() })
       .eq("id", body.id);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    await setActiveStormEventId(null);
     return NextResponse.json({ success: true });
   }
 

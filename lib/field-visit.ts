@@ -9,6 +9,7 @@ export type FieldVisitCache = {
   customerIntent?: string;
   verbalPrice?: string;
   followUpStatus?: string;
+  noContactMade?: boolean;
 };
 
 const STORAGE_KEY = "fieldmap_visits";

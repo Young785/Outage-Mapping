@@ -8,6 +8,7 @@ import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
 import { verifyJWT, extractBearerToken } from "@/lib/jwt";
 import { forwardGeocode } from "@/lib/geocache";
 import { calculateScore, getWeights } from "@/lib/priority";
+import { getActiveStormEvent } from "@/lib/storm-events";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -72,12 +73,12 @@ export async function POST(req: Request) {
 
     const composedAddress =
       customerAddress?.trim() ||
-      (street && city && state && zip
-        ? `${street.trim()}, ${city.trim()}, ${state.trim()} ${zip.trim()}`
+      (street && city && state
+        ? [street.trim(), city.trim(), state.trim(), zip?.trim()].filter(Boolean).join(", ")
         : "");
 
     if (!customerName || !composedAddress) {
-      return NextResponse.json({ error: "customerName and address (street/city/state/zip) are required" }, { status: 400 });
+      return NextResponse.json({ error: "customerName and address (street, city, state) are required" }, { status: 400 });
     }
 
     const notesWithMeta = [
@@ -143,6 +144,7 @@ export async function POST(req: Request) {
 
     // Mirror office call-in leads into outages so they appear as triangle markers on map.
     if (lat && lng) {
+      const activeStorm = await getActiveStormEvent();
       const fullOfficeRow: Record<string, any> = {
         id: `office-${job.id}`,
         source: "office",
@@ -156,6 +158,7 @@ export async function POST(req: Request) {
         street_address: composedAddress,
         city: city?.trim() || null,
         state: state?.trim() || null,
+        zip_code: zip?.trim() || null,
         customer_name: customerName ?? null,
         customer_phone: customerPhone ?? null,
         lead_source: "office",
@@ -163,6 +166,7 @@ export async function POST(req: Request) {
         is_active: true,
         first_seen_at: new Date().toISOString(),
         last_updated_at: new Date().toISOString(),
+        ...(activeStorm ? { storm_event_id: activeStorm.id } : {}),
       };
       // Backward-compat: older Supabase schemas (pre-006/007) may be missing
       // optional columns. Detect "Could not find the 'X' column" errors and

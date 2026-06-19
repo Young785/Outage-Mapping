@@ -28,7 +28,7 @@ export async function GET(req: Request) {
         fetch_interval_minutes: 15,
         storm_phase: "phase_1",
         temp_out_mode: false,
-        routing_mode: "complicated",
+        routing_mode: "simple",
       },
       integrations: {
         housecall: {
