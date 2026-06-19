@@ -8,6 +8,8 @@ import { NextResponse } from "next/server";
 import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
 import { haversineMiles } from "@/lib/priority";
 import { calculateV1RouteScore, computeClusterMap, type StormPhase } from "@/lib/routing-v1";
+import { calculateSimpleRouteScore } from "@/lib/routing-simple";
+import { getRoutingMode } from "@/lib/routing-mode";
 
 const ACTIVE_JOB_STATUSES = ["pending", "assigned", "in_progress"] as const;
 
@@ -207,48 +209,62 @@ export async function GET(req: Request) {
     }
 
     let stormPhase: StormPhase = "phase_1";
+    const routingMode = await getRoutingMode();
     try {
       const { data: phaseRow } = await db.from("app_settings").select("value").eq("key", "storm_phase").maybeSingle();
       const p = phaseRow?.value;
       if (p === "phase_1" || p === "phase_2" || p === "phase_3") stormPhase = p;
     } catch {}
 
-    const clusterMap = computeClusterMap(
-      queueItems
-        .filter((i) => i.lat != null && i.lng != null)
-        .map((i) => ({ id: i.id, lat: i.lat!, lng: i.lng!, customers: i.customers }))
-    );
+    const clusterMap =
+      routingMode === "complicated"
+        ? computeClusterMap(
+            queueItems
+              .filter((i) => i.lat != null && i.lng != null)
+              .map((i) => ({ id: i.id, lat: i.lat!, lng: i.lng!, customers: i.customers }))
+          )
+        : new Map();
 
     for (const item of queueItems) {
       if (item.lat == null || item.lng == null) continue;
-      const v1 = calculateV1RouteScore(
-        {
-          id: item.id,
-          lat: item.lat,
-          lng: item.lng,
-          customers: item.customers,
-          status: item.status,
-          source: item.source,
-          isOfficeLead: item.type === "job" || item.source === "office",
-          driveMiles: item.distanceMiles ?? undefined,
-        },
-        stormPhase,
-        clusterMap.get(String(item.id))
-      );
-      item.priorityScore = v1.total;
+      if (routingMode === "simple") {
+        const simple = calculateSimpleRouteScore(
+          { status: item.status, customers: item.customers, source: item.source },
+          item.distanceMiles ?? 0
+        );
+        item.priorityScore = simple.total;
+      } else {
+        const v1 = calculateV1RouteScore(
+          {
+            id: item.id,
+            lat: item.lat,
+            lng: item.lng,
+            customers: item.customers,
+            status: item.status,
+            source: item.source,
+            isOfficeLead: item.type === "job" || item.source === "office",
+            driveMiles: item.distanceMiles ?? undefined,
+          },
+          stormPhase,
+          clusterMap.get(String(item.id))
+        );
+        item.priorityScore = v1.total;
+      }
     }
+
+    const effectiveSort = routingMode === "simple" && (sort === "smart" || sort === "value") ? "distance" : sort;
 
     queueItems.sort((a, b) => {
       if (a.isConfirmed && !b.isConfirmed) return -1;
       if (!a.isConfirmed && b.isConfirmed) return 1;
 
-      if (sort === "distance" && a.distanceMiles != null && b.distanceMiles != null) {
+      if (effectiveSort === "distance" && a.distanceMiles != null && b.distanceMiles != null) {
         return a.distanceMiles - b.distanceMiles;
       }
-      if (sort === "value") {
+      if (effectiveSort === "value") {
         return (b.priorityScore ?? 0) - (a.priorityScore ?? 0);
       }
-      if (sort === "smart") {
+      if (effectiveSort === "smart") {
         const smartA = (a.priorityScore ?? 0) - (a.distanceMiles ?? 0) * 8;
         const smartB = (b.priorityScore ?? 0) - (b.distanceMiles ?? 0) * 8;
         return smartB - smartA;
@@ -256,7 +272,7 @@ export async function GET(req: Request) {
       return b.priorityScore - a.priorityScore;
     });
 
-    return NextResponse.json({ queue: queueItems, total: queueItems.length });
+    return NextResponse.json({ queue: queueItems, total: queueItems.length, routingMode });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Queue failed";
     console.error("[jobs/queue]", message);

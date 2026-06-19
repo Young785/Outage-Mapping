@@ -20,7 +20,13 @@ export async function POST(req: Request) {
       if (!email || !password || !name) {
         return NextResponse.json({ error: "email, password, name are required" }, { status: 400 });
       }
-      const allowedRoles = ["office", "tech", "admin", "owner"];
+      if (role === "admin" || role === "owner") {
+        return NextResponse.json(
+          { error: "Admin and owner accounts cannot be created via registration. Use seeded accounts." },
+          { status: 403 }
+        );
+      }
+      const allowedRoles = ["office", "tech"];
       if (!allowedRoles.includes(role)) {
         return NextResponse.json({ error: "Invalid role" }, { status: 400 });
       }

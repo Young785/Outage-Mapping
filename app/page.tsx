@@ -18,6 +18,7 @@ import type { PageHelpId } from "@/lib/page-help";
 import { STATUS_CONFIG, getStatusConfig, statusBadgeStyle, type OutageStatus } from "@/lib/outage-status";
 import { loadSavedVisits, saveFieldVisit, type FieldVisitCache } from "@/lib/field-visit";
 import { pickNextRouteStop } from "@/lib/route-next";
+import type { RoutingMode } from "@/lib/routing-mode";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 type Role = "office" | "tech" | "admin" | "owner";
@@ -143,6 +144,7 @@ export default function Page() {
   const [connexusEnabled, setConnexusEnabled] = useState(false);
   const [fetchIntervalMins, setFetchIntervalMins] = useState(5);
   const [stormPhase, setStormPhase] = useState<"phase_1" | "phase_2" | "phase_3">("phase_1");
+  const [routingMode, setRoutingMode] = useState<RoutingMode>("complicated");
   const [tempOutMode, setTempOutMode] = useState(false);
   const [activeCallsInQueue, setActiveCallsInQueue] = useState(0);
 
@@ -264,6 +266,9 @@ export default function Page() {
 
       setIsStale(data.isStale ?? false);
       setIsSimMode(data.isSimulation ?? false);
+      if (data.routingMode === "simple" || data.routingMode === "complicated") {
+        setRoutingMode(data.routingMode);
+      }
 
       const items: Outage[] = (data.features ?? []).map((f: any) => {
         const attrs = f.attributes || f;
@@ -443,6 +448,9 @@ export default function Page() {
         if (typeof s.fetch_interval_minutes === "number") setFetchIntervalMins(s.fetch_interval_minutes);
         if (s.storm_phase === "phase_1" || s.storm_phase === "phase_2" || s.storm_phase === "phase_3") {
           setStormPhase(s.storm_phase);
+        }
+        if (s.routing_mode === "simple" || s.routing_mode === "complicated") {
+          setRoutingMode(s.routing_mode);
         }
         if (typeof s.temp_out_mode === "boolean") setTempOutMode(s.temp_out_mode);
       } catch {
@@ -1014,9 +1022,31 @@ export default function Page() {
   }
 
   // ── Navigation ───────────────────────────────────────────────────────────
+  // Opens Google Maps for turn-by-turn directions. Must run synchronously inside
+  // the click handler so iOS Safari allows the new tab / app handoff.
+  function openGoogleMapsDirections(
+    destination: { lat: number; lng: number },
+    origin?: { lat: number; lng: number } | null
+  ) {
+    const params = new URLSearchParams({
+      api: "1",
+      destination: `${destination.lat},${destination.lng}`,
+      travelmode: "driving",
+    });
+    if (origin) params.set("origin", `${origin.lat},${origin.lng}`);
+    const a = document.createElement("a");
+    a.href = `https://www.google.com/maps/dir/?${params.toString()}`;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
   // navTargetRef stores coords; incrementing navVersion triggers the effect.
   // This fires even when activeTab is already "map", fixing repeat-navigate bug.
   function navigateToLatLng(lat: number, lng: number, _label?: string, outage?: Outage) {
+    openGoogleMapsDirections({ lat, lng }, userLocation);
     // Bundle userLocation at click-time so the route line closure always has the right value
     navTargetRef.current = { lat, lng, userLoc: userLocation, outage: outage ?? null };
     if (outage) setSelectedOutage(outage);
@@ -1091,7 +1121,7 @@ export default function Page() {
       inExclusionZone: zones.some((z) => z.type === "polygon" && zoneTypeOf(z) === "exclusion" && isInZone(o, z)),
       isHoneyHole: (o.status === "opportunity" || o.status === "wants_to_proceed") && o.customers > 1,
     }));
-    const next = pickNextRouteStop(routable, userLocation, stormPhase);
+    const next = pickNextRouteStop(routable, userLocation, stormPhase, undefined, routingMode);
     if (!next) {
       alert("No actionable stops remaining on the map.");
       return;
@@ -1540,8 +1570,6 @@ export default function Page() {
                 <select value={roleSelect} onChange={(e) => setRoleSelect(e.target.value as Role)} style={{ ...inputCss, color: "#1f2937" }}>
                   <option value="tech">Field Technician</option>
                   <option value="office">Office Staff</option>
-                  <option value="admin">Admin</option>
-                  <option value="owner">Owner / Manager</option>
                 </select>
               </>
             )}
@@ -1851,7 +1879,7 @@ export default function Page() {
           </div>
         )}
 
-        {(stormPhase || tempOutMode) && (
+        {(routingMode === "complicated" && (stormPhase || tempOutMode)) && (
           <div style={{ padding: "10px 20px", background: tempOutMode ? "#fff7ed" : "#ecfeff", borderBottom: "1px solid #e5e7eb", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
               <span style={{ fontSize: "12px", fontWeight: 700, color: tempOutMode ? "#9a3412" : "#155e75" }}>
@@ -1868,6 +1896,18 @@ export default function Page() {
               <span>Sold: <b>{stats.sold}</b></span>
               <span>Confirmed opps: <b>{stats.opportunity + stats.customerThinking + stats.doorHanger}</b></span>
               <span>Temp-out pending return: <b>{stats.tempPower + stats.grounding}</b></span>
+            </div>
+          </div>
+        )}
+
+        {routingMode === "simple" && (
+          <div style={{ padding: "10px 20px", background: "#f0fdf4", borderBottom: "1px solid #bbf7d0", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+            <span style={{ fontSize: "12px", fontWeight: 700, color: "#166534" }}>
+              SIMPLE ROUTING — nearest stop with basic status priority
+            </span>
+            <div style={{ fontSize: "11px", color: "#374151", display: "flex", gap: "10px", flexWrap: "wrap" }}>
+              <span>Active calls: <b>{activeCallsInQueue}</b></span>
+              <span>Sold: <b>{stats.sold}</b></span>
             </div>
           </div>
         )}
@@ -2207,6 +2247,7 @@ export default function Page() {
             <JobQueue
               token={token}
               role={user.role}
+              routingMode={routingMode}
               userLocation={userLocation}
               onNavigate={(lat, lng, addr) => navigateToLatLng(lat, lng, addr)}
               onShowJobForm={() => setShowJobForm(true)}
@@ -2241,6 +2282,12 @@ export default function Page() {
             <PageHelp pageId="admin" />
             <AdminPanel
               token={token}
+              role={user.role}
+              routingMode={routingMode}
+              onRoutingModeChanged={(mode) => {
+                setRoutingMode(mode);
+                void fetchOutages();
+              }}
               onSettingsChanged={handleSettingsChanged}
             />
             </>

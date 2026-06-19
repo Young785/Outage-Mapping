@@ -28,6 +28,7 @@ export async function GET(req: Request) {
         fetch_interval_minutes: 15,
         storm_phase: "phase_1",
         temp_out_mode: false,
+        routing_mode: "complicated",
       },
       integrations: {
         housecall: {
@@ -75,7 +76,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid token" }, { status: 401 });
     }
 
-    if (payload.role !== "admin" && payload.role !== "office") {
+    if (payload.role !== "admin" && payload.role !== "office" && payload.role !== "owner") {
       return NextResponse.json({ error: "Admin/office role required" }, { status: 403 });
     }
 
@@ -89,6 +90,19 @@ export async function POST(req: Request) {
     if (type === "weights") {
       const { error } = await db.from("priority_weights").insert({ ...data, updated_by: payload.sub });
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    } else if (type === "routing") {
+      if (payload.role !== "admin" && payload.role !== "owner") {
+        return NextResponse.json({ error: "Admin or owner role required to change routing mode" }, { status: 403 });
+      }
+      const mode = data?.routing_mode;
+      if (mode !== "complicated" && mode !== "simple") {
+        return NextResponse.json({ error: "routing_mode must be 'complicated' or 'simple'" }, { status: 400 });
+      }
+      const { error } = await db.from("app_settings").upsert(
+        { key: "routing_mode", value: mode, updated_at: new Date().toISOString() },
+        { onConflict: "key" }
+      );
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     } else if (type === "settings") {
       for (const [key, value] of Object.entries(data)) {
         await db.from("app_settings").upsert(
@@ -97,7 +111,7 @@ export async function POST(req: Request) {
         );
       }
     } else {
-      return NextResponse.json({ error: "type must be 'weights' or 'settings'" }, { status: 400 });
+      return NextResponse.json({ error: "type must be 'weights', 'settings', or 'routing'" }, { status: 400 });
     }
 
     return NextResponse.json({ success: true });

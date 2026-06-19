@@ -2,6 +2,8 @@
 import { useState, useEffect, useCallback } from "react";
 import FieldTip, { LabelWithTip, SectionTitleWithTip } from "./FieldTip";
 import { ADMIN_FIELD_HELP, ADMIN_SECTION_HELP } from "@/lib/field-help";
+import PlatformRoutingPanel from "./PlatformRoutingPanel";
+import type { RoutingMode } from "@/lib/routing-mode";
 
 type Weights = {
   customers_multiplier: number;
@@ -31,6 +33,9 @@ type Settings = {
 
 type Props = {
   token: string;
+  role: "office" | "tech" | "admin" | "owner";
+  routingMode: RoutingMode;
+  onRoutingModeChanged?: (mode: RoutingMode) => void;
   /** Called after any save so page.tsx can sync activeSources and refetch outages */
   onSettingsChanged?: (
     activeSources: string[],
@@ -74,7 +79,7 @@ type PhaseAlert = {
   sample: number;
 };
 
-export default function AdminPanel({ token, onSettingsChanged }: Props) {
+export default function AdminPanel({ token, role, routingMode, onRoutingModeChanged, onSettingsChanged }: Props) {
   const [weights, setWeights] = useState<Weights>({
     customers_multiplier: 1.0,
     urgency_multiplier: 1.5,
@@ -608,6 +613,14 @@ export default function AdminPanel({ token, onSettingsChanged }: Props) {
         <button onClick={saveSourceSettings} disabled={saving} style={saveBtn()}>
           {saving ? "Saving…" : "Save & Apply"}
         </button>
+
+        {(role === "admin" || role === "owner") && onRoutingModeChanged && (
+          <PlatformRoutingPanel
+            token={token}
+            currentMode={routingMode}
+            onModeChanged={onRoutingModeChanged}
+          />
+        )}
       </div>
 
       {/* ── Priority Weights ─────────────────────────────────────────── */}

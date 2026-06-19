@@ -1,4 +1,6 @@
 import { pickBestRouteStop, type StormPhase } from "./routing-v1";
+import { pickSimpleRouteStop } from "./routing-simple";
+import type { RoutingMode } from "./routing-mode";
 import { isRoutingExcluded, loadSavedVisits, type FieldVisitCache } from "./field-visit";
 
 export type RoutableOutage = {
@@ -18,14 +20,18 @@ export type RoutableOutage = {
 };
 
 /**
- * Pick the highest-value next stop using V1 phase-aware routing score.
+ * Pick the highest-value next stop using the active platform routing mode.
  */
 export function pickNextRouteStop<T extends RoutableOutage>(
   outages: T[],
   userLocation: { lat: number; lng: number },
   phase: StormPhase = "phase_1",
-  visits: Record<string, FieldVisitCache> = loadSavedVisits()
+  visits: Record<string, FieldVisitCache> = loadSavedVisits(),
+  mode: RoutingMode = "complicated"
 ): T | null {
+  if (mode === "simple") {
+    return pickSimpleRouteStop(outages, userLocation, visits);
+  }
   return pickBestRouteStop(
     outages,
     userLocation,
@@ -34,4 +40,4 @@ export function pickNextRouteStop<T extends RoutableOutage>(
   );
 }
 
-export { type StormPhase };
+export { type StormPhase, type RoutingMode };

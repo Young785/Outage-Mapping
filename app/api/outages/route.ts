@@ -11,8 +11,10 @@
 import { NextResponse } from "next/server";
 import { fetchAndNormalize, getLastSnapshot } from "@/lib/adapters";
 import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
-import { countNearby } from "@/lib/priority";
+import { countNearby, getWeights, calculateScoreBreakdown } from "@/lib/priority";
 import { calculateV1RouteScore, computeClusterMap, type StormPhase } from "@/lib/routing-v1";
+import { calculateSimpleRouteScore } from "@/lib/routing-simple";
+import { getRoutingMode } from "@/lib/routing-mode";
 import { reverseGeocode } from "@/lib/geocache";
 import { verifyJWT, extractBearerToken } from "@/lib/jwt";
 
@@ -256,6 +258,9 @@ export async function GET(req: Request) {
   }
 
   let stormPhase: StormPhase = "phase_1";
+  const routingMode = await getRoutingMode();
+  const priorityWeights = routingMode === "simple" ? await getWeights() : null;
+
   if (isSupabaseConfigured) {
     try {
       const db = getAdmin();
@@ -265,11 +270,14 @@ export async function GET(req: Request) {
     } catch {}
   }
 
-  const clusterMap = computeClusterMap(
-    filtered
-      .filter((o) => o.lat != null && o.lng != null)
-      .map((o) => ({ id: o.id, lat: o.lat!, lng: o.lng!, customers: o.customers ?? 0 }))
-  );
+  const clusterMap =
+    routingMode === "complicated"
+      ? computeClusterMap(
+          filtered
+            .filter((o) => o.lat != null && o.lng != null)
+            .map((o) => ({ id: o.id, lat: o.lat!, lng: o.lng!, customers: o.customers ?? 0 }))
+        )
+      : new Map();
 
   const enriched = filtered.map((o) => {
     const densityNearby = countNearby(
@@ -284,34 +292,63 @@ export async function GET(req: Request) {
         ? (o.customers ?? 0) > 1
         : false;
 
-    const v1 = calculateV1RouteScore(
-      {
-        id: o.id,
-        lat: o.lat!,
-        lng: o.lng!,
-        customers: o.customers ?? 0,
-        status: baseStatus,
-        source: o.source,
-        isNew,
-        isHoneyHole,
-      },
-      stormPhase,
-      clusterMap.get(String(o.id))
-    );
+    let scoreBreakdown: { finalScore: number; urgency: number; parts: Record<string, number> };
+    let score: number;
 
-    const scoreBreakdown = {
-      finalScore: v1.total,
-      urgency: 0,
-      parts: { ...v1.parts, densityLegacy: densityNearby > 0 ? Math.min(densityNearby, 5) * 4 : 0 },
-    };
-    const score = v1.total + (scoreBreakdown.parts.densityLegacy as number);
-    scoreBreakdown.finalScore = score;
+    if (routingMode === "simple") {
+      const milesFromCenter = haversineMiles(CENTER.lat, CENTER.lng, o.lat!, o.lng!);
+      const simple = calculateSimpleRouteScore(
+        { status: baseStatus, customers: o.customers ?? 0, source: o.source },
+        milesFromCenter
+      );
+      const legacy = calculateScoreBreakdown(
+        {
+          customers: o.customers ?? 0,
+          outageType: o.outageType ?? "",
+          isOfficeJob: o.source === "manual" || o.source === "user",
+          densityNearby,
+          firstSeenAt: dbMetaMap[o.id]?.first_seen_at ?? undefined,
+          outageStatus: baseStatus,
+        },
+        priorityWeights!
+      );
+      score = Math.round((legacy.finalScore * 0.6 + simple.total * 0.4) * 100) / 100;
+      scoreBreakdown = {
+        finalScore: score,
+        urgency: legacy.urgency,
+        parts: { ...legacy.parts, ...simple.parts },
+      };
+    } else {
+      const v1 = calculateV1RouteScore(
+        {
+          id: o.id,
+          lat: o.lat!,
+          lng: o.lng!,
+          customers: o.customers ?? 0,
+          status: baseStatus,
+          source: o.source,
+          isNew,
+          isHoneyHole,
+        },
+        stormPhase,
+        clusterMap.get(String(o.id))
+      );
+
+      scoreBreakdown = {
+        finalScore: v1.total,
+        urgency: 0,
+        parts: { ...v1.parts, densityLegacy: densityNearby > 0 ? Math.min(densityNearby, 5) * 4 : 0 },
+      };
+      score = v1.total + (scoreBreakdown.parts.densityLegacy as number);
+      scoreBreakdown.finalScore = score;
+    }
+
     return {
       ...o,
       // Prefer DB-cached address over ArcGIS data (adapter doesn't provide streetAddress)
       streetAddress: dbAddressMap[o.id] ?? null,
       status: baseStatus,
-      priorityScore: isNew ? Math.max(score + 15, score) : score,
+      priorityScore: isNew && routingMode === "complicated" ? Math.max(score + 15, score) : score,
       scoreBreakdown,
       isNew,
       milesFromCenter: haversineMiles(CENTER.lat, CENTER.lng, o.lat!, o.lng!),
@@ -325,32 +362,52 @@ export async function GET(req: Request) {
       lastUpdatedAt: dbMetaMap[o.id]?.last_updated_at ?? null,
       isStaleMarker: !!dbMetaMap[o.id]?.first_seen_at
         && Date.now() - new Date(dbMetaMap[o.id].first_seen_at).getTime() > 48 * 60 * 60 * 1000,
+      routingMode,
     };
   });
 
-  const officeClusterMap = computeClusterMap(
-    officeMarkers
-      .filter((o) => o.lat != null && o.lng != null)
-      .map((o) => ({ id: o.id, lat: o.lat!, lng: o.lng!, customers: o.customers ?? 1 }))
-  );
+  const officeClusterMap =
+    routingMode === "complicated"
+      ? computeClusterMap(
+          officeMarkers
+            .filter((o) => o.lat != null && o.lng != null)
+            .map((o) => ({ id: o.id, lat: o.lat!, lng: o.lng!, customers: o.customers ?? 1 }))
+        )
+      : new Map();
 
   const officeItems = officeMarkers
     .filter((o) => o.lat != null && o.lng != null)
     .map((o) => {
       const baseStatus = o.status ?? "unvisited";
-      const v1 = calculateV1RouteScore(
-        {
-          id: o.id,
-          lat: o.lat!,
-          lng: o.lng!,
-          customers: o.customers ?? 1,
-          status: baseStatus,
-          source: o.source ?? "office",
-          isOfficeLead: true,
-        },
-        stormPhase,
-        officeClusterMap.get(String(o.id))
-      );
+      const milesFromCenter = haversineMiles(CENTER.lat, CENTER.lng, o.lat!, o.lng!);
+      let priorityScore: number;
+      let scoreBreakdown: { finalScore: number; urgency: number; parts: Record<string, number> };
+
+      if (routingMode === "simple") {
+        const simple = calculateSimpleRouteScore(
+          { status: baseStatus, customers: o.customers ?? 1, source: o.source ?? "office" },
+          milesFromCenter
+        );
+        priorityScore = simple.total;
+        scoreBreakdown = { finalScore: simple.total, urgency: 0, parts: simple.parts };
+      } else {
+        const v1 = calculateV1RouteScore(
+          {
+            id: o.id,
+            lat: o.lat!,
+            lng: o.lng!,
+            customers: o.customers ?? 1,
+            status: baseStatus,
+            source: o.source ?? "office",
+            isOfficeLead: true,
+          },
+          stormPhase,
+          officeClusterMap.get(String(o.id))
+        );
+        priorityScore = v1.total;
+        scoreBreakdown = { finalScore: v1.total, urgency: 0, parts: v1.parts };
+      }
+
       return {
       id: o.id,
       source: o.source,
@@ -367,9 +424,9 @@ export async function GET(req: Request) {
       outageImpact: o.outage_impact ?? null,
       streetAddress: o.street_address ?? null,
       status: baseStatus,
-      priorityScore: v1.total,
-      scoreBreakdown: { finalScore: v1.total, urgency: 0, parts: v1.parts },
-      milesFromCenter: haversineMiles(CENTER.lat, CENTER.lng, o.lat, o.lng),
+      priorityScore,
+      scoreBreakdown,
+      milesFromCenter,
       customerName: o.customer_name ?? null,
       customerPhone: o.customer_phone ?? null,
       leadSource: o.lead_source ?? null,
@@ -440,6 +497,7 @@ export async function GET(req: Request) {
     sources,
     errors: errors.length ? errors : undefined,
     isStale,
+    routingMode,
   });
 }
 

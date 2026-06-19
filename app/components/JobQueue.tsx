@@ -40,9 +40,12 @@ type QueueItem = {
   createdAt: string;
 };
 
+import type { RoutingMode } from "@/lib/routing-mode";
+
 type Props = {
   token: string;
   role: "office" | "tech" | "admin" | "owner";
+  routingMode: RoutingMode;
   userLocation: { lat: number; lng: number } | null;
   onNavigate: (lat: number, lng: number, address?: string) => void;
   onShowJobForm: () => void;
@@ -59,7 +62,7 @@ const STATUS_COLORS: Record<string, { bg: string; color: string }> = {
   resolved:    { bg: "#d1fae5", color: "#065f46" },
 };
 
-export default function JobQueue({ token, role, userLocation, onNavigate, onShowJobForm }: Props) {
+export default function JobQueue({ token, role, routingMode, userLocation, onNavigate, onShowJobForm }: Props) {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
@@ -102,6 +105,15 @@ export default function JobQueue({ token, role, userLocation, onNavigate, onShow
   }, [sort, userLocation, token]);
 
   useEffect(() => { loadQueue(); }, [loadQueue]);
+  useEffect(() => {
+    if (routingMode === "simple") {
+      setRoutePlan(null);
+      setClusterPlan([]);
+    }
+    if (routingMode === "simple" && (sort === "smart" || sort === "value")) {
+      setSort("distance");
+    }
+  }, [routingMode, sort]);
   useEffect(() => {
     const check = () => {
       const w = window.innerWidth;
@@ -293,13 +305,22 @@ export default function JobQueue({ token, role, userLocation, onNavigate, onShow
     }
   }
 
+  const sortOptions = routingMode === "simple"
+    ? (["priority", "distance"] as const)
+    : (["priority", "distance", "value", "smart"] as const);
+
   return (
     <div>
+      {routingMode === "simple" && (
+        <div style={{ padding: "10px 12px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "8px", marginBottom: "12px", fontSize: "13px", color: "#166534" }}>
+          Simple routing is active — queue uses nearest-first sorting. Cluster and multi-stop tools are hidden.
+        </div>
+      )}
       {/* Toolbar */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "12px" }}>
         <div style={{ display: "flex", gap: "8px" }}>
           <span style={{ fontSize: "14px", fontWeight: 600, color: "#374151", alignSelf: "center" }}>Sort:</span>
-          {(["priority", "distance", "value", "smart"] as const).map((s) => (
+          {sortOptions.map((s) => (
             <button
               key={s}
               onClick={() => setSort(s)}
@@ -339,6 +360,8 @@ export default function JobQueue({ token, role, userLocation, onNavigate, onShow
         </div>
 
         <div style={{ display: "flex", gap: "8px" }}>
+          {routingMode === "complicated" && (
+            <>
           <button
             onClick={detectClusters}
             disabled={clustering}
@@ -353,6 +376,8 @@ export default function JobQueue({ token, role, userLocation, onNavigate, onShow
           >
             {optimizing ? "Optimizing..." : "Optimize Route"}
           </button>
+            </>
+          )}
           {(role === "office" || role === "admin" || role === "owner") && (
             <button
               onClick={onShowJobForm}
@@ -371,7 +396,7 @@ export default function JobQueue({ token, role, userLocation, onNavigate, onShow
         </div>
       )}
 
-      {routePlan && (
+      {routingMode === "complicated" && routePlan && (
         <div style={{ padding: "12px 14px", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: "8px", marginBottom: "14px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", alignItems: "center", marginBottom: "8px", flexWrap: "wrap" }}>
             <div>
@@ -434,7 +459,7 @@ export default function JobQueue({ token, role, userLocation, onNavigate, onShow
         </div>
       )}
 
-      {clusterPlan.length > 0 && (
+      {routingMode === "complicated" && clusterPlan.length > 0 && (
         <div style={{ padding: "12px 14px", background: "#f5f3ff", border: "1px solid #ddd6fe", borderRadius: "8px", marginBottom: "14px" }}>
           <div style={{ fontSize: "13px", color: "#5b21b6", fontWeight: 700, marginBottom: "8px" }}>
             Cluster packs detected: {clusterPlan.length}
