@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback } from "react";
 import FieldTip, { LabelWithTip, SectionTitleWithTip } from "./FieldTip";
 import { ADMIN_FIELD_HELP, ADMIN_SECTION_HELP } from "@/lib/field-help";
-2import PlatformRoutingPanel from "./PlatformRoutingPanel";
+import PlatformRoutingPanel from "./PlatformRoutingPanel";
 import type { RoutingMode } from "@/lib/routing-mode";
 
 type Weights = {
