@@ -18,7 +18,8 @@ import type { PageHelpId } from "@/lib/page-help";
 import { STATUS_CONFIG, getStatusConfig, getMarkerStyle, statusBadgeStyle, OUTAGE_FILTER_OPTIONS, isUnvisitedOnMap, type OutageStatus } from "@/lib/outage-status";
 import { loadSavedVisits, saveFieldVisit, type FieldVisitCache } from "@/lib/field-visit";
 import { loadPendingVisit, savePendingVisit, clearPendingVisit, needsInvestigation } from "@/lib/pending-visit";
-import { pickNextRouteStop, type RoutingContext } from "@/lib/route-next";
+import { pickNextRouteStop, pickNextRouteStops, type RoutingContext } from "@/lib/route-next";
+import { exceedsMapCustomerCap } from "@/lib/routing-sweep";
 import type { RoutingMode } from "@/lib/routing-mode";
 import { territoryFromRow } from "@/lib/territory-match";
 import { isDelayedUtilityConfirmed } from "@/lib/utility-outage";
@@ -968,6 +969,7 @@ export default function Page() {
     markersRef.current = [];
 
     const visible = data.filter((o) => {
+      if (exceedsMapCustomerCap(o.customers)) return false;
       if (o.investigationResult === "not_target") return false;
       if (stormVisibilityMode === "active_only" && o.isPreviousStormMarker) return false;
       if (!showStaleOnMap && o.isStaleMarker && stormVisibilityMode !== "all") return false;
@@ -1322,15 +1324,19 @@ export default function Page() {
       territory,
       peerTechLocations,
       stormStartedAt: activeStormEvent?.started_at ?? null,
+      currentTechName: user.name,
+      stormPhase,
     };
-  }, [user, techs, zones, showStaleOnMap, tempOutMode, activeStormEvent]);
+  }, [user, techs, zones, showStaleOnMap, tempOutMode, activeStormEvent, stormPhase]);
 
   function routeToNext() {
     if (!userLocation) {
       alert("Enable location access to use Route to Next.");
       return;
     }
-    const routable = outages.map((o) => ({
+    const routable = outages
+      .filter((o) => !exceedsMapCustomerCap(o.customers))
+      .map((o) => ({
       ...o,
       inPriorityZone: zones.some((z) => z.type === "polygon" && zoneTypeOf(z) === "priority" && isInZone(o, z)),
       inExclusionZone: zones.some((z) => z.type === "polygon" && zoneTypeOf(z) === "exclusion" && isInZone(o, z)),
@@ -2101,12 +2107,7 @@ export default function Page() {
             {activeTab === "map" && (
               <button
                 onClick={routeToNext}
-                disabled={routeBlockedByPending}
-                title={routeBlockedByPending ? "Submit investigation for current stop first" : undefined}
-                style={{
-                  ...btnCss("#0d9488"),
-                  ...(routeBlockedByPending ? { opacity: 0.45, cursor: "not-allowed" } : {}),
-                }}
+                style={btnCss("#0d9488")}
               >
                 {isMobile ? "→" : "Route to Next"}
               </button>
@@ -2566,6 +2567,10 @@ export default function Page() {
             <TechPanel
               token={token}
               role={user.role}
+              outages={outages}
+              stormPhase={stormPhase}
+              stormStartedAt={activeStormEvent?.started_at ?? null}
+              zones={zones}
               onNavigateToTech={(lat, lng, name) => navigateToLatLng(lat, lng, name)}
               onNavigate={(lat, lng, label) => navigateToLatLng(lat, lng, label)}
               onRouteFromTech={routeFromTechToJob}

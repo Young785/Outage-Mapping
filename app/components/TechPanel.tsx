@@ -1,11 +1,18 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   DISPATCH_ROLE_LABELS,
   type FieldDispatchRole,
   type InstallerFallback,
 } from "@/lib/field-dispatch-role";
+import { pickNextRouteStops } from "@/lib/route-next";
+import { loadSavedVisits } from "@/lib/field-visit";
+import { territoryFromRow } from "@/lib/territory-match";
+import { isDelayedUtilityConfirmed } from "@/lib/utility-outage";
+import { exceedsMapCustomerCap } from "@/lib/routing-sweep";
+import { haversineMiles } from "@/lib/priority";
+import type { StormPhase } from "@/lib/routing-v1";
 
 type Tech = {
   id: string;
@@ -62,9 +69,46 @@ function elapsedLabel(since: string | null): string {
   return rem > 0 ? `${hrs}h ${rem}m` : `${hrs}h`;
 }
 
+type SweepStop = {
+  id: string | number;
+  label: string;
+  customers: number;
+  distanceMiles: number;
+  isRedOutline: boolean;
+  lat: number;
+  lng: number;
+};
+
+type RoutableOutage = {
+  id: number | string;
+  lat: number;
+  lng: number;
+  customers: number;
+  status: string;
+  source?: string;
+  streetAddress?: string;
+  city?: string;
+  assignedTechName?: string | null;
+  firstSeenAt?: string | null;
+  investigationResult?: string;
+  isStaleMarker?: boolean;
+  noContactMade?: boolean;
+  needsReturnTrip?: boolean;
+};
+
+type ZoneRow = {
+  id: string;
+  zip_codes?: string[] | null;
+  geometry?: { coordinates?: number[][][] } | null;
+};
+
 type Props = {
   token: string;
   role: "office" | "tech" | "admin" | "owner";
+  outages?: RoutableOutage[];
+  stormPhase?: StormPhase;
+  stormStartedAt?: string | null;
+  zones?: ZoneRow[];
   onNavigateToTech: (lat: number, lng: number, name: string) => void;
   onNavigate?: (lat: number, lng: number, label: string) => void;
   onRouteFromTech?: (techLat: number, techLng: number, jobLat: number, jobLng: number, label: string) => void;
@@ -77,7 +121,17 @@ const STATUS_CONFIG = {
   offline:   { color: "#6b7280", bg: "#f3f4f6", label: "Offline" },
 };
 
-export default function TechPanel({ token, role, onNavigateToTech, onNavigate, onRouteFromTech }: Props) {
+export default function TechPanel({
+  token,
+  role,
+  outages = [],
+  stormPhase = "phase_1",
+  stormStartedAt = null,
+  zones = [],
+  onNavigateToTech,
+  onNavigate,
+  onRouteFromTech,
+}: Props) {
   const [techs, setTechs] = useState<Tech[]>([]);
   const [territories, setTerritories] = useState<Territory[]>([]);
   const [loading, setLoading] = useState(true);
@@ -97,6 +151,55 @@ export default function TechPanel({ token, role, onNavigateToTech, onNavigate, o
   const [formMapColor, setFormMapColor] = useState("");
 
   const isOffice = role === "office" || role === "admin" || role === "owner";
+
+  const routableOutages = useMemo(
+    () => outages.filter((o) => !exceedsMapCustomerCap(o.customers)),
+    [outages]
+  );
+
+  const sweepStopsByTech = useMemo(() => {
+    const map: Record<string, SweepStop[]> = {};
+    if (!isOffice || !routableOutages.length) return map;
+
+    for (const tech of techs) {
+      if (!tech.lat || !tech.lng) continue;
+      let territory = null;
+      if (tech.territoryId) {
+        const zone = zones.find((z) => z.id === tech.territoryId);
+        if (zone) territory = territoryFromRow({ zip_codes: zone.zip_codes, geometry: zone.geometry });
+      }
+      const peers = techs
+        .filter((t) => t.userId !== tech.userId && t.lat != null && t.lng != null)
+        .map((t) => ({ lat: t.lat!, lng: t.lng! }));
+
+      const stops = pickNextRouteStops(
+        routableOutages,
+        { lat: tech.lat, lng: tech.lng },
+        stormPhase,
+        loadSavedVisits(),
+        {
+          dispatchRole: tech.dispatchRole ?? "hunter",
+          installerFallback: tech.installerFallback ?? "hunter",
+          territory,
+          currentTechName: tech.name,
+          peerTechLocations: peers,
+          stormStartedAt,
+        },
+        5
+      );
+
+      map[tech.id] = stops.map((s) => ({
+        id: s.id,
+        label: s.streetAddress?.split(",")[0] ?? s.city ?? `Stop #${s.id}`,
+        customers: s.customers,
+        distanceMiles: Math.round(haversineMiles(tech.lat!, tech.lng!, s.lat, s.lng) * 10) / 10,
+        isRedOutline: isDelayedUtilityConfirmed(s, stormStartedAt),
+        lat: s.lat,
+        lng: s.lng,
+      }));
+    }
+    return map;
+  }, [isOffice, routableOutages, techs, zones, stormPhase, stormStartedAt]);
 
   const loadTechs = useCallback(async () => {
     setLoading(true);
@@ -421,6 +524,42 @@ export default function TechPanel({ token, role, onNavigateToTech, onNavigate, o
                         )}
                       </div>
                     )}
+                  </div>
+                )}
+
+                {isOffice && (sweepStopsByTech[tech.id]?.length ?? 0) > 0 && (
+                  <div style={{ marginTop: "10px", padding: "10px 12px", background: "#f8fafc", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
+                    <div style={{ fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "8px" }}>
+                      V1 ROUTE PREVIEW (territory sweep)
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      {sweepStopsByTech[tech.id].map((stop, idx) => (
+                        <div key={`${stop.id}-${idx}`} style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}>
+                          <span style={{ width: "20px", fontWeight: 700, color: "#64748b", flexShrink: 0 }}>{idx + 1}</span>
+                          <span
+                            style={{
+                              width: "10px",
+                              height: "10px",
+                              borderRadius: "50%",
+                              background: "#fff",
+                              border: `2px solid ${stop.isRedOutline ? "#dc2626" : "#6b7280"}`,
+                              flexShrink: 0,
+                            }}
+                          />
+                          <span style={{ flex: 1, minWidth: 0, color: "#1f2937", fontWeight: 500 }}>{stop.label}</span>
+                          <span style={{ color: "#6b7280", flexShrink: 0 }}>{stop.customers} cust · {stop.distanceMiles} mi</span>
+                          {onNavigate && (
+                            <button
+                              type="button"
+                              onClick={() => onNavigate(stop.lat, stop.lng, stop.label)}
+                              style={{ padding: "4px 8px", background: "#e0f2fe", color: "#0369a1", border: "none", borderRadius: "4px", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}
+                            >
+                              Go
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>

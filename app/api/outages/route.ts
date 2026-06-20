@@ -19,6 +19,7 @@ import { reverseGeocode } from "@/lib/geocache";
 import { verifyJWT, extractBearerToken } from "@/lib/jwt";
 import { getActiveStormEvent, isPreviousStormMarker } from "@/lib/storm-events";
 import { syncLinkedJobLocation } from "@/lib/marker-location";
+import { MAX_MAP_CUSTOMERS } from "@/lib/routing-sweep";
 
 const CENTER = { lat: 44.9778, lng: -93.265 };
 const RADIUS_MILES = 40;
@@ -121,14 +122,15 @@ export async function GET(req: Request) {
   }
 
   // Filter to radius (unless skip)
-  const filtered = skipFilter
+  const filtered = (skipFilter
     ? finalOutages
     : finalOutages.filter(
         (o) =>
           o.lat != null &&
           o.lng != null &&
           haversineMiles(CENTER.lat, CENTER.lng, o.lat!, o.lng!) <= RADIUS_MILES
-      );
+      )
+  ).filter((o) => (o.customers ?? 0) <= MAX_MAP_CUSTOMERS);
 
   // Enrich with V1 priority scores + DB status + cached addresses (if configured)
   // Pull saved status AND street_address from DB so we return cached values

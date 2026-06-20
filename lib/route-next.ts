@@ -1,36 +1,55 @@
 import { type StormPhase } from "./routing-v1";
 import type { RoutingMode } from "./routing-mode";
 import { loadSavedVisits, type FieldVisitCache } from "./field-visit";
-import {
-  buildEligiblePool,
-  pickFromEligiblePool,
-  type PipelineMarker,
-  type RoutingContext,
-} from "./routing-pipeline";
+import { type PipelineMarker, type RoutingContext } from "./routing-pipeline";
+import { pickSweepRouteStop, pickSweepRouteStops, type SweepContext } from "./routing-sweep";
 
 export type RoutableOutage = PipelineMarker;
 
+function sweepContextFromRouting(ctx: RoutingContext, phase: StormPhase): SweepContext {
+  return {
+    dispatchRole: ctx.dispatchRole,
+    installerFallback: ctx.installerFallback,
+    territory: ctx.territory,
+    hideStaleMarkers: ctx.hideStaleMarkers,
+    stormPhase: phase,
+    stormStartedAt: ctx.stormStartedAt,
+    currentTechName: ctx.currentTechName,
+    peerTechLocations: ctx.peerTechLocations,
+  };
+}
+
 /**
- * Pick the next stop using operational filters first, then scoring within the eligible pool.
- *
- * Filter order: Territory → Role → Exclusions → Scoring → Distance
+ * Route to Next — V1 territory sweep (Pac-Man) for field reliability.
+ * Complicated mode is retained for legacy queue scoring only.
  */
 export function pickNextRouteStop<T extends RoutableOutage>(
   outages: T[],
   userLocation: { lat: number; lng: number },
   phase: StormPhase = "phase_1",
   visits: Record<string, FieldVisitCache> = loadSavedVisits(),
-  mode: RoutingMode = "complicated",
+  _mode: RoutingMode = "simple",
   context: RoutingContext = {}
 ): T | null {
-  const pool = buildEligiblePool(outages, visits, context);
-  if (!pool.length) return null;
-  return pickFromEligiblePool(pool, userLocation, phase, mode, {
-    tempOutMode: context.tempOutMode,
-    dispatchRole: context.dispatchRole,
-    peerTechLocations: context.peerTechLocations,
-    stormStartedAt: context.stormStartedAt,
-  });
+  return pickSweepRouteStop(outages, userLocation, visits, sweepContextFromRouting(context, phase));
+}
+
+/** Office preview: recommended next stops for a technician. */
+export function pickNextRouteStops<T extends RoutableOutage>(
+  outages: T[],
+  userLocation: { lat: number; lng: number },
+  phase: StormPhase = "phase_1",
+  visits: Record<string, FieldVisitCache> = loadSavedVisits(),
+  context: RoutingContext = {},
+  limit = 5
+): T[] {
+  return pickSweepRouteStops(
+    outages,
+    userLocation,
+    visits,
+    sweepContextFromRouting(context, phase),
+    limit
+  );
 }
 
 export { type StormPhase, type RoutingMode, type RoutingContext };

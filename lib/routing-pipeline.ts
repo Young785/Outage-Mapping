@@ -42,6 +42,7 @@ export type PipelineMarker = {
   noContactMade?: boolean;
   needsReturnTrip?: boolean;
   firstSeenAt?: string | null;
+  assignedTechName?: string | null;
 };
 
 export type RoutingContext = {
@@ -53,6 +54,8 @@ export type RoutingContext = {
   /** Other tech GPS positions — used to spread crews and avoid clustering. */
   peerTechLocations?: Array<{ lat: number; lng: number }>;
   stormStartedAt?: string | null;
+  currentTechName?: string | null;
+  stormPhase?: StormPhase;
 };
 
 const PEER_AVOIDANCE_MILES = 0.4;
