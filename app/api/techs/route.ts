@@ -5,7 +5,7 @@
 
 import { NextResponse } from "next/server";
 import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
-import { verifyJWT, extractBearerToken } from "@/lib/jwt";
+import { verifyJWT, extractBearerToken, hashPassword } from "@/lib/jwt";
 import { parseDispatchRole, parseInstallerFallback } from "@/lib/field-dispatch-role";
 
 export async function GET() {
@@ -52,6 +52,7 @@ export async function GET() {
       territoryGeometry: (t.territories as any)?.geometry ?? null,
       dispatchRole: parseDispatchRole(t.dispatch_role),
       installerFallback: parseInstallerFallback(t.installer_fallback),
+      mapColor: t.map_color ?? null,
       workingSince: t.working_since ?? null,
       completedCount: t.completed_count ?? 0,
       returnTripCount: t.return_trip_count ?? 0,
@@ -75,7 +76,21 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
-    const { action, status, lat, lng, techId, territoryId, dispatchRole, installerFallback } = body;
+    const {
+      action,
+      status,
+      lat,
+      lng,
+      techId,
+      territoryId,
+      dispatchRole,
+      installerFallback,
+      mapColor,
+      name,
+      email,
+      phone,
+      password,
+    } = body;
 
     if (!isSupabaseConfigured) {
       return NextResponse.json({ success: true, stored: false });
@@ -85,6 +100,85 @@ export async function POST(req: Request) {
 
     const canManageDispatch =
       payload.role === "office" || payload.role === "admin" || payload.role === "owner";
+
+    // Office/admin: create a new technician account
+    if (action === "create_tech") {
+      if (!canManageDispatch) {
+        return NextResponse.json({ error: "Office role required to create technicians" }, { status: 403 });
+      }
+      if (!email || !password || !name) {
+        return NextResponse.json({ error: "email, password, and name are required" }, { status: 400 });
+      }
+      const { data: existing } = await db.from("users").select("id").eq("email", email).maybeSingle();
+      if (existing) return NextResponse.json({ error: "Email already registered" }, { status: 409 });
+
+      const { data: newUser, error: insertErr } = await db
+        .from("users")
+        .insert({
+          email,
+          name,
+          phone: phone || null,
+          password_hash: hashPassword(password),
+          role: "tech",
+        })
+        .select("id, email, name, phone, role")
+        .single();
+
+      if (insertErr || !newUser) {
+        return NextResponse.json({ error: insertErr?.message ?? "Create failed" }, { status: 500 });
+      }
+
+      const techInsert: Record<string, unknown> = {
+        user_id: newUser.id,
+        status: "available",
+        dispatch_role: parseDispatchRole(dispatchRole),
+        installer_fallback: parseInstallerFallback(installerFallback),
+      };
+      if (territoryId) techInsert.territory_id = territoryId;
+      if (mapColor) techInsert.map_color = mapColor;
+
+      const { error: techErr } = await db.from("technicians").insert(techInsert);
+      if (techErr) {
+        await db.from("users").delete().eq("id", newUser.id);
+        return NextResponse.json({ error: techErr.message }, { status: 500 });
+      }
+
+      return NextResponse.json({ success: true, userId: newUser.id });
+    }
+
+    // Office/admin: update technician profile, territory, role, map color
+    if (action === "update_tech") {
+      if (!canManageDispatch) {
+        return NextResponse.json({ error: "Office role required to update technicians" }, { status: 403 });
+      }
+      if (!techId) return NextResponse.json({ error: "techId required" }, { status: 400 });
+
+      const userUpdate: Record<string, unknown> = {};
+      if (name !== undefined) userUpdate.name = name;
+      if (phone !== undefined) userUpdate.phone = phone || null;
+      if (email !== undefined) userUpdate.email = email;
+      if (password) userUpdate.password_hash = hashPassword(password);
+
+      if (Object.keys(userUpdate).length > 0) {
+        const { error } = await db.from("users").update(userUpdate).eq("id", techId);
+        if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+
+      const techUpdate: Record<string, unknown> = { updated_at: new Date().toISOString() };
+      if (territoryId !== undefined) techUpdate.territory_id = territoryId || null;
+      if (dispatchRole !== undefined) techUpdate.dispatch_role = parseDispatchRole(dispatchRole);
+      if (installerFallback !== undefined) {
+        techUpdate.installer_fallback = parseInstallerFallback(installerFallback);
+      }
+      if (mapColor !== undefined) techUpdate.map_color = mapColor || null;
+
+      if (Object.keys(techUpdate).length > 1) {
+        const { error } = await db.from("technicians").update(techUpdate).eq("user_id", techId);
+        if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+
+      return NextResponse.json({ success: true });
+    }
 
     // Office/admin can assign territory to any tech
     if (action === "assign_territory") {
@@ -110,6 +204,7 @@ export async function POST(req: Request) {
       if (installerFallback !== undefined) {
         update.installer_fallback = parseInstallerFallback(installerFallback);
       }
+      if (mapColor !== undefined) update.map_color = mapColor || null;
       const { error } = await db.from("technicians").update(update).eq("user_id", techId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
       return NextResponse.json({ success: true });

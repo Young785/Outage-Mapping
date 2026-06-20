@@ -28,7 +28,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Office role required" }, { status: 403 });
     }
 
-    const { jobId, outageId, targetLat, targetLng, confirm = false } = await req.json();
+    const { jobId, outageId, targetLat, targetLng, confirm = false, recommendedTechId } = await req.json();
 
     const itemId = jobId ?? outageId;
     const itemType: "job" | "outage" = outageId ? "outage" : "job";
@@ -161,7 +161,11 @@ export async function POST(req: Request) {
       };
     }).sort((a, b) => b.score - a.score);
 
-    const chosen = scored[0];
+    let chosen = scored[0];
+    if (confirm && recommendedTechId) {
+      const pinned = scored.find((s) => s.tech.user_id === recommendedTechId);
+      if (pinned) chosen = pinned;
+    }
     const chosenTechName = (chosen.tech.users as { name?: string } | null)?.name ?? "Unknown";
     const recommended = {
       techId: chosen.tech.user_id,
@@ -198,11 +202,10 @@ export async function POST(req: Request) {
           updated_at: new Date().toISOString(),
         }).eq("id", itemId);
       } else {
-        // For outage-type items, create an office job linked to the outage
-        await db.from("jobs").insert({
+        const { data: newJob, error: jobErr } = await db.from("jobs").insert({
           source: "office",
           outage_id: itemId,
-          customer_address: `Outage at ${targetLat.toFixed(4)}, ${targetLng.toFixed(4)}`,
+          customer_address: targetAddress ?? `Outage at ${targetLat.toFixed(4)}, ${targetLng.toFixed(4)}`,
           customer_lat: targetLat,
           customer_lng: targetLng,
           job_type: "repair",
@@ -211,11 +214,32 @@ export async function POST(req: Request) {
           assigned_tech_id: chosen.tech.user_id,
           priority_score: 0,
           created_by: payload.sub,
-        });
+        }).select("id").single();
+
+        if (jobErr) {
+          return NextResponse.json({ error: jobErr.message }, { status: 500 });
+        }
+
         await db.from("outages").update({
           assigned_tech_name: chosenTechName,
           last_updated_at: new Date().toISOString(),
         }).eq("id", itemId);
+
+        await db.from("technicians").update({
+          status: "working",
+          current_job_id: newJob?.id ?? itemId,
+          updated_at: new Date().toISOString(),
+        }).eq("user_id", chosen.tech.user_id);
+
+        const techPhone = (chosen.tech.users as any)?.phone ?? null;
+        await notifyDispatchAssigned({
+          techPhone,
+          techName: (chosen.tech.users as any)?.name ?? null,
+          address: targetAddress ?? `Near ${targetLat.toFixed(4)}, ${targetLng.toFixed(4)}`,
+          kind: itemType,
+        });
+
+        return NextResponse.json({ recommended, confirmed: confirm });
       }
 
       if (itemType === "job") {

@@ -154,8 +154,10 @@ export default function InvestigationForm({ outage, token, required = false, onC
   const [techsRequired, setTechsRequired] = useState<number | "">("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editedAddress, setEditedAddress] = useState(outage.streetAddress ?? "");
 
   useEffect(() => {
+    setEditedAddress(outage.streetAddress ?? "");
     applySeed(outage, {
       setPrimary,
       setAction,
@@ -164,7 +166,7 @@ export default function InvestigationForm({ outage, token, required = false, onC
       setVerbalPrice,
     });
     setError(null);
-  }, [outage.id, outage.status, outage.investigationResult, outage.customerIntent, outage.verbalPrice, outage.followUpStatus]);
+  }, [outage.id, outage.streetAddress, outage.status, outage.investigationResult, outage.customerIntent, outage.verbalPrice, outage.followUpStatus]);
 
   const serviceType = amperage && serviceSetup ? `${amperage} ${serviceSetup}`.toLowerCase() : "";
   const isOpportunity = primary === "opportunity_found";
@@ -264,6 +266,22 @@ export default function InvestigationForm({ outage, token, required = false, onC
     const fullNotes = [notes.trim(), scopeNote].filter(Boolean).join("\n");
 
     try {
+      const trimmedAddress = editedAddress.trim();
+      if (trimmedAddress && trimmedAddress !== (outage.streetAddress ?? "").trim() && token) {
+        const addrRes = await fetch("/api/outages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ id: outage.id, streetAddress: trimmedAddress }),
+        });
+        if (!addrRes.ok) {
+          const d = await addrRes.json();
+          throw new Error(d.error || "Could not save address");
+        }
+      }
+
       const res = await fetch(`/api/outages/${outage.id}/investigate`, {
         method: "POST",
         headers: {
@@ -414,19 +432,13 @@ export default function InvestigationForm({ outage, token, required = false, onC
   }
 
   function handleClose() {
-    if (required) {
-      const ok = window.confirm(
-        "You must submit an investigation before routing to the next stop. Close without saving?"
-      );
-      if (!ok) return;
-    }
     onClose();
   }
 
   const previewStatus = primary ? deriveStatus(primary, action, startedSub) : null;
   const STATUS_PREVIEW: Record<string, { color: string; stroke: string; label: string }> = {
     no_opportunity: { color: "#111827", stroke: "#111827", label: "Declined / No opportunity" },
-    opportunity: { color: "#ffffff", stroke: "#f97316", label: "Opportunity found" },
+    opportunity: { color: "#a855f7", stroke: "#7e22ce", label: "Damage Confirmed / No Contact" },
     door_hanger: { color: "#ec4899", stroke: "#be185d", label: "Door hanger left" },
     customer_thinking: { color: "#9ca3af", stroke: "#6b7280", label: "Customer thinking" },
     sold: { color: "#ffffff", stroke: "#22c55e", label: "Job sold → Job queue" },
@@ -529,12 +541,24 @@ export default function InvestigationForm({ outage, token, required = false, onC
               <div style={{ fontSize: "18px", fontWeight: 700, color: "#0d9488" }}>{Math.round(outage.priorityScore ?? 0)}</div>
             </div>
           </div>
-          <p style={{ margin: 0, fontSize: "13px", color: "#374151", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {shortAddress}
-          </p>
-          {outage.streetAddress && outage.streetAddress !== shortAddress && (
-            <p style={{ margin: "2px 0 0", fontSize: "11px", color: "#9ca3af", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {addressLine}
+          {required && (
+            <div style={{ marginBottom: "10px", padding: "8px 10px", background: "#fef3c7", borderRadius: "8px", fontSize: "12px", color: "#92400e", fontWeight: 600 }}>
+              Reminder: submit an investigation when you can — you can dismiss and continue working.
+            </div>
+          )}
+
+          <label style={{ display: "block", marginBottom: "10px" }}>
+            <span style={{ fontSize: "10px", fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.05em" }}>Address</span>
+            <input
+              value={editedAddress}
+              onChange={(e) => setEditedAddress(e.target.value)}
+              placeholder="Correct the address if ArcGIS pin is off"
+              style={{ width: "100%", marginTop: "4px", padding: "10px 12px", border: "1px solid #d1d5db", borderRadius: "8px", fontSize: "14px", boxSizing: "border-box" }}
+            />
+          </label>
+          {!editedAddress && (
+            <p style={{ margin: "0 0 10px", fontSize: "13px", color: "#374151", fontWeight: 500 }}>
+              {shortAddress}
             </p>
           )}
         </div>

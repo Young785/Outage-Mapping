@@ -26,6 +26,7 @@ type Props = {
   onSaved: () => void;
   onDeleted: () => void;
   onNavigate: (lat: number, lng: number, address?: string) => void;
+  onAssignOutage?: (outageId: string, techId: string, lat: number, lng: number) => Promise<void>;
 };
 
 export default function QueueItemDrawer({
@@ -36,6 +37,7 @@ export default function QueueItemDrawer({
   onSaved,
   onDeleted,
   onNavigate,
+  onAssignOutage,
 }: Props) {
   const [displayName, setDisplayName] = useState(item.displayName);
   const [address, setAddress] = useState(item.address ?? "");
@@ -72,6 +74,9 @@ export default function QueueItemDrawer({
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Save failed");
       } else {
+        if (assignedTechId && assignedTechId !== (item.assignedTechId ?? "") && item.lat != null && item.lng != null && onAssignOutage) {
+          await onAssignOutage(item.id, assignedTechId, item.lat, item.lng);
+        }
         const res = await fetch("/api/outages", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -204,12 +209,15 @@ export default function QueueItemDrawer({
                   <option value="temp_power">Temp power</option>
                   <option value="grounding">Return for grounding</option>
                   <option value="wants_to_proceed">Wants to proceed</option>
+                  <option value="opportunity">Damage confirmed / no contact</option>
+                  <option value="completed">Completed</option>
+                  <option value="no_opportunity">Declined / dead</option>
                 </>
               )}
             </select>
           </label>
 
-          {item.type === "job" && (
+          {(item.type === "job" || item.type === "outage") && (
             <label style={{ display: "block" }}>
               <span style={{ fontSize: "12px", fontWeight: 600, color: "#374151" }}>Assigned technician</span>
               <select value={assignedTechId} onChange={(e) => setAssignedTechId(e.target.value)} style={{ ...inp, marginTop: "6px" }}>

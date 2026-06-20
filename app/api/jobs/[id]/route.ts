@@ -75,11 +75,23 @@ export async function PATCH(
     }
 
     // If assigning to a tech, update technician status → working
-    if (assignedTechId && status === "assigned") {
+    if (assignedTechId) {
       await db
         .from("technicians")
-        .update({ status: "working", current_job_id: id, updated_at: new Date().toISOString() })
+        .update({
+          status: "working",
+          current_job_id: id,
+          updated_at: new Date().toISOString(),
+        })
         .eq("user_id", assignedTechId);
+    } else if (assignedTechId === null) {
+      const { data: prevJob } = await db.from("jobs").select("assigned_tech_id").eq("id", id).maybeSingle();
+      if (prevJob?.assigned_tech_id) {
+        await db
+          .from("technicians")
+          .update({ current_job_id: null, updated_at: new Date().toISOString() })
+          .eq("user_id", prevJob.assigned_tech_id);
+      }
     }
 
     return NextResponse.json({ success: true });

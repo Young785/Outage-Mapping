@@ -9,7 +9,7 @@ import {
   computeClusterMap,
   type StormPhase,
 } from "./routing-v1";
-import { pickSimpleRouteStop } from "./routing-simple";
+import { calculateSimpleRouteScore } from "./routing-simple";
 import type { RoutingMode } from "./routing-mode";
 import { isRoutingExcluded, type FieldVisitCache } from "./field-visit";
 import {
@@ -21,6 +21,7 @@ import {
 import { isInTerritory, type TerritoryDefinition } from "./territory-match";
 import { isEligibleForRole, roleFallbackChain } from "./routing-eligibility";
 import { haversineMiles } from "./priority";
+import { isDelayedUtilityConfirmed } from "./utility-outage";
 
 export type PipelineMarker = {
   id: number | string;
@@ -40,6 +41,7 @@ export type PipelineMarker = {
   isStaleMarker?: boolean;
   noContactMade?: boolean;
   needsReturnTrip?: boolean;
+  firstSeenAt?: string | null;
 };
 
 export type RoutingContext = {
@@ -48,7 +50,12 @@ export type RoutingContext = {
   territory?: TerritoryDefinition | null;
   hideStaleMarkers?: boolean;
   tempOutMode?: boolean;
+  /** Other tech GPS positions — used to spread crews and avoid clustering. */
+  peerTechLocations?: Array<{ lat: number; lng: number }>;
+  stormStartedAt?: string | null;
 };
+
+const PEER_AVOIDANCE_MILES = 0.4;
 
 function passesBaseExclusions<T extends PipelineMarker>(
   item: T,
@@ -92,7 +99,40 @@ export function buildEligiblePool<T extends PipelineMarker>(
     if (pool.length > 0) return pool;
   }
 
+  // Territory fallback: when assigned zone has no eligible stops, use closest eligible marker globally.
+  if (context.territory) {
+    for (const tryRole of roleFallbackChain(role, fallback)) {
+      const pool = filterByRole(base, tryRole);
+      if (pool.length > 0) return pool;
+    }
+  }
+
   return [];
+}
+
+function delayedUtilityBonus<T extends PipelineMarker>(
+  item: T,
+  stormStartedAt?: string | null
+): number {
+  if (isDelayedUtilityConfirmed(item, stormStartedAt)) return 200;
+  if (
+    (item.status === "unvisited" || item.status === "investigating") &&
+    item.source &&
+    ["xcel", "connexus", "arcgis"].includes(item.source)
+  ) {
+    return 40;
+  }
+  return 0;
+}
+
+function isNearPeerTech(
+  lat: number,
+  lng: number,
+  peers: Array<{ lat: number; lng: number }>
+): boolean {
+  return peers.some(
+    (p) => haversineMiles(lat, lng, p.lat, p.lng) < PEER_AVOIDANCE_MILES
+  );
 }
 
 /** Score-ranked pick with distance tie-break when scores are close. */
@@ -101,15 +141,35 @@ export function pickFromEligiblePool<T extends PipelineMarker>(
   userLocation: { lat: number; lng: number },
   phase: StormPhase,
   mode: RoutingMode,
-  options: { tempOutMode?: boolean; dispatchRole?: RoutingContext["dispatchRole"] } = {}
+  options: {
+    tempOutMode?: boolean;
+    dispatchRole?: RoutingContext["dispatchRole"];
+    peerTechLocations?: Array<{ lat: number; lng: number }>;
+    stormStartedAt?: string | null;
+  } = {}
 ): T | null {
   if (!pool.length) return null;
 
+  const peers = options.peerTechLocations ?? [];
+
   if (mode === "simple") {
-    return pickSimpleRouteStop(pool, userLocation, {}, {
-      tempOutMode: options.tempOutMode,
-      dispatchRole: options.dispatchRole,
-    });
+    let best: T | null = null;
+    let bestScore = -Infinity;
+    for (const o of pool) {
+      const miles = haversineMiles(userLocation.lat, userLocation.lng, o.lat, o.lng);
+      const { total } = calculateSimpleRouteScore(o, miles, {
+        tempOutMode: options.tempOutMode,
+        dispatchRole: options.dispatchRole,
+      });
+      const utilityBonus = delayedUtilityBonus(o, options.stormStartedAt);
+      const peerPenalty = isNearPeerTech(o.lat, o.lng, peers) ? 35 : 0;
+      const score = total + utilityBonus - peerPenalty;
+      if (score > bestScore) {
+        bestScore = score;
+        best = o;
+      }
+    }
+    return best;
   }
 
   const clusterMap = computeClusterMap(pool);
@@ -120,12 +180,21 @@ export function pickFromEligiblePool<T extends PipelineMarker>(
   for (const o of pool) {
     const miles = haversineMiles(userLocation.lat, userLocation.lng, o.lat, o.lng);
     const { total } = calculateV1RouteScore({ ...o, driveMiles: miles }, phase, clusterMap.get(String(o.id)), scoreOpts);
-    scoreById.set(String(o.id), total);
-    if (total > bestScore) bestScore = total;
+    const utilityBonus = delayedUtilityBonus(o, options.stormStartedAt);
+    const peerPenalty = isNearPeerTech(o.lat, o.lng, peers) ? 45 : 0;
+    const combined = total + utilityBonus - peerPenalty;
+    scoreById.set(String(o.id), combined);
+    if (combined > bestScore) bestScore = combined;
   }
 
   const threshold = bestScore * 0.95;
-  const topTier = pool.filter((o) => (scoreById.get(String(o.id)) ?? 0) >= threshold);
+  let topTier = pool.filter((o) => (scoreById.get(String(o.id)) ?? 0) >= threshold);
+
+  // Spread techs: prefer stops away from other crews when alternatives exist.
+  if (peers.length > 0) {
+    const spread = topTier.filter((o) => !isNearPeerTech(o.lat, o.lng, peers));
+    if (spread.length > 0) topTier = spread;
+  }
 
   let nearest: T | null = null;
   let nearestMiles = Infinity;

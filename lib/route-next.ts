@@ -28,6 +28,8 @@ export function pickNextRouteStop<T extends RoutableOutage>(
   return pickFromEligiblePool(pool, userLocation, phase, mode, {
     tempOutMode: context.tempOutMode,
     dispatchRole: context.dispatchRole,
+    peerTechLocations: context.peerTechLocations,
+    stormStartedAt: context.stormStartedAt,
   });
 }
 

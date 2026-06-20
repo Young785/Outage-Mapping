@@ -165,16 +165,15 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
     });
   }
 
-  async function moveJob(item: QueueItem, direction: -1 | 1) {
+  async function moveJobToPosition(item: QueueItem, newPosition: number) {
     const jobItems = filtered.filter((i) => i.type === "job");
     const idx = jobItems.findIndex((i) => i.id === item.id);
     if (idx < 0) return;
-    const swapIdx = idx + direction;
-    if (swapIdx < 0 || swapIdx >= jobItems.length) return;
+    const targetIdx = Math.max(0, Math.min(jobItems.length - 1, newPosition - 1));
+    if (targetIdx === idx) return;
     const reordered = [...jobItems];
-    const tmp = reordered[idx];
-    reordered[idx] = reordered[swapIdx];
-    reordered[swapIdx] = tmp;
+    const [removed] = reordered.splice(idx, 1);
+    reordered.splice(targetIdx, 0, removed);
     setReordering(true);
     try {
       const res = await fetch("/api/jobs/queue/reorder", {
@@ -192,6 +191,13 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
     } finally {
       setReordering(false);
     }
+  }
+
+  async function moveJob(item: QueueItem, direction: -1 | 1) {
+    const jobItems = filtered.filter((i) => i.type === "job");
+    const idx = jobItems.findIndex((i) => i.id === item.id);
+    if (idx < 0) return;
+    await moveJobToPosition(item, idx + direction + 1);
   }
 
   async function findClosestTech(item: QueueItem) {
@@ -222,8 +228,20 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
     const item = queue.find((q) => q.id === assignResult.itemId);
     try {
       const body = item?.type === "outage"
-        ? { outageId: assignResult.itemId, targetLat: item?.lat ?? 0, targetLng: item?.lng ?? 0, confirm: true }
-        : { jobId: assignResult.itemId, targetLat: 0, targetLng: 0, confirm: true };
+        ? {
+            outageId: assignResult.itemId,
+            targetLat: item?.lat ?? 0,
+            targetLng: item?.lng ?? 0,
+            confirm: true,
+            recommendedTechId: assignResult.techId,
+          }
+        : {
+            jobId: assignResult.itemId,
+            targetLat: item?.lat ?? 0,
+            targetLng: item?.lng ?? 0,
+            confirm: true,
+            recommendedTechId: assignResult.techId,
+          };
       const res = await fetch("/api/jobs/assign", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -370,6 +388,37 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
     } finally {
       setClustering(false);
     }
+  }
+
+  const jobCount = filtered.filter((i) => i.type === "job").length;
+
+  function PositionEditor({ item, position }: { item: QueueItem; position: number }) {
+    const [val, setVal] = useState(String(position));
+    useEffect(() => { setVal(String(position)); }, [position]);
+    if (item.type !== "job") return null;
+    return (
+      <input
+        type="number"
+        min={1}
+        max={jobCount}
+        value={val}
+        disabled={reordering}
+        title="Queue position — press Enter to move"
+        onChange={(e) => setVal(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            const n = Number(val);
+            if (Number.isFinite(n) && n >= 1) void moveJobToPosition(item, n);
+          }
+        }}
+        onBlur={() => {
+          const n = Number(val);
+          if (Number.isFinite(n) && n >= 1 && n !== position) void moveJobToPosition(item, n);
+          else setVal(String(position));
+        }}
+        style={{ width: "44px", padding: "6px 4px", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "12px", textAlign: "center", fontWeight: 700 }}
+      />
+    );
   }
 
   const sortOptions = routingMode === "simple"
@@ -659,10 +708,7 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
                         </button>
                       )}
                       {isOffice && item.type === "job" && (
-                        <>
-                          <button type="button" disabled={reordering} onClick={() => moveJob(item, -1)} style={{ padding: "8px 10px", background: "#fff", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "12px" }}>↑</button>
-                          <button type="button" disabled={reordering} onClick={() => moveJob(item, 1)} style={{ padding: "8px 10px", background: "#fff", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "12px" }}>↓</button>
-                        </>
+                        <PositionEditor item={item} position={filtered.filter((i) => i.type === "job").findIndex((i) => i.id === item.id) + 1} />
                       )}
                       {item.lat && item.lng && (
                         <button onClick={() => onNavigate(item.lat!, item.lng!, item.address ?? undefined)} style={{ padding: "8px 12px", background: "#0ea5e9", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600 }}>
@@ -760,10 +806,7 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
                     </button>
                   )}
                   {isOffice && item.type === "job" && (
-                    <>
-                      <button type="button" disabled={reordering} onClick={() => moveJob(item, -1)} title="Move up" style={{ padding: "8px 10px", background: "#fff", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "12px", cursor: "pointer" }}>↑</button>
-                      <button type="button" disabled={reordering} onClick={() => moveJob(item, 1)} title="Move down" style={{ padding: "8px 10px", background: "#fff", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "12px", cursor: "pointer" }}>↓</button>
-                    </>
+                    <PositionEditor item={item} position={filtered.filter((i) => i.type === "job").findIndex((i) => i.id === item.id) + 1} />
                   )}
                   {item.lat && item.lng && (
                     <button
@@ -823,6 +866,23 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
           onSaved={loadQueue}
           onDeleted={loadQueue}
           onNavigate={onNavigate}
+          onAssignOutage={async (outageId, techId, lat, lng) => {
+            const res = await fetch("/api/jobs/assign", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+              body: JSON.stringify({
+                outageId,
+                targetLat: lat,
+                targetLng: lng,
+                confirm: true,
+                recommendedTechId: techId,
+              }),
+            });
+            if (!res.ok) {
+              const data = await res.json();
+              throw new Error(data.error || "Assignment failed");
+            }
+          }}
         />
       )}
     </div>

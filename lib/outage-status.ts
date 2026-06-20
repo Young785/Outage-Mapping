@@ -47,7 +47,7 @@ export const STATUS_CONFIG: Record<OutageStatus, StatusStyle> = {
     color: "#a855f7",
     strokeColor: "#7e22ce",
     bg: "#faf5ff",
-    label: "Opportunity Found / No Contact Made",
+    label: "Damage Confirmed / No Contact",
     badgeText: "#6b21a8",
   },
   door_hanger: {
@@ -129,7 +129,7 @@ export function getMarkerStyle(
       color: "#a855f7",
       strokeColor: "#7e22ce",
       bg: "#faf5ff",
-      label: "Opportunity Found / No Contact Made",
+      label: "Damage Confirmed / No Contact",
       badgeText: "#6b21a8",
     };
   }

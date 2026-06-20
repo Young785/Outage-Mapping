@@ -21,6 +21,7 @@ import { loadPendingVisit, savePendingVisit, clearPendingVisit, needsInvestigati
 import { pickNextRouteStop, type RoutingContext } from "@/lib/route-next";
 import type { RoutingMode } from "@/lib/routing-mode";
 import { territoryFromRow } from "@/lib/territory-match";
+import { isDelayedUtilityConfirmed } from "@/lib/utility-outage";
 import type { FieldDispatchRole, InstallerFallback } from "@/lib/field-dispatch-role";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -92,6 +93,7 @@ type Tech = {
   territoryId?: string | null;
   dispatchRole?: FieldDispatchRole;
   installerFallback?: InstallerFallback;
+  mapColor?: string | null;
 };
 
 type BoundaryZone = {
@@ -855,15 +857,6 @@ export default function Page() {
   }
 
   function openInvestigation(outage: Outage) {
-    if (user?.role === "tech" && pendingVisitId && String(outage.id) !== pendingVisitId) {
-      const pending = outages.find((o) => String(o.id) === pendingVisitId);
-      if (pending && needsInvestigation(pending.status)) {
-        alert("Finish investigating your current stop before opening another.");
-        setInvestigatingOutage(pending);
-        setShowInvestigation(true);
-        return;
-      }
-    }
     setInvestigatingOutage(outage);
     setShowInvestigation(true);
   }
@@ -1003,16 +996,25 @@ export default function Page() {
         : 10;
       const baseSize = inPriorityZone ? baseSizeRaw + 2 : baseSizeRaw;
 
-      // New (unseen) ArcGIS dot: white fill with red outline, high z-index
+      // Initial storm wave: white circles only. Delayed utility-confirmed (5+ hrs): white + red outline.
       const isArcGIS = outage.source === "xcel" || outage.source === "connexus" || outage.source === "arcgis";
-      const isNewArcGIS = outage.isNew === true && isArcGIS;
-      // Unvisited ArcGIS outages always show white+red outline (utility-confirmed)
-      const isUnvisitedArcGIS = outage.status === "unvisited" && isArcGIS;
+      const isUnvisitedArcGIS =
+        (outage.status === "unvisited" || outage.status === "investigating") && isArcGIS;
+      const isDelayedConfirmed = isDelayedUtilityConfirmed(
+        outage,
+        activeStormEvent?.started_at ?? null
+      );
 
-      const fillColor = (isNewArcGIS || isUnvisitedArcGIS) ? "#ffffff" : cfg.color;
+      const fillColor = isUnvisitedArcGIS ? "#ffffff" : cfg.color;
       const faded = outage.isPreviousStormMarker === true || (outage.isStaleMarker === true && stormVisibilityMode !== "all");
-      const strokeColor = faded ? "#9ca3af" : ((isNewArcGIS || isUnvisitedArcGIS) ? "#dc2626" : cfg.strokeColor);
-      const strokeWeight = isNewArcGIS ? 4 : (isHoneyHole ? 4 : 3);
+      const strokeColor = faded
+        ? "#9ca3af"
+        : isDelayedConfirmed
+          ? "#dc2626"
+          : isUnvisitedArcGIS
+            ? "#6b7280"
+            : cfg.strokeColor;
+      const strokeWeight = isDelayedConfirmed ? 4 : isHoneyHole ? 4 : 3;
 
       const marker = new google.maps.Marker({
         map: mapObj.current!,
@@ -1029,12 +1031,12 @@ export default function Page() {
         label: isHoneyHole
           ? { text: String(outage.customers), color: "#fff", fontSize: "10px", fontWeight: "700" }
           : undefined,
-        zIndex: isNewArcGIS ? 9999 : ((outage.priorityScore ?? 0) + (inPriorityZone ? 1000 : 0)),
+        zIndex: isDelayedConfirmed ? 9999 : ((outage.priorityScore ?? 0) + (inPriorityZone ? 1000 : 0)),
       });
 
       marker.addListener("click", () => {
         infoWindowRef.current?.close();
-        if (user?.role === "tech") {
+        if (user?.role === "tech" || isOffice) {
           openInvestigation(outage);
         } else {
           showInfoWindow(outage, marker);
@@ -1056,7 +1058,7 @@ export default function Page() {
       liveIds.add(key);
       techDataByUserRef.current[key] = tech;
 
-      const color = TECH_STATUS_COLOR[tech.status] ?? "#6b7280";
+      const color = tech.mapColor ?? TECH_STATUS_COLOR[tech.status] ?? "#6b7280";
       const initials = tech.name
         .split(" ")
         .map((w: string) => w[0]?.toUpperCase() ?? "")
@@ -1309,20 +1311,25 @@ export default function Page() {
       }
     }
 
+    const peerTechLocations = techs
+      .filter((t) => t.userId !== user.id && t.lat != null && t.lng != null)
+      .map((t) => ({ lat: t.lat!, lng: t.lng! }));
+
     return {
       ...base,
       dispatchRole: me.dispatchRole ?? "hunter",
       installerFallback: me.installerFallback ?? "hunter",
       territory,
+      peerTechLocations,
+      stormStartedAt: activeStormEvent?.started_at ?? null,
     };
-  }, [user, techs, zones, showStaleOnMap, tempOutMode]);
+  }, [user, techs, zones, showStaleOnMap, tempOutMode, activeStormEvent]);
 
   function routeToNext() {
     if (!userLocation) {
       alert("Enable location access to use Route to Next.");
       return;
     }
-    if (!requirePendingInvestigation()) return;
     const routable = outages.map((o) => ({
       ...o,
       inPriorityZone: zones.some((z) => z.type === "polygon" && zoneTypeOf(z) === "priority" && isInZone(o, z)),
@@ -2178,21 +2185,30 @@ export default function Page() {
           </div>
         )}
 
-        {pendingVisitId && user?.role === "tech" && activeTab === "map" && (
-          <div style={{ padding: "10px 20px", background: "#fef3c7", borderBottom: "1px solid #fcd34d", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
-            <span style={{ fontSize: "12px", fontWeight: 700, color: "#92400e" }}>
-              Investigation required — clear your current stop before Route to Next
+        {pendingVisitId && user?.role === "tech" && activeTab === "map" && routeBlockedByPending && (
+          <div style={{ padding: "8px 16px", background: "#fef3c7", borderBottom: "1px solid #fcd34d", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+            <span style={{ fontSize: "12px", fontWeight: 600, color: "#92400e" }}>
+              Investigation reminder — tap to open Quick Investigate when ready
             </span>
-            <button
-              type="button"
-              onClick={() => {
-                const pending = outages.find((o) => String(o.id) === pendingVisitId);
-                if (pending) openInvestigation(pending);
-              }}
-              style={{ padding: "6px 12px", background: "#d97706", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}
-            >
-              Open investigation
-            </button>
+            <div style={{ display: "flex", gap: "6px" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  const pending = outages.find((o) => String(o.id) === pendingVisitId);
+                  if (pending) openInvestigation(pending);
+                }}
+                style={{ padding: "6px 12px", background: "#d97706", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}
+              >
+                Open
+              </button>
+              <button
+                type="button"
+                onClick={() => { clearPendingVisit(); setPendingVisitId(null); }}
+                style={{ padding: "6px 12px", background: "#fff", color: "#92400e", border: "1px solid #fcd34d", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}
+              >
+                Dismiss
+              </button>
+            </div>
           </div>
         )}
 
@@ -2293,7 +2309,6 @@ export default function Page() {
             </div>
           )}
 
-          {activeTab === "map" && <PageHelp pageId="map" />}
 
           {/* ── MAP — always mounted so the Google Maps instance is never detached ── */}
           <div style={{ display: activeTab === "map" ? "block" : "none" }}>
@@ -2335,8 +2350,12 @@ export default function Page() {
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: "3px", marginBottom: "8px" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                          <span style={{ width: 12, height: 12, borderRadius: "50%", background: "#fff", border: "2px solid #6b7280", flexShrink: 0, display: "inline-block" }} />
+                          <span style={{ fontSize: "11px", color: "#374151" }}>ArcGIS — initial wave (white)</span>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                           <span style={{ width: 12, height: 12, borderRadius: "50%", background: "#fff", border: "2px solid #dc2626", flexShrink: 0, display: "inline-block" }} />
-                          <span style={{ fontSize: "11px", color: "#374151" }}>ArcGIS — unvisited (utility-confirmed)</span>
+                          <span style={{ fontSize: "11px", color: "#374151" }}>Delayed utility-confirmed (5+ hrs)</span>
                         </div>
                         <div style={{ fontSize: "11px", color: "#374151" }}>● ArcGIS / Xcel (circle)</div>
                         <div style={{ fontSize: "11px", color: "#374151" }}>▲ Office / Call-in (triangle)</div>
@@ -2348,7 +2367,7 @@ export default function Page() {
                       <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "4px", paddingTop: "6px", fontWeight: 700, color: "#1f2937", marginBottom: "4px", fontSize: "12px" }}>
                         Status / Color
                       </div>
-                      {Object.entries(STATUS_CONFIG).filter(([k]) => !["opportunity", "wants_to_proceed", "investigating"].includes(k)).map(([k, v]) => (
+                      {Object.entries(STATUS_CONFIG).filter(([k]) => !["wants_to_proceed", "investigating"].includes(k)).map(([k, v]) => (
                         <div key={k} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
                           <div style={{
                             width: "12px", height: "12px", borderRadius: "50%",
@@ -2546,6 +2565,7 @@ export default function Page() {
             <PageHelp pageId="techs" />
             <TechPanel
               token={token}
+              role={user.role}
               onNavigateToTech={(lat, lng, name) => navigateToLatLng(lat, lng, name)}
               onNavigate={(lat, lng, label) => navigateToLatLng(lat, lng, label)}
               onRouteFromTech={routeFromTechToJob}
@@ -2615,6 +2635,7 @@ export default function Page() {
           onClose={() => { setShowInvestigation(false); setInvestigatingOutage(null); }}
           onSubmitted={(id, newStatus, visit) => {
             updateStatus(id, newStatus as OutageStatus, visit);
+            fetchOutages();
             if (String(id) === pendingVisitId) {
               clearPendingVisit();
               setPendingVisitId(null);
@@ -2921,7 +2942,7 @@ export default function Page() {
           </div>
         </div>
       )}
-      <SiteHelpLauncher role={user.role} activePage={activeTab} />
+      {activeTab !== "map" && <SiteHelpLauncher role={user.role} activePage={activeTab} />}
     </div>
   );
 }
