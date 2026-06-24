@@ -4,7 +4,7 @@
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/root/projects/stormtrackertool}"
-REPO_URL="${REPO_URL:-git@github.com:wkrausepersonal-wq/stormtrackertool.git}"
+REPO_URL="${REPO_URL:-git@github.com:Young785/Outage-Mapping.git}"
 DOMAIN="${DOMAIN:-stormtrackertool.com}"
 
 echo "==> System packages"

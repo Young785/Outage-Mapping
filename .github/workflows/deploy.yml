@@ -1,4 +1,4 @@
-name: Deploy to stormtrackertool.com
+name: Deploy Outage-Mapping to stormtrackertool.com
 
 on:
   push:

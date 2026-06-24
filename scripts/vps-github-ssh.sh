@@ -3,15 +3,15 @@
 # GitHub does not accept account passwords for git — use a deploy key instead.
 set -euo pipefail
 
-KEY="$HOME/.ssh/github_stormtracker"
-REPO="git@github.com:wkrausepersonal-wq/stormtrackertool.git"
+KEY="$HOME/.ssh/github_outage_mapping"
+REPO="git@github.com:Young785/Outage-Mapping.git"
 APP_DIR="${APP_DIR:-/root/projects/stormtrackertool}"
 
 mkdir -p "$HOME/.ssh"
 chmod 700 "$HOME/.ssh"
 
 if [ ! -f "$KEY" ]; then
-  ssh-keygen -t ed25519 -C "vps-stormtracker-deploy" -f "$KEY" -N ""
+  ssh-keygen -t ed25519 -C "vps-outage-mapping-deploy" -f "$KEY" -N ""
 fi
 
 if ! grep -q "Host github.com" "$HOME/.ssh/config" 2>/dev/null; then
@@ -28,7 +28,7 @@ fi
 
 echo ""
 echo "=== Add this deploy key to GitHub ==="
-echo "Repo → Settings → Deploy keys → Add deploy key"
+echo "Repo → https://github.com/Young785/Outage-Mapping/settings/keys"
 echo "Title: Hostinger VPS"
 echo "Key (paste below):"
 echo ""
