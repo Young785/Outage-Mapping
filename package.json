@@ -10,7 +10,9 @@
     "build:clean": "rm -rf .next && next build",
     "start": "next start",
     "lint": "next lint",
-    "db:migrate": "node scripts/apply-migrations.mjs"
+    "db:migrate": "node scripts/apply-migrations.mjs",
+    "db:export": "node scripts/export-db.mjs",
+    "db:export:full": "node scripts/export-db.mjs --data"
   },
   "dependencies": {
     "@googlemaps/js-api-loader": "^1.16.8",

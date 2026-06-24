@@ -6,4 +6,5 @@ node_modules
 .next
 .DS_Store
 supabase/.temp
+supabase/exports/data_*.sql
 data/users.json
