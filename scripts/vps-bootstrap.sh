@@ -3,8 +3,8 @@
 #   curl -fsSL ... | bash   OR   bash scripts/vps-bootstrap.sh
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-/var/www/stormtrackertool}"
-REPO_URL="${REPO_URL:-https://github.com/wkrausepersonal-wq/stormtrackertool.git}"
+APP_DIR="${APP_DIR:-/root/projects/stormtrackertool}"
+REPO_URL="${REPO_URL:-git@github.com:wkrausepersonal-wq/stormtrackertool.git}"
 DOMAIN="${DOMAIN:-stormtrackertool.com}"
 
 echo "==> System packages"
