@@ -1,24 +1,17 @@
 /**
  * Connexus Energy ArcGIS Adapter
  *
- * Public Experience URL:
- *   https://experience.arcgis.com/experience/3ef36487143d4dc28dad813f667a40d9/page/Page
+ * Public map: https://experience.arcgis.com/experience/3ef36487143d4dc28dad813f667a40d9/page/Page
+ * Layer: OutagePro_WFL1 / "Connexus Outage Data" (point features, ~10-char field names)
  *
- * To find the underlying REST endpoint:
- *   1. Open the Experience URL in Chrome.
- *   2. Open DevTools → Network → filter "query?where" or "FeatureServer".
- *   3. Copy the full URL of the outage layer request.
- *   4. Set CONNEXUS_ARCGIS_URL in .env to that URL.
- *
- * Until discovered, this adapter returns an error and the system
- * gracefully falls back to Xcel or last snapshot.
+ * Override via CONNEXUS_ARCGIS_URL if Connexus changes hosts or layer paths.
  */
 
 import type { AdapterResult, NormalizedOutage } from "./types";
 
 const CONNEXUS_URL =
   process.env.CONNEXUS_ARCGIS_URL ||
-  "";  // Must be configured via env — see instructions above
+  "https://services6.arcgis.com/tLxmfwKZGo8Ff5TR/arcgis/rest/services/OutagePro_WFL1/FeatureServer/0/query?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326&f=json";
 
 export function normalizeConnexusFeature(raw: any): NormalizedOutage {
   const attrs = raw?.attributes || {};
@@ -27,12 +20,36 @@ export function normalizeConnexusFeature(raw: any): NormalizedOutage {
   let lat: number | null = geom.y ?? null;
   let lng: number | null = geom.x ?? null;
 
+  // Connexus attribute X/Y are fallbacks only when geometry is missing (may not be WGS84).
+  if ((lat == null || lng == null) && attrs.Y != null && attrs.X != null) {
+    const attrLat = Number(attrs.Y);
+    const attrLng = Number(attrs.X);
+    if (Math.abs(attrLat) <= 90 && Math.abs(attrLng) <= 180) {
+      lat = attrLat;
+      lng = attrLng;
+    }
+  }
+
   const id =
+    attrs.INCIDENT_I ??
+    attrs.FID ??
     attrs.OBJECTID ??
     attrs.objectid ??
     attrs.OutageID ??
     attrs.outage_id ??
     `connexus-${Math.random().toString(36).slice(2, 10)}`;
+
+  const customers = Number(
+    attrs.CUSTOMER_C ??
+    attrs.CUSTOMER_RESTO ??
+    attrs.CustomersAffected ??
+    attrs.customers_affected ??
+    attrs.Customers ??
+    0
+  );
+
+  const crewStatus = attrs.CREW_STATU ?? attrs.CrewStatus ?? attrs.crew_status ?? null;
+  const etr = attrs.TIME_RESTO ?? attrs.EstimatedRestoreTime ?? attrs.ETR ?? attrs.etr ?? null;
 
   return {
     id: `cnx-${String(id)}`,
@@ -43,24 +60,38 @@ export function normalizeConnexusFeature(raw: any): NormalizedOutage {
     county: attrs.County ?? attrs.COUNTY ?? attrs.county ?? null,
     state: attrs.State ?? attrs.STATE ?? attrs.state ?? "MN",
     zipCode: attrs.Zip ?? attrs.ZIP ?? attrs.zip ?? null,
-    customers:
-      Number(
-        attrs.CustomersAffected ??
-        attrs.customers_affected ??
-        attrs.Customers ??
-        attrs.CUSTOMERS ??
-        0
-      ),
+    customers,
     outageType: attrs.OutageType ?? attrs.outage_type ?? attrs.Type ?? "Known Electric Outage",
     cause: attrs.Cause ?? attrs.cause ?? null,
-    etr:
-      attrs.EstimatedRestoreTime ??
-      attrs.ETR ??
-      attrs.etr ??
-      null,
-    crewStatus: attrs.CrewStatus ?? attrs.crew_status ?? null,
-    outageImpact: attrs.OutageImpact ?? attrs.outage_impact ?? null,
+    etr,
+    crewStatus,
+    outageImpact:
+      attrs.CRITICAL_C != null && Number(attrs.CRITICAL_C) > 0
+        ? "Critical"
+        : customers >= 100
+          ? "Large"
+          : customers >= 25
+            ? "Medium"
+            : "Small",
   };
+}
+
+function detectSchemaWarnings(features: any[]): string[] {
+  const warnings: string[] = [];
+  if (features.length === 0) return warnings;
+
+  const sample = features[0]?.attributes || {};
+  const knownFields = ["FID", "INCIDENT_I", "CUSTOMER_C", "X", "Y", "CREW_STATU", "TIME_RESTO"];
+  const presentFields = Object.keys(sample);
+  const missing = knownFields.filter(
+    (f) => !presentFields.some((p) => p.toLowerCase() === f.toLowerCase())
+  );
+  if (missing.length > 0) {
+    warnings.push(
+      `Connexus schema may have changed — missing expected fields: ${missing.join(", ")}`
+    );
+  }
+  return warnings;
 }
 
 export async function fetchConnexus(): Promise<AdapterResult> {
@@ -101,6 +132,7 @@ export async function fetchConnexus(): Promise<AdapterResult> {
     }
 
     console.log(`[connexus] Received ${json.features.length} raw features`);
+    schemaWarnings.push(...detectSchemaWarnings(json.features));
 
     const outages = (json.features as unknown[])
       .map(normalizeConnexusFeature)

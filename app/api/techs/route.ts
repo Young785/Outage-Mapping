@@ -186,6 +186,25 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Office role required to assign territories" }, { status: 403 });
       }
       if (!techId) return NextResponse.json({ error: "techId required" }, { status: 400 });
+
+      if (territoryId) {
+        const { data: territory } = await db
+          .from("territories")
+          .select("id, geometry")
+          .eq("id", territoryId)
+          .maybeSingle();
+        if (!territory) {
+          return NextResponse.json({ error: "Territory not found" }, { status: 404 });
+        }
+        const zoneType = territory.geometry?.properties?.zoneType;
+        if (zoneType === "exclusion" || zoneType === "priority") {
+          return NextResponse.json(
+            { error: "Exclusion and priority zones cannot be assigned as territories" },
+            { status: 400 }
+          );
+        }
+      }
+
       const { error } = await db
         .from("technicians")
         .update({ territory_id: territoryId ?? null, updated_at: new Date().toISOString() })

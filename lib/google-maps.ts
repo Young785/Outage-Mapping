@@ -1,6 +1,6 @@
 import { Loader } from "@googlemaps/js-api-loader";
 
-const LIBRARIES = ["marker", "geocoding"] as const;
+const LIBRARIES = ["marker", "geocoding", "places"] as const;
 
 let loadPromise: Promise<typeof google> | null = null;
 

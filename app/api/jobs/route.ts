@@ -119,6 +119,18 @@ export async function POST(req: Request) {
     }
 
     const db = getAdmin();
+    const { data: creator } = await db
+      .from("users")
+      .select("id")
+      .eq("id", payload.sub)
+      .maybeSingle();
+    if (!creator) {
+      return NextResponse.json(
+        { error: "Your session is invalid. Please sign out and sign in again." },
+        { status: 401 }
+      );
+    }
+
     const { data: job, error } = await db
       .from("jobs")
       .insert({
@@ -135,7 +147,7 @@ export async function POST(req: Request) {
         status: "pending",
         is_confirmed_opportunity: isConfirmedOpportunity,
         priority_score: score,
-        created_by: payload.sub,
+        created_by: creator.id,
       })
       .select("*")
       .single();

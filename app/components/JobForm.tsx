@@ -129,7 +129,7 @@ export default function JobForm({ token, onClose, onCreated }: Props) {
             <input type="text" value={customerName} onChange={(e) => setCustomerName(e.target.value)} required style={inputStyle} placeholder="Full name or company" />
           </div>
 
-          <AddressFields value={address} onChange={setAddress} enableMapPicker />
+          <AddressFields value={address} onChange={setAddress} />
 
           <div style={{ marginBottom: "16px" }}>
             <label style={labelStyle}>Phone</label>

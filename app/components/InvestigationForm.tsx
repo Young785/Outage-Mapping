@@ -654,7 +654,6 @@ export default function InvestigationForm({ outage, token, required = false, onC
                 <Chip selected={action === "job_started"} onClick={() => { setAction("job_started"); }} label="Job started" />
                 {action === "job_started" && (
                   <div style={{ marginLeft: "12px", display: "flex", flexDirection: "column", gap: "6px" }}>
-                    <Chip selected={startedSub === ""} onClick={() => setStartedSub("")} label="In progress" />
                     <Chip selected={startedSub === "temp_power"} onClick={() => setStartedSub("temp_power")} label="Temp power installed" />
                     <Chip selected={startedSub === "return_grounding"} onClick={() => setStartedSub("return_grounding")} label="Return for grounding" />
                     <Chip selected={startedSub === "job_completed"} onClick={() => setStartedSub("job_completed")} label="Job completed" />

@@ -78,12 +78,37 @@ export async function GET(req: Request) {
     } else if (kind === "investigations") {
       const { data, error } = await db
         .from("investigations")
-        .select("id,outage_id,tech_id,fault_type,cause_confirmed,action_taken,notes,visited_at,created_at")
+        .select(`
+          id, outage_id, tech_id, fault_type, cause_confirmed, action_taken, notes, visited_at, created_at,
+          users:tech_id ( name, email ),
+          outages:outage_id ( street_address, city, status, source, customers )
+        `)
         .gte("created_at", cutoff)
         .order("created_at", { ascending: false })
         .limit(5000);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-      csv = toCsv(data ?? []);
+      const rows = (data ?? []).map((row: Record<string, unknown>) => {
+        const users = row.users as { name?: string; email?: string } | null;
+        const outage = row.outages as { street_address?: string; city?: string; status?: string; source?: string; customers?: number } | null;
+        return {
+          id: row.id,
+          outage_id: row.outage_id,
+          tech_name: users?.name ?? "",
+          tech_email: users?.email ?? "",
+          street_address: outage?.street_address ?? "",
+          city: outage?.city ?? "",
+          outage_status: outage?.status ?? "",
+          outage_source: outage?.source ?? "",
+          customers: outage?.customers ?? "",
+          fault_type: row.fault_type,
+          cause_confirmed: row.cause_confirmed,
+          action_taken: row.action_taken,
+          notes: row.notes,
+          visited_at: row.visited_at,
+          created_at: row.created_at,
+        };
+      });
+      csv = toCsv(rows);
       fileName = `investigations-${sinceDays}d.csv`;
     } else {
       return NextResponse.json({ error: "Invalid kind. Use outages|jobs|investigations" }, { status: 400 });

@@ -42,6 +42,18 @@ export async function POST(req: Request) {
     }
 
     const db = getAdmin();
+    const { data: creator } = await db
+      .from("users")
+      .select("id")
+      .eq("id", payload.sub)
+      .maybeSingle();
+    if (!creator) {
+      return NextResponse.json(
+        { error: "Your session is invalid. Please sign out and sign in again." },
+        { status: 401 }
+      );
+    }
+
     let targetAddress: string | null = null;
 
     // Find available techs with location
@@ -213,7 +225,7 @@ export async function POST(req: Request) {
           status: "assigned",
           assigned_tech_id: chosen.tech.user_id,
           priority_score: 0,
-          created_by: payload.sub,
+          created_by: creator.id,
         }).select("id").single();
 
         if (jobErr) {

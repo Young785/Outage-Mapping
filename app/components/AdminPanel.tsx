@@ -46,6 +46,8 @@ type Props = {
       fetchIntervalMinutes: number;
     }
   ) => void;
+  /** Called after map cleanup actions so the live map refreshes immediately. */
+  onOutagesChanged?: () => void;
 };
 
 type OpsMetrics = {
@@ -79,7 +81,7 @@ type PhaseAlert = {
   sample: number;
 };
 
-export default function AdminPanel({ token, role, routingMode, onRoutingModeChanged, onSettingsChanged }: Props) {
+export default function AdminPanel({ token, role, routingMode, onRoutingModeChanged, onSettingsChanged, onOutagesChanged }: Props) {
   const [weights, setWeights] = useState<Weights>({
     customers_multiplier: 1.0,
     urgency_multiplier: 1.5,
@@ -133,7 +135,16 @@ export default function AdminPanel({ token, role, routingMode, onRoutingModeChan
       const res  = await fetch("/api/admin", { headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
       if (data.weights)  setWeights(data.weights);
-      if (data.settings) setSettings((prev) => ({ ...prev, ...data.settings }));
+      if (data.settings) {
+        const s = data.settings;
+        const sources = Array.isArray(s.active_sources) ? s.active_sources : ["xcel"];
+        setSettings((prev) => ({
+          ...prev,
+          ...s,
+          active_sources: sources,
+          connexus_enabled: sources.includes("connexus"),
+        }));
+      }
     } catch {}
     setLoading(false);
   }
@@ -251,12 +262,46 @@ export default function AdminPanel({ token, role, routingMode, onRoutingModeChan
   }
 
   // ── Save data-source settings (NOT simulation — handled separately) ────────
+  async function persistActiveSources(sources: string[]) {
+    setSaving(true);
+    setMessage(null);
+    try {
+      const payload = {
+        active_sources: sources,
+        connexus_enabled: sources.includes("connexus"),
+      };
+      const res = await fetch("/api/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ type: "settings", data: payload }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      setSettings((prev) => ({ ...prev, ...payload }));
+      onSettingsChanged?.(sources, settings.simulation_mode, {
+        stormPhase: settings.storm_phase,
+        tempOutMode: settings.temp_out_mode,
+        fetchIntervalMinutes: settings.fetch_interval_minutes,
+      });
+    } catch (err: any) {
+      setMessage({ type: "error", text: err.message });
+    }
+    setSaving(false);
+  }
+
+  function toggleAdminSource(source: "xcel" | "connexus", enabled: boolean) {
+    const sources = enabled
+      ? [...new Set([...settings.active_sources, source])]
+      : settings.active_sources.filter((s) => s !== source);
+    void persistActiveSources(sources);
+  }
+
   async function saveSourceSettings() {
     setSaving(true); setMessage(null);
     try {
       const payload = {
         active_sources: settings.active_sources,
-        connexus_enabled: settings.connexus_enabled,
+        connexus_enabled: settings.active_sources.includes("connexus"),
         fetch_interval_minutes: settings.fetch_interval_minutes,
         storm_phase: settings.storm_phase,
         temp_out_mode: settings.temp_out_mode,
@@ -362,6 +407,7 @@ export default function AdminPanel({ token, role, routingMode, onRoutingModeChan
       setMessage({ type: "success", text: `Sweep complete. Removed ${d.affected ?? 0} completed/declined dots from active map.` });
       await loadOpsMetrics();
       await loadPhaseAlerts();
+      onOutagesChanged?.();
       onSettingsChanged?.(settings.active_sources, settings.simulation_mode, {
         stormPhase: settings.storm_phase,
         tempOutMode: settings.temp_out_mode,
@@ -387,6 +433,7 @@ export default function AdminPanel({ token, role, routingMode, onRoutingModeChan
       setMessage({ type: "success", text: `Archived ${d.affected ?? 0} stale dots older than ${hours}h.` });
       await loadOpsMetrics();
       await loadPhaseAlerts();
+      onOutagesChanged?.();
       onSettingsChanged?.(settings.active_sources, settings.simulation_mode, {
         stormPhase: settings.storm_phase,
         tempOutMode: settings.temp_out_mode,
@@ -481,44 +528,26 @@ export default function AdminPanel({ token, role, routingMode, onRoutingModeChan
             <input
               type="checkbox"
               checked={settings.active_sources.includes("xcel")}
-              onChange={(e) => {
-                const sources = e.target.checked
-                  ? [...settings.active_sources, "xcel"]
-                  : settings.active_sources.filter((s) => s !== "xcel");
-                setSettings({ ...settings, active_sources: sources });
-              }}
+              onChange={(e) => toggleAdminSource("xcel", e.target.checked)}
               style={{ width: "18px", height: "18px", cursor: "pointer", accentColor: "#0d9488" }}
             />
           </label>
 
           {/* Connexus */}
-          <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px", background: "#f9fafb", borderRadius: "8px", cursor: "pointer", border: settings.connexus_enabled ? "2px solid #0d9488" : "1px solid #e5e7eb" }}>
+          <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px", background: "#f9fafb", borderRadius: "8px", cursor: "pointer", border: settings.active_sources.includes("connexus") ? "2px solid #0d9488" : "1px solid #e5e7eb" }}>
             <div>
               <div style={{ fontWeight: 600, color: "#1f2937", display: "flex", alignItems: "center", flexWrap: "wrap" }}>
                 Connexus Energy (ArcGIS)
                 <FieldTip text={ADMIN_FIELD_HELP.connexus} />
-                {!settings.connexus_enabled && (
-                  <span style={{ marginLeft: "8px", padding: "2px 6px", background: "#fef3c7", color: "#92400e", borderRadius: "4px", fontSize: "11px" }}>
-                    Requires CONNEXUS_ARCGIS_URL in .env
-                  </span>
-                )}
               </div>
               <div style={{ fontSize: "12px", color: "#6b7280" }}>
-                Toggle Connexus outages alongside Xcel.
+                Live outage data from Connexus Energy's public ArcGIS REST endpoint
               </div>
             </div>
             <input
               type="checkbox"
-              checked={settings.connexus_enabled}
-              onChange={(e) => {
-                setSettings({
-                  ...settings,
-                  connexus_enabled: e.target.checked,
-                  active_sources: e.target.checked
-                    ? [...new Set([...settings.active_sources, "connexus"])]
-                    : settings.active_sources.filter((s) => s !== "connexus"),
-                });
-              }}
+              checked={settings.active_sources.includes("connexus")}
+              onChange={(e) => toggleAdminSource("connexus", e.target.checked)}
               style={{ width: "18px", height: "18px", cursor: "pointer", accentColor: "#0d9488" }}
             />
           </label>

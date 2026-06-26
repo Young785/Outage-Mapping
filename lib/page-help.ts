@@ -477,7 +477,7 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
     ],
     inputs: [
       { name: "Xcel Energy (ArcGIS) checkbox", description: "Primary live outage feed. Must be ON for real storm hunting." },
-      { name: "Connexus Energy (ArcGIS) checkbox", description: "Secondary feed — requires CONNEXUS_ARCGIS_URL in server .env." },
+      { name: "Connexus Energy (ArcGIS) checkbox", description: "Secondary feed — Connexus Energy public ArcGIS outage layer (north/east metro MN)." },
       { name: "Fetch Interval (minutes)", description: "How often the cron job re-fetches utility data (5–60 min)." },
       { name: "Phase 1 — Hunting", description: "Rerouting favors priority zones, small-outage clusters, utility-confirmed dots. Large outages sink." },
       { name: "Phase 2 — Dispatch", description: "Rerouting favors sold jobs, office call-ins, power-on-drop. Hunting clusters continue but rank lower." },

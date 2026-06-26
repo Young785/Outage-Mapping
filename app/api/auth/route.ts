@@ -78,9 +78,18 @@ export async function POST(req: Request) {
       if (!token) return NextResponse.json({ error: "No token" }, { status: 401 });
       try {
         const payload = verifyJWT(token);
-        return NextResponse.json({
-          user: { id: payload.sub, email: payload.email, name: payload.name, role: payload.role },
-        });
+        const { data: dbUser } = await db
+          .from("users")
+          .select("id, email, name, phone, role")
+          .eq("id", payload.sub)
+          .maybeSingle();
+        if (!dbUser) {
+          return NextResponse.json(
+            { error: "Session expired — please sign in again." },
+            { status: 401 }
+          );
+        }
+        return NextResponse.json({ user: sanitizeUser(dbUser) });
       } catch (err) {
         return NextResponse.json({ error: jwtErrorMessage(err) }, { status: 401 });
       }

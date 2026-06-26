@@ -21,7 +21,7 @@ import { loadPendingVisit, savePendingVisit, clearPendingVisit, needsInvestigati
 import { pickNextRouteStop, pickNextRouteStops, type RoutingContext } from "@/lib/route-next";
 import { exceedsMapCustomerCap } from "@/lib/routing-sweep";
 import type { RoutingMode } from "@/lib/routing-mode";
-import { territoryFromRow } from "@/lib/territory-match";
+import { territoryFromRow, zoneTypeOf, isInBoundaryZone } from "@/lib/territory-match";
 import { isDelayedUtilityConfirmed } from "@/lib/utility-outage";
 import type { FieldDispatchRole, InstallerFallback } from "@/lib/field-dispatch-role";
 
@@ -155,7 +155,6 @@ export default function Page() {
   const [isStale, setIsStale] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const [activeSources, setActiveSources] = useState<string[]>(["xcel"]);
-  const [connexusEnabled, setConnexusEnabled] = useState(false);
   const [fetchIntervalMins, setFetchIntervalMins] = useState(5);
   const [stormPhase, setStormPhase] = useState<"phase_1" | "phase_2" | "phase_3">("phase_1");
   const [routingMode, setRoutingMode] = useState<RoutingMode>("simple");
@@ -195,6 +194,9 @@ export default function Page() {
   const navTargetRef = useRef<{ lat: number; lng: number; userLoc: { lat: number; lng: number } | null; outage: Outage | null } | null>(null);
   const [navVersion, setNavVersion] = useState(0);
   const [mapReady, setMapReady] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
+  const mapSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const mapAutocompleteRef = useRef<google.maps.places.Autocomplete | null>(null);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [selectedOutage, setSelectedOutage] = useState<Outage | null>(null);
   const [navigatingTo, setNavigatingTo] = useState<number | string | null>(null);
@@ -231,8 +233,6 @@ export default function Page() {
   const [editingAddress, setEditingAddress] = useState("");
   const [editingLat, setEditingLat] = useState("");
   const [editingLng, setEditingLng] = useState("");
-  const [pinAdjustLabel, setPinAdjustLabel] = useState<string | null>(null);
-  const pinAdjustOutageRef = useRef<Outage | null>(null);
 
   // ── Session restore — validate token with server before trusting localStorage ──
   useEffect(() => {
@@ -382,6 +382,51 @@ export default function Page() {
     }
   }, [token]);
 
+  const canPersistSources =
+    user?.role === "office" || user?.role === "admin" || user?.role === "owner";
+
+  const persistActiveSources = useCallback(
+    async (sources: string[]) => {
+      if (!token || !canPersistSources) return;
+      try {
+        const res = await fetch("/api/admin", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            type: "settings",
+            data: {
+              active_sources: sources,
+              connexus_enabled: sources.includes("connexus"),
+            },
+          }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          console.warn("[sources] Failed to persist:", data.error ?? res.status);
+        }
+      } catch (err) {
+        console.warn("[sources] Failed to persist:", err);
+      }
+    },
+    [token, canPersistSources]
+  );
+
+  const toggleDataSource = useCallback(
+    (source: "xcel" | "connexus") => {
+      setActiveSources((prev) => {
+        const next = prev.includes(source)
+          ? prev.filter((s) => s !== source)
+          : [...prev, source];
+        void persistActiveSources(next);
+        return next;
+      });
+    },
+    [persistActiveSources]
+  );
+
   // ── Auto-refresh polling ─────────────────────────────────────────────────
   useEffect(() => {
     if (!user) return;
@@ -473,7 +518,6 @@ export default function Page() {
         const s = data?.settings ?? {};
         if (Array.isArray(s.active_sources)) {
           setActiveSources(s.active_sources);
-          setConnexusEnabled(s.active_sources.includes("connexus"));
         }
         if (typeof s.simulation_mode === "boolean") setIsSimMode(s.simulation_mode);
         if (typeof s.fetch_interval_minutes === "number") setFetchIntervalMins(s.fetch_interval_minutes);
@@ -520,8 +564,12 @@ export default function Page() {
 
     async function initMap() {
       try {
+        setMapError(null);
         const key = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
-        if (!key) { setError("Missing Google Maps API key"); return; }
+        if (!key) {
+          setMapError("Google Maps API key is not configured. Set NEXT_PUBLIC_GOOGLE_MAPS_API_KEY in server .env and rebuild the app.");
+          return;
+        }
 
         await loadGoogleMaps();
         if (cancelled || !mapRef.current || mapObj.current) return;
@@ -559,15 +607,6 @@ export default function Page() {
         infoWindowRef.current = new google.maps.InfoWindow();
 
         map.addListener("click", (e: google.maps.MapMouseEvent) => {
-          if (pinAdjustOutageRef.current && e.latLng) {
-            const target = pinAdjustOutageRef.current;
-            const newLat = e.latLng.lat();
-            const newLng = e.latLng.lng();
-            pinAdjustOutageRef.current = null;
-            setPinAdjustLabel(null);
-            void saveOutageLocation(target.id, newLat, newLng, target.streetAddress ?? null);
-            return;
-          }
           if (!isSimModeRef.current) return;
           if (!e.latLng) return;
           setManualOutageCoords({ lat: e.latLng.lat(), lng: e.latLng.lng() });
@@ -590,7 +629,7 @@ export default function Page() {
           );
         }
       } catch (e: any) {
-        setError("Map failed to load: " + e.message);
+        setMapError("Map failed to load: " + (e?.message ?? "Unknown error"));
       }
     }
 
@@ -606,6 +645,44 @@ export default function Page() {
       cancelAnimationFrame(rafId);
     };
   }, [user, activeTab]);
+
+  // Wire office address search after map + input are mounted
+  useEffect(() => {
+    if (!mapReady || !mapObj.current || !mapSearchInputRef.current || activeTab !== "map") return;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        await loadGoogleMaps();
+        if (cancelled || !mapSearchInputRef.current || mapAutocompleteRef.current) return;
+
+        const ac = new google.maps.places.Autocomplete(mapSearchInputRef.current, {
+          componentRestrictions: { country: "us" },
+          fields: ["geometry", "formatted_address", "name"],
+          types: ["geocode", "establishment"],
+        });
+        ac.addListener("place_changed", () => {
+          const place = ac.getPlace();
+          if (place?.geometry?.location && mapObj.current) {
+            mapObj.current.setCenter(place.geometry.location);
+            mapObj.current.setZoom(15);
+          }
+        });
+        mapAutocompleteRef.current = ac;
+      } catch {
+        /* search is optional when Places API is unavailable */
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (mapAutocompleteRef.current) {
+        google.maps.event.clearInstanceListeners(mapAutocompleteRef.current);
+        mapAutocompleteRef.current = null;
+      }
+    };
+  }, [mapReady, activeTab]);
 
   // ── Sync outage markers ──────────────────────────────────────────────────
   useEffect(() => {
@@ -738,22 +815,6 @@ export default function Page() {
     }
   }
 
-  function startPinAdjust(outage: Outage) {
-    pinAdjustOutageRef.current = outage;
-    setPinAdjustLabel(outage.streetAddress?.split(",")[0] ?? `Outage #${outage.id}`);
-    setShowDetail(false);
-    setActiveTab("map");
-  }
-
-  function cancelPinAdjust() {
-    pinAdjustOutageRef.current = null;
-    setPinAdjustLabel(null);
-  }
-
-  // ── Connexus sidebar toggle syncs activeSources ──────────────────────────
-  useEffect(() => {
-    setActiveSources(connexusEnabled ? ["xcel", "connexus"] : ["xcel"]);
-  }, [connexusEnabled]);
 
   // ── Re-fetch whenever active sources change ───────────────────────────────
   // This is the single source of truth for "sources changed → refetch".
@@ -784,8 +845,7 @@ export default function Page() {
       fetchIntervalMinutes: number;
     }
   ) {
-    setActiveSources(sources);                    // triggers the useEffect above
-    setConnexusEnabled(sources.includes("connexus"));
+    setActiveSources(sources);
     setIsSimMode(simMode);
     if (stormOps) {
       setStormPhase(stormOps.stormPhase);
@@ -883,6 +943,20 @@ export default function Page() {
     };
   }
 
+  function utilitySourceStroke(source?: string): string {
+    if (source === "connexus") return "#0d9488";
+    if (source === "xcel") return "#f97316";
+    return "#6b7280";
+  }
+
+  function utilitySourceLabel(source?: string): string {
+    if (source === "connexus") return "Connexus Energy";
+    if (source === "xcel") return "Xcel Energy";
+    if (source === "office") return "Office lead";
+    if (source === "user" || source === "user_reported") return "User report";
+    return source ?? "Unknown";
+  }
+
   function markerPathForOutage(outage: Outage): google.maps.SymbolPath | string {
     if (
       outage.source === "office" ||
@@ -903,31 +977,11 @@ export default function Page() {
     return google.maps.SymbolPath.CIRCLE;
   }
 
-  function zoneTypeOf(z: BoundaryZone): "territory" | "priority" | "exclusion" {
-    const t = z.geometry?.properties?.zoneType;
-    if (t === "priority" || t === "exclusion") return t;
-    return "territory";
-  }
-
-  function pointInPolygon(lat: number, lng: number, polygonRing: number[][]): boolean {
-    // polygonRing shape: [[lng, lat], ...]
-    let inside = false;
-    for (let i = 0, j = polygonRing.length - 1; i < polygonRing.length; j = i++) {
-      const xi = polygonRing[i][0];
-      const yi = polygonRing[i][1];
-      const xj = polygonRing[j][0];
-      const yj = polygonRing[j][1];
-      const intersects = ((yi > lat) !== (yj > lat))
-        && (lng < ((xj - xi) * (lat - yi)) / ((yj - yi) || Number.EPSILON) + xi);
-      if (intersects) inside = !inside;
-    }
-    return inside;
-  }
-
   function isInZone(outage: Outage, zone: BoundaryZone): boolean {
-    const ring = zone.geometry?.coordinates?.[0];
-    if (!ring || ring.length < 3) return false;
-    return pointInPolygon(outage.lat, outage.lng, ring);
+    return isInBoundaryZone(
+      { lat: outage.lat, lng: outage.lng, zipCode: outage.zipCode },
+      zone
+    );
   }
 
   function zoneColor(kind: "territory" | "priority" | "exclusion"): string {
@@ -980,7 +1034,7 @@ export default function Page() {
         if (o.status === "temp_power") return false;
         if (o.status === "grounding") return false;
       }
-      const excluded = zones.some((z) => z.type === "polygon" && zoneTypeOf(z) === "exclusion" && isInZone(o, z));
+      const excluded = zones.some((z) => zoneTypeOf(z) === "exclusion" && isInZone(o, z));
       if (excluded) return false;
       return true;
     });
@@ -992,7 +1046,7 @@ export default function Page() {
       const isHoneyHole =
         (outage.status === "opportunity" || outage.status === "wants_to_proceed") &&
         outage.customers > 1;
-      const inPriorityZone = zones.some((z) => z.type === "polygon" && zoneTypeOf(z) === "priority" && isInZone(outage, z));
+      const inPriorityZone = zones.some((z) => zoneTypeOf(z) === "priority" && isInZone(outage, z));
       const baseSizeRaw = isHoneyHole
         ? Math.min(22, Math.max(14, 12 + Math.sqrt(outage.customers)))
         : 10;
@@ -1014,7 +1068,7 @@ export default function Page() {
         : isDelayedConfirmed
           ? "#dc2626"
           : isUnvisitedArcGIS
-            ? "#6b7280"
+            ? utilitySourceStroke(outage.source)
             : cfg.strokeColor;
       const strokeWeight = isDelayedConfirmed ? 4 : isHoneyHole ? 4 : 3;
 
@@ -1159,6 +1213,10 @@ export default function Page() {
     const assignedBadge = outage.assignedTechName
       ? `<div style="font-size:12px;color:#0d9488;font-weight:700;margin-bottom:8px;padding:6px 10px;background:#f0fdfa;border:1px solid #99f6e4;border-radius:6px">Assigned tech: ${outage.assignedTechName}</div>`
       : "";
+    const sourceColor = utilitySourceStroke(outage.source);
+    const sourceBadge = outage.source === "xcel" || outage.source === "connexus"
+      ? `<div style="font-size:11px;color:${sourceColor};font-weight:700;margin-bottom:8px;padding:4px 8px;background:${sourceColor}18;border:1px solid ${sourceColor}55;border-radius:6px;display:inline-block">${utilitySourceLabel(outage.source)}</div>`
+      : row("Source", utilitySourceLabel(outage.source));
     const content = `
       <div style="font-family:system-ui;padding:12px;min-width:280px;max-width:320px">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
@@ -1166,6 +1224,7 @@ export default function Page() {
           <strong style="font-size:14px;line-height:1.3">${outage.streetAddress?.split(",")[0] ?? outage.city ?? `Outage #${outage.id}`}</strong>
         </div>
         <div style="font-size:11px;color:#6b7280;margin-bottom:8px">${outage.streetAddress ?? "Address resolving…"}</div>
+        ${sourceBadge}
         ${assignedBadge}
         <div style="border-top:1px solid #f0f0f0;padding-top:8px;margin-bottom:8px">
           ${row("Customers affected", outage.customers)}
@@ -1180,7 +1239,6 @@ export default function Page() {
           ${row("Crew status", outage.crewStatus)}
           ${row("Impact", outage.outageImpact)}
           ${row("ETR", outage.etr)}
-          ${row("Source", outage.source)}
           ${row("Priority score", Math.round(outage.priorityScore ?? 0))}
           <div style="font-size:12px;color:#374151;margin-bottom:3px"><b>Status:</b> <span style="color:${cfg.badgeText};font-weight:600">${cfg.label}</span></div>
         </div>
@@ -1308,7 +1366,7 @@ export default function Page() {
     let territory = null;
     if (me.territoryId) {
       const zone = zones.find((z) => z.id === me.territoryId);
-      if (zone) {
+      if (zone && zoneTypeOf(zone) === "territory") {
         territory = territoryFromRow({ zip_codes: zone.zip_codes, geometry: zone.geometry });
       }
     }
@@ -1338,8 +1396,8 @@ export default function Page() {
       .filter((o) => !exceedsMapCustomerCap(o.customers))
       .map((o) => ({
       ...o,
-      inPriorityZone: zones.some((z) => z.type === "polygon" && zoneTypeOf(z) === "priority" && isInZone(o, z)),
-      inExclusionZone: zones.some((z) => z.type === "polygon" && zoneTypeOf(z) === "exclusion" && isInZone(o, z)),
+      inPriorityZone: zones.some((z) => zoneTypeOf(z) === "priority" && isInZone(o, z)),
+      inExclusionZone: zones.some((z) => zoneTypeOf(z) === "exclusion" && isInZone(o, z)),
       isHoneyHole: (o.status === "opportunity" || o.status === "wants_to_proceed") && o.customers > 1,
     }));
     const next = pickNextRouteStop(
@@ -1800,6 +1858,9 @@ export default function Page() {
                   <option value="tech">Field Technician</option>
                   <option value="office">Office Staff</option>
                 </select>
+                <p style={{ margin: "0 0 12px", fontSize: "12px", color: "#6b7280", lineHeight: 1.45 }}>
+                  Each office staff member should create their own account — do not share logins.
+                </p>
               </>
             )}
             <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" required style={inputCss} />
@@ -1929,15 +1990,24 @@ export default function Page() {
         <div style={{ padding: "12px 16px", borderBottom: "1px solid #e5e7eb" }}>
           <div style={{ fontSize: "11px", fontWeight: 600, color: "#9ca3af", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Data Sources</div>
           <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px", cursor: "pointer" }}
-            onClick={() => setActiveSources((prev) => prev.includes("xcel") ? prev.filter((s) => s !== "xcel") : [...prev, "xcel"])}>
-            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>Xcel Outages</span>
-            <div style={toggleCss(activeSources.includes("xcel"), "#0d9488")}><div style={toggleKnobCss(activeSources.includes("xcel"))} /></div>
+            onClick={() => toggleDataSource("xcel")}>
+            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500, display: "flex", alignItems: "center", gap: "6px" }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", border: "2px solid #f97316", background: "#fff", flexShrink: 0 }} />
+              Xcel Outages
+            </span>
+            <div style={toggleCss(activeSources.includes("xcel"), "#f97316")}><div style={toggleKnobCss(activeSources.includes("xcel"))} /></div>
           </label>
-          <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}
-            onClick={() => setConnexusEnabled(!connexusEnabled)}>
-            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500 }}>Connexus Outages</span>
-            <div style={toggleCss(connexusEnabled, "#0d9488")}><div style={toggleKnobCss(connexusEnabled)} /></div>
+          <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px", cursor: "pointer" }}
+            onClick={() => toggleDataSource("connexus")}>
+            <span style={{ fontSize: "13px", color: "#374151", fontWeight: 500, display: "flex", alignItems: "center", gap: "6px" }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", border: "2px solid #0d9488", background: "#fff", flexShrink: 0 }} />
+              Connexus Outages
+            </span>
+            <div style={toggleCss(activeSources.includes("connexus"), "#0d9488")}><div style={toggleKnobCss(activeSources.includes("connexus"))} /></div>
           </label>
+          <div style={{ fontSize: "10px", color: "#9ca3af", marginTop: "4px", lineHeight: 1.4 }}>
+            Unvisited utility dots: orange ring = Xcel, teal ring = Connexus
+          </div>
           <div style={{ fontSize: "11px", fontWeight: 600, color: "#9ca3af", margin: "12px 0 8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Map Layers</div>
           <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px", cursor: "pointer" }}
             onClick={() => setHideDoneMarkers((v) => !v)}>
@@ -2171,21 +2241,6 @@ export default function Page() {
           </div>
         )}
 
-        {pinAdjustLabel && activeTab === "map" && (
-          <div style={{ padding: "10px 20px", background: "#eff6ff", borderBottom: "1px solid #bfdbfe", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
-            <span style={{ fontSize: "12px", fontWeight: 700, color: "#1d4ed8" }}>
-              Tap the map to set the pin for {pinAdjustLabel}
-            </span>
-            <button
-              type="button"
-              onClick={cancelPinAdjust}
-              style={{ padding: "6px 12px", background: "#fff", border: "1px solid #bfdbfe", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer", color: "#1e40af" }}
-            >
-              Cancel
-            </button>
-          </div>
-        )}
-
         {pendingVisitId && user?.role === "tech" && activeTab === "map" && routeBlockedByPending && (
           <div style={{ padding: "8px 16px", background: "#fef3c7", borderBottom: "1px solid #fcd34d", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
             <span style={{ fontSize: "12px", fontWeight: 600, color: "#92400e" }}>
@@ -2289,7 +2344,7 @@ export default function Page() {
                             <td style={{ padding: "12px 16px", textAlign: "center", fontWeight: 600, color: "#0d9488", fontSize: "13px" }}>{Math.round(o.priorityScore ?? 0)}</td>
                             <td style={{ padding: "12px 16px" }}>
                               <button onClick={() => { setDetailOutage(o); setShowDetail(true); }} style={{ padding: "5px 10px", background: "#0d9488", color: "#fff", border: "none", borderRadius: "6px", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}>
-                                View
+                                Edit
                               </button>
                               {isOffice && (
                                 <button
@@ -2315,8 +2370,14 @@ export default function Page() {
           <div style={{ display: activeTab === "map" ? "block" : "none" }}>
             <div style={{ background: "#fff", borderRadius: isMobile ? "8px" : "12px", padding: isMobile ? "4px" : "12px", boxShadow: "0 1px 3px rgba(0,0,0,0.07)", height: isMobile ? "calc(100vh - 110px)" : "calc(100vh - 140px)", position: "relative" }}>
               {!mapReady && (
-                <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#6b7280" }}>
-                  Loading map...
+                <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: "24px", zIndex: 2 }}>
+                  {mapError ? (
+                    <div style={{ maxWidth: "420px", padding: "16px 20px", background: "#fee2e2", borderRadius: "10px", color: "#dc2626", fontSize: "14px", lineHeight: 1.5, textAlign: "center" }}>
+                      {mapError}
+                    </div>
+                  ) : (
+                    <span style={{ color: "#6b7280" }}>Loading map...</span>
+                  )}
                 </div>
               )}
               <div ref={mapRef} style={{ width: "100%", height: "100%", borderRadius: "8px" }} />
@@ -2397,8 +2458,50 @@ export default function Page() {
                 </div>
               )}
 
+              {/* Office address search */}
+              {isOffice && (
+                <div style={{ position: "absolute", top: "20px", left: "50%", transform: "translateX(-50%)", width: isMobile ? "calc(100% - 40px)" : "min(420px, calc(100% - 280px))", zIndex: 3, opacity: mapReady ? 1 : 0, pointerEvents: mapReady ? "auto" : "none" }}>
+                  <input
+                    ref={mapSearchInputRef}
+                    type="text"
+                    placeholder="Search address or place..."
+                    autoComplete="off"
+                    onKeyDown={async (e) => {
+                      if (e.key !== "Enter") return;
+                      e.preventDefault();
+                      const q = mapSearchInputRef.current?.value?.trim();
+                      if (!q || !mapObj.current) return;
+                      try {
+                        await loadGoogleMaps();
+                        const geocoder = new google.maps.Geocoder();
+                        const { results } = await geocoder.geocode({
+                          address: q,
+                          componentRestrictions: { country: "us" },
+                        });
+                        const loc = results?.[0]?.geometry?.location;
+                        if (loc) {
+                          mapObj.current.setCenter(loc);
+                          mapObj.current.setZoom(15);
+                        }
+                      } catch {
+                        /* geocode fallback optional */
+                      }
+                    }}
+                    style={{
+                      width: "100%",
+                      padding: "10px 14px",
+                      border: "1px solid #e5e7eb",
+                      borderRadius: "8px",
+                      fontSize: "13px",
+                      boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
+                      background: "#fff",
+                    }}
+                  />
+                </div>
+              )}
+
               {/* Map controls */}
-              <div style={{ position: "absolute", top: "20px", right: "20px", display: "flex", gap: "8px" }}>
+              <div style={{ position: "absolute", top: isOffice ? (isMobile ? "68px" : "72px") : "20px", right: "20px", display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end", zIndex: 3 }}>
                 <button
                   onClick={() => {
                     if (navigator.geolocation) {
@@ -2466,7 +2569,7 @@ export default function Page() {
                             <span style={{ ...statusBadgeStyle(cfg), flexShrink: 0, marginLeft: "8px" }}>{cfg.label}</span>
                           </div>
                           <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-                            <button onClick={() => { setDetailOutage(o); setShowDetail(true); }} style={smBtnCss("#0d9488")}>View</button>
+                            <button onClick={() => { setDetailOutage(o); setShowDetail(true); }} style={smBtnCss("#0d9488")}>Edit</button>
                             <button onClick={() => navigateToLatLng(o.lat, o.lng, o.streetAddress, o)} style={smBtnCss("#0ea5e9")}>Navigate</button>
                             <button onClick={() => openInvestigation(o)} style={smBtnCss("#7c3aed")}>Investigate</button>
                             <select value={o.status} onChange={(e) => updateStatus(o.id, e.target.value as OutageStatus)}
@@ -2507,7 +2610,7 @@ export default function Page() {
                               <td style={{ padding: "12px 16px", fontWeight: 600, color: "#0d9488", fontSize: "13px" }}>{Math.round(o.priorityScore ?? 0)}</td>
                               <td style={{ padding: "12px 16px" }}>
                                 <div style={{ display: "flex", gap: "5px", flexWrap: "wrap" }}>
-                                  <button onClick={() => { setDetailOutage(o); setShowDetail(true); }} style={smBtnCss("#0d9488")}>View</button>
+                                  <button onClick={() => { setDetailOutage(o); setShowDetail(true); }} style={smBtnCss("#0d9488")}>Edit</button>
                                   <button onClick={() => navigateToLatLng(o.lat, o.lng, o.streetAddress, o)} style={smBtnCss("#0ea5e9")}>Go</button>
                                   <button onClick={() => openInvestigation(o)} style={smBtnCss("#7c3aed")}>Investigate</button>
                                   <select value={o.status} onChange={(e) => updateStatus(o.id, e.target.value as OutageStatus)}
@@ -2599,6 +2702,7 @@ export default function Page() {
                 void fetchOutages();
               }}
               onSettingsChanged={handleSettingsChanged}
+              onOutagesChanged={fetchOutages}
             />
             </>
           )}
@@ -2671,7 +2775,7 @@ export default function Page() {
           <div style={{ background: "#fff", borderRadius: isMobile ? "16px 16px 0 0" : "16px", maxWidth: "580px", width: "100%", maxHeight: isMobile ? "92vh" : "90vh", overflow: "auto", boxShadow: "0 -4px 30px rgba(0,0,0,0.2)" }}>
             <div style={{ padding: "20px 24px 16px", borderBottom: "1px solid #e5e7eb", display: "flex", justifyContent: "space-between" }}>
               <div>
-                <h2 style={{ margin: "0 0 4px", fontSize: "18px", fontWeight: 700 }}>Outage #{detailOutage.id}</h2>
+                <h2 style={{ margin: "0 0 4px", fontSize: "18px", fontWeight: 700 }}>Edit Outage #{detailOutage.id}</h2>
                 <p style={{ margin: 0, fontSize: "13px", color: "#6b7280" }}>{detailOutage.streetAddress ?? detailOutage.city}</p>
               </div>
               <button onClick={() => setShowDetail(false)} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#6b7280" }}>×</button>
@@ -2750,13 +2854,6 @@ export default function Page() {
                     style={{ padding: "7px 10px", background: "#0d9488", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}
                   >
                     Save location
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => startPinAdjust(detailOutage)}
-                    style={{ padding: "7px 10px", background: "#2563eb", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}
-                  >
-                    Tap map to move pin
                   </button>
                 </div>
               </div>

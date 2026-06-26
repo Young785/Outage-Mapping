@@ -17,6 +17,7 @@ import {
   type FieldDispatchRole,
   type InstallerFallback,
 } from "@/lib/field-dispatch-role";
+import { isAssignableTerritory } from "@/lib/territory-match";
 
 type ZoneType = "territory" | "priority" | "exclusion";
 type LatLng = { lat: number; lng: number };
@@ -1010,7 +1011,7 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
                     style={{ padding: "7px 10px", border: "1px solid #d1d5db", borderRadius: "7px", fontSize: "13px", color: "#374151", minWidth: "140px" }}
                   >
                     <option value="">— Territory —</option>
-                    {territories.filter((t) => zoneTypeOf(t) === "territory").map((t) => (
+                    {territories.filter((t) => isAssignableTerritory(t)).map((t) => (
                       <option key={t.id} value={t.id}>{t.name}</option>
                     ))}
                   </select>

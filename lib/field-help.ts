@@ -19,7 +19,7 @@ export const ADMIN_SECTION_HELP: Record<string, string> = {
 
 export const ADMIN_FIELD_HELP: Record<string, string> = {
   xcel: "Pulls outage polygons from Xcel Energy's public ArcGIS layer. Primary feed for most Minnesota storms.",
-  connexus: "Adds Connexus Energy outages when CONNEXUS_ARCGIS_URL is set in server environment variables.",
+  connexus: "Pulls outage polygons from Connexus Energy's public ArcGIS layer. Secondary feed for north/east metro MN.",
   fetchInterval:
     "How often the cron job re-fetches utility data (minutes). Lower = fresher map, more API calls.",
   stormPhase1:

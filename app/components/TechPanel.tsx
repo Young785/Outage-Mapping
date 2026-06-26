@@ -50,13 +50,19 @@ type NextStop = {
 
 const MAP_COLOR_OPTIONS = [
   { value: "", label: "Status color (default)" },
-  { value: "#10b981", label: "Green" },
-  { value: "#ef4444", label: "Red" },
-  { value: "#f59e0b", label: "Amber" },
-  { value: "#3b82f6", label: "Blue" },
+  { value: "#ffffff", label: "White" },
+  { value: "#ffff00", label: "Yellow" },
+  { value: "#00ffff", label: "Aqua" },
+  { value: "#ff8c00", label: "Orange" },
+  { value: "#ff69b4", label: "Pink" },
+  { value: "#22c55e", label: "Green" },
+  { value: "#c0c0c0", label: "Silver" },
   { value: "#8b5cf6", label: "Purple" },
-  { value: "#ec4899", label: "Pink" },
-  { value: "#06b6d4", label: "Cyan" },
+  { value: "#ef4444", label: "Red" },
+  { value: "#000000", label: "Black" },
+  { value: "#8b4513", label: "Brown" },
+  { value: "#000080", label: "Navy" },
+  { value: "#84cc16", label: "Lime" },
 ];
 
 function elapsedLabel(since: string | null): string {
