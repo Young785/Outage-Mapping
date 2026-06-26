@@ -145,7 +145,7 @@ export async function GET(req: Request) {
       const ids = filtered.map((o) => o.id);
       // Migration-007 columns that may not exist on older Supabase schemas.
       const M007_COLS = "customer_name, customer_phone, lead_source, assigned_tech_name, office_notes, external_job_status";
-      const BASE_META_COLS = "id, status, street_address, priority_score, first_seen_at, source, zip_code, no_contact_made, needs_return_trip, storm_event_id";
+      const BASE_META_COLS = "id, status, street_address, priority_score, first_seen_at, source, zip_code, no_contact_made, needs_return_trip, storm_event_id, is_active";
       const BASE_OFFICE_COLS = "id, source, lat, lng, street_address, city, county, state, customers, outage_type, cause, etr, crew_status, outage_impact, status, priority_score, first_seen_at";
 
       if (ids.length > 0) {
@@ -219,6 +219,12 @@ export async function GET(req: Request) {
         .not("status", "in", "(\"completed\",\"cancelled\")");
       if (officeJobs?.length) {
         const existing = new Set((officeRows ?? []).map((r) => String(r.id)));
+        const { data: sweptOffice } = await db
+          .from("outages")
+          .select("id")
+          .eq("is_active", false)
+          .in("source", ["office", "manual", "self_generated", "user"]);
+        const sweptOfficeIds = new Set((sweptOffice ?? []).map((r) => String(r.id)));
         const mapJobStatusToOutageStatus = (status: string | null) => {
           if (status === "completed") return "completed";
           if (status === "assigned" || status === "in_progress") return "unvisited";
@@ -226,7 +232,7 @@ export async function GET(req: Request) {
         };
         const synthesized = officeJobs
           .filter((j) => j.customer_lat != null && j.customer_lng != null)
-          .filter((j) => !existing.has(`office-${j.id}`))
+          .filter((j) => !existing.has(`office-${j.id}`) && !sweptOfficeIds.has(`office-${j.id}`))
           .map((j) => {
             // Extract city from address if available
             const city = j.customer_address?.split(",")[1]?.trim() || null;
@@ -261,6 +267,9 @@ export async function GET(req: Request) {
     } catch {}
   }
 
+  // Hide swept/archived utility dots — live feeds still return them, but DB is_active=false keeps them off the map.
+  const visibleFiltered = filtered.filter((o) => dbMetaMap[o.id]?.is_active !== false);
+
   let stormPhase: StormPhase = "phase_1";
   let tempOutMode = false;
   const routingMode = await getRoutingMode();
@@ -281,17 +290,17 @@ export async function GET(req: Request) {
   const clusterMap =
     routingMode === "complicated"
       ? computeClusterMap(
-          filtered
+          visibleFiltered
             .filter((o) => o.lat != null && o.lng != null)
             .map((o) => ({ id: o.id, lat: o.lat!, lng: o.lng!, customers: o.customers ?? 0 }))
         )
       : new Map();
 
-  const enriched = filtered.map((o) => {
+  const enriched = visibleFiltered.map((o) => {
     const densityNearby = countNearby(
       o.lat!,
       o.lng!,
-      filtered.filter((x) => x.id !== o.id).map((x) => ({ lat: x.lat!, lng: x.lng! }))
+      visibleFiltered.filter((x) => x.id !== o.id).map((x) => ({ lat: x.lat!, lng: x.lng! }))
     );
     const baseStatus = (dbStatusMap[o.id] as any) ?? "unvisited";
     const isNew = !dbStatusMap[o.id] && (o.source === "xcel" || o.source === "connexus");
@@ -465,10 +474,10 @@ export async function GET(req: Request) {
 
   const allEnriched = [...enriched, ...officeItems];
 
-  // Upsert enriched outages to DB (non-blocking)
-  if (isSupabaseConfigured && enriched.length > 0 && !isStale) {
+  // Upsert live feed rows (non-blocking). Preserve is_active=false so map sweeps are not undone on refresh.
+  if (isSupabaseConfigured && filtered.length > 0 && !isStale) {
     const db = getAdmin();
-    const rows = enriched.map((o, i) => ({
+    const rows = filtered.map((o) => ({
       id: o.id,
       source: o.source,
       lat: o.lat,
@@ -483,9 +492,9 @@ export async function GET(req: Request) {
       etr: o.etr,
       crew_status: o.crewStatus,
       outage_impact: o.outageImpact,
-      priority_score: o.priorityScore,
+      priority_score: enriched.find((e) => e.id === o.id)?.priorityScore ?? 0,
       last_updated_at: new Date().toISOString(),
-      is_active: true,
+      is_active: dbMetaMap[o.id]?.is_active === false ? false : true,
       snapshot_id: snapshotIds[0] ?? null,
     }));
 

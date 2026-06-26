@@ -49,13 +49,53 @@ export async function POST(req: Request) {
     }
 
     if (action === "sweep_all_active") {
+      const now = new Date().toISOString();
       const { data, error } = await db
         .from("outages")
-        .update({ is_active: false, last_updated_at: new Date().toISOString() })
+        .update({ is_active: false, last_updated_at: now })
         .eq("is_active", true)
         .select("id");
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-      return NextResponse.json({ success: true, affected: data?.length ?? 0 });
+      let affected = data?.length ?? 0;
+
+      // Office jobs without outage mirror rows would otherwise reappear via synthesis on the next fetch.
+      const { data: officeJobs } = await db
+        .from("jobs")
+        .select("id, customer_name, customer_address, customer_lat, customer_lng, status, notes, priority_score, created_at")
+        .eq("source", "office")
+        .not("status", "in", "(\"completed\",\"cancelled\")");
+
+      const jobRows = (officeJobs ?? [])
+        .filter((j) => j.customer_lat != null && j.customer_lng != null)
+        .map((j) => ({
+          id: `office-${j.id}`,
+          source: "office",
+          lat: j.customer_lat,
+          lng: j.customer_lng,
+          street_address: j.customer_address ?? null,
+          city: j.customer_address?.split(",")[1]?.trim() ?? null,
+          county: "Unknown",
+          customers: 1,
+          outage_type: "Office Call-in Lead",
+          cause: j.notes ?? "Office-entered lead",
+          status: "unvisited",
+          priority_score: j.priority_score ?? 0,
+          first_seen_at: j.created_at ?? now,
+          last_updated_at: now,
+          is_active: false,
+          lead_source: "office",
+        }));
+
+      if (jobRows.length > 0) {
+        const { data: suppressed, error: jobErr } = await db
+          .from("outages")
+          .upsert(jobRows, { onConflict: "id" })
+          .select("id");
+        if (jobErr) return NextResponse.json({ error: jobErr.message }, { status: 500 });
+        affected += suppressed?.length ?? 0;
+      }
+
+      return NextResponse.json({ success: true, affected });
     }
 
     if (action === "archive_stale") {
