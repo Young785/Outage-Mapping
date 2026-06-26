@@ -7,6 +7,28 @@ import { NextResponse } from "next/server";
 import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
 import { verifyJWT, extractBearerToken, hashPassword } from "@/lib/jwt";
 import { parseDispatchRole, parseInstallerFallback } from "@/lib/field-dispatch-role";
+import { isAssignableTerritory } from "@/lib/territory-match";
+
+async function assertAssignableTerritory(
+  db: ReturnType<typeof getAdmin>,
+  territoryId: string
+): Promise<NextResponse | null> {
+  const { data: territory } = await db
+    .from("territories")
+    .select("id, geometry, type, zip_codes")
+    .eq("id", territoryId)
+    .maybeSingle();
+  if (!territory) {
+    return NextResponse.json({ error: "Territory not found" }, { status: 404 });
+  }
+  if (!isAssignableTerritory(territory)) {
+    return NextResponse.json(
+      { error: "Exclusion zones cannot be assigned as tech territories" },
+      { status: 400 }
+    );
+  }
+  return null;
+}
 
 export async function GET() {
   if (!isSupabaseConfigured) {
@@ -134,7 +156,11 @@ export async function POST(req: Request) {
         dispatch_role: parseDispatchRole(dispatchRole),
         installer_fallback: parseInstallerFallback(installerFallback),
       };
-      if (territoryId) techInsert.territory_id = territoryId;
+      if (territoryId) {
+        const blocked = await assertAssignableTerritory(db, territoryId);
+        if (blocked) return blocked;
+        techInsert.territory_id = territoryId;
+      }
       if (mapColor) techInsert.map_color = mapColor;
 
       const { error: techErr } = await db.from("technicians").insert(techInsert);
@@ -165,7 +191,13 @@ export async function POST(req: Request) {
       }
 
       const techUpdate: Record<string, unknown> = { updated_at: new Date().toISOString() };
-      if (territoryId !== undefined) techUpdate.territory_id = territoryId || null;
+      if (territoryId !== undefined) {
+        if (territoryId) {
+          const blocked = await assertAssignableTerritory(db, territoryId);
+          if (blocked) return blocked;
+        }
+        techUpdate.territory_id = territoryId || null;
+      }
       if (dispatchRole !== undefined) techUpdate.dispatch_role = parseDispatchRole(dispatchRole);
       if (installerFallback !== undefined) {
         techUpdate.installer_fallback = parseInstallerFallback(installerFallback);
@@ -188,21 +220,8 @@ export async function POST(req: Request) {
       if (!techId) return NextResponse.json({ error: "techId required" }, { status: 400 });
 
       if (territoryId) {
-        const { data: territory } = await db
-          .from("territories")
-          .select("id, geometry")
-          .eq("id", territoryId)
-          .maybeSingle();
-        if (!territory) {
-          return NextResponse.json({ error: "Territory not found" }, { status: 404 });
-        }
-        const zoneType = territory.geometry?.properties?.zoneType;
-        if (zoneType === "exclusion" || zoneType === "priority") {
-          return NextResponse.json(
-            { error: "Exclusion and priority zones cannot be assigned as territories" },
-            { status: 400 }
-          );
-        }
+        const blocked = await assertAssignableTerritory(db, territoryId);
+        if (blocked) return blocked;
       }
 
       const { error } = await db
