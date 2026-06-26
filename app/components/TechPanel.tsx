@@ -8,7 +8,7 @@ import {
 } from "@/lib/field-dispatch-role";
 import { pickNextRouteStops } from "@/lib/route-next";
 import { loadSavedVisits } from "@/lib/field-visit";
-import { territoryFromRow } from "@/lib/territory-match";
+import { territoryFromRow, isAssignableTerritory, assignableTerritoryLabel, type BoundaryZoneLike } from "@/lib/territory-match";
 import { isDelayedUtilityConfirmed } from "@/lib/utility-outage";
 import { exceedsMapCustomerCap } from "@/lib/routing-sweep";
 import { haversineMiles } from "@/lib/priority";
@@ -222,11 +222,11 @@ export default function TechPanel({
         const tData = await terrRes.json();
         setTerritories(
           (tData.territories ?? [])
-            .filter((t: { geometry?: { properties?: { zoneType?: string } } }) => {
-              const zt = t.geometry?.properties?.zoneType;
-              return !zt || zt === "territory";
-            })
-            .map((t: { id: string; name: string }) => ({ id: t.id, name: t.name }))
+            .filter((t: BoundaryZoneLike & { id: string; name: string }) => isAssignableTerritory(t))
+            .map((t: BoundaryZoneLike & { id: string; name: string }) => ({
+              id: t.id,
+              name: assignableTerritoryLabel(t),
+            }))
         );
       }
 

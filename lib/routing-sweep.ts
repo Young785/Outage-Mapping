@@ -247,3 +247,14 @@ export function pickSweepRouteStops<T extends SweepMarker>(
 
   return results;
 }
+
+/** Greedy Pac-Man sweep through every eligible stop on the map (nearest-first by tier). */
+export function pickFullMapSweepStops<T extends SweepMarker>(
+  items: T[],
+  userLocation: { lat: number; lng: number },
+  visits: Record<string, FieldVisitCache> = {},
+  ctx: SweepContext = {},
+  maxStops = 100
+): T[] {
+  return pickSweepRouteStops(items, userLocation, visits, ctx, Math.max(1, maxStops));
+}

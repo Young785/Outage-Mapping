@@ -18,7 +18,7 @@ import type { PageHelpId } from "@/lib/page-help";
 import { STATUS_CONFIG, getStatusConfig, getMarkerStyle, statusBadgeStyle, OUTAGE_FILTER_OPTIONS, isUnvisitedOnMap, type OutageStatus } from "@/lib/outage-status";
 import { loadSavedVisits, saveFieldVisit, type FieldVisitCache } from "@/lib/field-visit";
 import { loadPendingVisit, savePendingVisit, clearPendingVisit, needsInvestigation } from "@/lib/pending-visit";
-import { pickNextRouteStop, pickNextRouteStops, type RoutingContext } from "@/lib/route-next";
+import { pickNextRouteStop, pickFullMapSweep, type RoutingContext } from "@/lib/route-next";
 import { exceedsMapCustomerCap } from "@/lib/routing-sweep";
 import type { RoutingMode } from "@/lib/routing-mode";
 import { territoryFromRow, zoneTypeOf, isInBoundaryZone } from "@/lib/territory-match";
@@ -122,6 +122,8 @@ const TECH_STATUS_COLOR = {
   offline:   "#6b7280",
 };
 
+const FULL_SWEEP_STORAGE_KEY = "fieldmap_full_sweep_ids";
+
 // ── Component ────────────────────────────────────────────────────────────────
 export default function Page() {
   // Auth state
@@ -224,6 +226,7 @@ export default function Page() {
   const [stormVisibilityMode, setStormVisibilityMode] = useState<"active_only" | "active_and_previous" | "all">("active_and_previous");
   const [activeStormEvent, setActiveStormEvent] = useState<{ id: string; name: string; started_at: string } | null>(null);
   const [legendCollapsed, setLegendCollapsed] = useState(false);
+  const [sweepQueue, setSweepQueue] = useState<Outage[]>([]);
   const [reportAddressEdit, setReportAddressEdit] = useState("");
   const [reportStreet, setReportStreet] = useState("");
   const [reportCity, setReportCity] = useState("");
@@ -1387,32 +1390,99 @@ export default function Page() {
     };
   }, [user, techs, zones, showStaleOnMap, tempOutMode, activeStormEvent, stormPhase]);
 
+  function buildRoutableOutages(): Outage[] {
+    return outages
+      .filter((o) => !exceedsMapCustomerCap(o.customers))
+      .map((o) => ({
+        ...o,
+        inPriorityZone: zones.some((z) => zoneTypeOf(z) === "priority" && isInZone(o, z)),
+        inExclusionZone: zones.some((z) => zoneTypeOf(z) === "exclusion" && isInZone(o, z)),
+        isHoneyHole:
+          (o.status === "opportunity" || o.status === "wants_to_proceed") && o.customers > 1,
+      }));
+  }
+
+  function persistSweepQueue(queue: Outage[]) {
+    setSweepQueue(queue);
+    if (queue.length === 0) {
+      localStorage.removeItem(FULL_SWEEP_STORAGE_KEY);
+    } else {
+      localStorage.setItem(FULL_SWEEP_STORAGE_KEY, JSON.stringify(queue.map((o) => String(o.id))));
+    }
+  }
+
+  function advanceSweepAfterVisit(visitedId: number | string) {
+    setSweepQueue((prev) => {
+      const next = prev.filter((o) => String(o.id) !== String(visitedId));
+      if (next.length === 0) localStorage.removeItem(FULL_SWEEP_STORAGE_KEY);
+      else localStorage.setItem(FULL_SWEEP_STORAGE_KEY, JSON.stringify(next.map((o) => String(o.id))));
+      return next;
+    });
+  }
+
+  useEffect(() => {
+    if (sweepQueue.length > 0 || !outages.length) return;
+    const raw = localStorage.getItem(FULL_SWEEP_STORAGE_KEY);
+    if (!raw) return;
+    try {
+      const ids = JSON.parse(raw) as string[];
+      const restored = ids
+        .map((id) => outages.find((o) => String(o.id) === id))
+        .filter(Boolean) as Outage[];
+      if (restored.length > 0) setSweepQueue(restored);
+    } catch {
+      localStorage.removeItem(FULL_SWEEP_STORAGE_KEY);
+    }
+  }, [outages, sweepQueue.length]);
+
   function routeToNext() {
     if (!userLocation) {
       alert("Enable location access to use Route to Next.");
       return;
     }
-    const routable = outages
-      .filter((o) => !exceedsMapCustomerCap(o.customers))
-      .map((o) => ({
-      ...o,
-      inPriorityZone: zones.some((z) => zoneTypeOf(z) === "priority" && isInZone(o, z)),
-      inExclusionZone: zones.some((z) => zoneTypeOf(z) === "exclusion" && isInZone(o, z)),
-      isHoneyHole: (o.status === "opportunity" || o.status === "wants_to_proceed") && o.customers > 1,
-    }));
-    const next = pickNextRouteStop(
-      routable,
-      userLocation,
-      stormPhase,
-      loadSavedVisits(),
-      routingMode,
-      myRoutingContext
-    );
+    const routable = buildRoutableOutages();
+    const next =
+      sweepQueue.length > 0
+        ? sweepQueue[0]
+        : pickNextRouteStop(
+            routable,
+            userLocation,
+            stormPhase,
+            loadSavedVisits(),
+            routingMode,
+            myRoutingContext
+          );
     if (!next) {
       alert("No actionable stops remaining on the map.");
       return;
     }
     navigateToLatLng(next.lat, next.lng, next.streetAddress ?? next.city, next);
+  }
+
+  function startFullMapSweep() {
+    if (!userLocation) {
+      alert("Enable location access to run a full map sweep.");
+      return;
+    }
+    const routable = buildRoutableOutages();
+    const queue = pickFullMapSweep(
+      routable,
+      userLocation,
+      stormPhase,
+      loadSavedVisits(),
+      myRoutingContext
+    );
+    if (!queue.length) {
+      alert("No actionable stops on the map for a sweep.");
+      return;
+    }
+    persistSweepQueue(queue);
+    const first = queue[0];
+    navigateToLatLng(first.lat, first.lng, first.streetAddress ?? first.city, first);
+  }
+
+  function clearFullMapSweep() {
+    persistSweepQueue([]);
   }
 
   // ── Status update ────────────────────────────────────────────────────────
@@ -2175,12 +2245,14 @@ export default function Page() {
               </button>
             )}
             {activeTab === "map" && (
-              <button
-                onClick={routeToNext}
-                style={btnCss("#0d9488")}
-              >
-                {isMobile ? "→" : "Route to Next"}
-              </button>
+              <>
+                <button onClick={startFullMapSweep} style={btnCss("#7c3aed")} title="Build ordered route through every actionable dot">
+                  {isMobile ? "◎" : "Full Map Sweep"}
+                </button>
+                <button onClick={routeToNext} style={btnCss("#0d9488")}>
+                  {isMobile ? "→" : sweepQueue.length > 0 ? `Next (${sweepQueue.length})` : "Route to Next"}
+                </button>
+              </>
             )}
             {lastUpdatedAt && !isMobile && (
               <span style={{ fontSize: "12px", color: "#9ca3af", alignSelf: "center", whiteSpace: "nowrap" }}>
@@ -2192,6 +2264,25 @@ export default function Page() {
             </button>
           </div>
         </div>
+
+        {sweepQueue.length > 0 && activeTab === "map" && (
+          <div style={{ padding: "10px 20px", background: "#f5f3ff", borderBottom: "1px solid #ddd6fe", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+            <span style={{ fontSize: "12px", fontWeight: 700, color: "#5b21b6" }}>
+              FULL MAP SWEEP — {sweepQueue.length} stop{sweepQueue.length === 1 ? "" : "s"} remaining
+              {sweepQueue[0]
+                ? ` · Next: ${sweepQueue[0].streetAddress?.split(",")[0] ?? sweepQueue[0].city ?? `#${sweepQueue[0].id}`}`
+                : ""}
+            </span>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button onClick={routeToNext} style={{ padding: "6px 12px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}>
+                Go to next
+              </button>
+              <button onClick={clearFullMapSweep} style={{ padding: "6px 12px", background: "#fff", color: "#5b21b6", border: "1px solid #c4b5fd", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
+                Clear sweep
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Simulation mode banner — prominent, always visible when sim is active */}
         {isSimMode && (
@@ -2744,6 +2835,9 @@ export default function Page() {
           onClose={() => { setShowInvestigation(false); setInvestigatingOutage(null); }}
           onSubmitted={(id, newStatus, visit) => {
             updateStatus(id, newStatus as OutageStatus, visit);
+            if (sweepQueue.some((o) => String(o.id) === String(id))) {
+              advanceSweepAfterVisit(id);
+            }
             fetchOutages();
             if (String(id) === pendingVisitId) {
               clearPendingVisit();

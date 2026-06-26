@@ -83,7 +83,19 @@ export function zoneTypeOf(zone: BoundaryZoneLike): ZoneType {
 
 /** Only plain territory zones may be assigned to technicians. */
 export function isAssignableTerritory(zone: BoundaryZoneLike): boolean {
-  return zoneTypeOf(zone) === "territory";
+  const t = zoneTypeOf(zone);
+  // Priority zones are crew hunting areas (often named "… territory") — assignable.
+  // Exclusion zones hide dots from routing and must never be a tech home base.
+  return t === "territory" || t === "priority";
+}
+
+/** Label for territory assignment dropdowns. */
+export function assignableTerritoryLabel(zone: BoundaryZoneLike & { name?: string }): string {
+  const name = zone.name ?? "Unnamed";
+  const t = zoneTypeOf(zone);
+  if (t === "priority") return `${name} (Priority)`;
+  if (t === "exclusion") return `${name} (Exclusion)`;
+  return name;
 }
 
 /** True when a location falls inside a zip list or polygon boundary. */
