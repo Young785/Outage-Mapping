@@ -393,6 +393,42 @@ export default function AdminPanel({ token, role, routingMode, onRoutingModeChan
     setStormLoading(false);
   }
 
+  async function sweepEntireMap() {
+    if (
+      !window.confirm(
+        "Sweep the entire map? This removes every active dot from the live map between storms. Database history is kept for exports."
+      )
+    ) {
+      return;
+    }
+    setStormLoading(true);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/outages/cleanup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: "sweep_all_active" }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      setMessage({
+        type: "success",
+        text: `Map sweep complete. Removed ${d.affected ?? 0} dot${d.affected === 1 ? "" : "s"} from the active map.`,
+      });
+      await loadOpsMetrics();
+      await loadPhaseAlerts();
+      onOutagesChanged?.();
+      onSettingsChanged?.(settings.active_sources, settings.simulation_mode, {
+        stormPhase: settings.storm_phase,
+        tempOutMode: settings.temp_out_mode,
+        fetchIntervalMinutes: settings.fetch_interval_minutes,
+      });
+    } catch (err: any) {
+      setMessage({ type: "error", text: err.message });
+    }
+    setStormLoading(false);
+  }
+
   async function sweepCompletedAndDeclined() {
     setStormLoading(true);
     setMessage(null);
@@ -952,6 +988,14 @@ export default function AdminPanel({ token, role, routingMode, onRoutingModeChan
             Use these tools between storms to keep the active map clean without deleting history.
           </p>
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <button
+              onClick={sweepEntireMap}
+              disabled={stormLoading}
+              title={ADMIN_FIELD_HELP.sweepEntireMap}
+              style={{ padding: "8px 12px", background: "#b45309", color: "#fff", border: "none", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: stormLoading ? "default" : "pointer" }}
+            >
+              Sweep Entire Map
+            </button>
             <button
               onClick={sweepCompletedAndDeclined}
               disabled={stormLoading}

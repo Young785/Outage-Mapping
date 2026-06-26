@@ -48,6 +48,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, affected: data?.length ?? 0 });
     }
 
+    if (action === "sweep_all_active") {
+      const { data, error } = await db
+        .from("outages")
+        .update({ is_active: false, last_updated_at: new Date().toISOString() })
+        .eq("is_active", true)
+        .select("id");
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ success: true, affected: data?.length ?? 0 });
+    }
+
     if (action === "archive_stale") {
       const hours = Math.max(1, Number(body.hours ?? 48));
       const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();

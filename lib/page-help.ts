@@ -473,7 +473,7 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
       { title: "Click Save Weights", detail: "Saves the 10 weight fields to the database for job creation and cron scoring." },
       { title: "Test rerouting in simulation", detail: "Storm Simulation Mode → toggle ON → Generate Clustered or Honey Hole synthetic outages → Apply Simulation. Techs can Route to Next on fake data to verify phase logic." },
       { title: "Start a storm event session", detail: "Name the event (e.g. June 2026 Derecho) and click Start Session for historical tracking." },
-      { title: "Cleanup when storm ends", detail: "Sweep Completed + Declined, Archive Stale (48h or 72h), export CSVs for records." },
+      { title: "Cleanup when storm ends", detail: "Sweep Entire Map for a clean slate, or Sweep Completed + Declined mid-storm; Archive Stale (48h or 72h); export CSVs for records." },
     ],
     inputs: [
       { name: "Xcel Energy (ArcGIS) checkbox", description: "Primary live outage feed. Must be ON for real storm hunting." },
@@ -507,6 +507,7 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
       { name: "Refresh Snapshots", description: "Reloads list of saved outage snapshots." },
       { name: "Storm Event name + Start Session", description: "Names and begins a tracked storm session." },
       { name: "End Event", description: "Closes the active storm session." },
+      { name: "Sweep Entire Map", description: "Between storms — removes every active dot from the map. History stays in the database." },
       { name: "Sweep Completed + Declined", description: "Removes finished/declined dots from active map — keeps DB history." },
       { name: "Archive Stale (48h / 72h)", description: "Hides untouched dots from active map after 48 or 72 hours." },
       { name: "Export CSV buttons", description: "Download outages (30d/90d), jobs (30d), or investigations (30d) for analysis." },

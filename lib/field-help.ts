@@ -51,6 +51,8 @@ export const ADMIN_FIELD_HELP: Record<string, string> = {
   synthType:
     "Mixed = random spread; Clustered = tight groups; Sparse = wide area; Honey Hole = dense high-value pocket.",
   stormEventName: "Label for this storm (e.g. June 2026 Derecho) — appears in session history.",
+  sweepEntireMap:
+    "Between storms: removes every dot from the active map for a clean slate. History stays in the database for exports.",
   sweepCompleted: "Removes completed and declined dots from the active map without deleting DB history.",
   archiveStale48: "Hides dots untouched for 48+ hours from the active map.",
   archiveStale72: "Same as 48h but for 72+ hours — use between storms.",

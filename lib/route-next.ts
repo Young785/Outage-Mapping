@@ -2,7 +2,7 @@ import { type StormPhase } from "./routing-v1";
 import type { RoutingMode } from "./routing-mode";
 import { loadSavedVisits, type FieldVisitCache } from "./field-visit";
 import { type PipelineMarker, type RoutingContext } from "./routing-pipeline";
-import { pickSweepRouteStop, pickSweepRouteStops, pickFullMapSweepStops, type SweepContext } from "./routing-sweep";
+import { pickSweepRouteStop, pickSweepRouteStops, type SweepContext } from "./routing-sweep";
 
 export type RoutableOutage = PipelineMarker;
 
@@ -49,24 +49,6 @@ export function pickNextRouteStops<T extends RoutableOutage>(
     visits,
     sweepContextFromRouting(context, phase),
     limit
-  );
-}
-
-/** Full-map sweep: ordered list of every actionable stop (Pac-Man greedy walk). */
-export function pickFullMapSweep<T extends RoutableOutage>(
-  outages: T[],
-  userLocation: { lat: number; lng: number },
-  phase: StormPhase = "phase_1",
-  visits: Record<string, FieldVisitCache> = loadSavedVisits(),
-  context: RoutingContext = {},
-  maxStops = 100
-): T[] {
-  return pickFullMapSweepStops(
-    outages,
-    userLocation,
-    visits,
-    sweepContextFromRouting(context, phase),
-    maxStops
   );
 }
 
