@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { seedInvestigationForm } from "@/lib/field-visit";
+import CustomerInfoFields, { type CustomerInfoValue } from "./CustomerInfoFields";
 
 type Outage = {
   id: number | string;
@@ -22,6 +23,11 @@ type Outage = {
   customerIntent?: string;
   verbalPrice?: string;
   followUpStatus?: string;
+  customerName?: string | null;
+  customerPhone?: string | null;
+  customerEmail?: string | null;
+  photos?: string[];
+  officeNotes?: string | null;
 };
 
 type OutageStatus =
@@ -38,7 +44,7 @@ type OutageStatus =
   | "grounding"
   | "completed";
 
-type PrimaryOutcome = "" | "utility_only" | "no_damage" | "not_target" | "opportunity_found";
+type PrimaryOutcome = "" | "utility_only" | "no_damage" | "not_target" | "underground_service" | "opportunity_found";
 type OpportunityAction =
   | ""
   | "no_contact"
@@ -91,7 +97,7 @@ function deriveStatus(
   action: OpportunityAction,
   startedSub: "" | "temp_power" | "return_grounding" | "job_completed"
 ): OutageStatus {
-  if (primary === "utility_only" || primary === "no_damage" || primary === "not_target") return "no_opportunity";
+  if (primary === "utility_only" || primary === "no_damage" || primary === "not_target" || primary === "underground_service") return "no_opportunity";
   if (primary !== "opportunity_found") return "unvisited";
 
   if (action === "no_contact") return "opportunity";
@@ -155,9 +161,23 @@ export default function InvestigationForm({ outage, token, required = false, onC
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editedAddress, setEditedAddress] = useState(outage.streetAddress ?? "");
+  const [customer, setCustomer] = useState<CustomerInfoValue>({
+    customerName: outage.customerName ?? "",
+    customerPhone: outage.customerPhone ?? "",
+    customerEmail: outage.customerEmail ?? "",
+    notes: outage.officeNotes ?? "",
+    photos: outage.photos ?? [],
+  });
 
   useEffect(() => {
     setEditedAddress(outage.streetAddress ?? "");
+    setCustomer({
+      customerName: outage.customerName ?? "",
+      customerPhone: outage.customerPhone ?? "",
+      customerEmail: outage.customerEmail ?? "",
+      notes: outage.officeNotes ?? "",
+      photos: outage.photos ?? [],
+    });
     applySeed(outage, {
       setPrimary,
       setAction,
@@ -166,7 +186,20 @@ export default function InvestigationForm({ outage, token, required = false, onC
       setVerbalPrice,
     });
     setError(null);
-  }, [outage.id, outage.streetAddress, outage.status, outage.investigationResult, outage.customerIntent, outage.verbalPrice, outage.followUpStatus]);
+  }, [
+    outage.id,
+    outage.streetAddress,
+    outage.status,
+    outage.investigationResult,
+    outage.customerIntent,
+    outage.verbalPrice,
+    outage.followUpStatus,
+    outage.customerName,
+    outage.customerPhone,
+    outage.customerEmail,
+    outage.officeNotes,
+    outage.photos,
+  ]);
 
   const serviceType = amperage && serviceSetup ? `${amperage} ${serviceSetup}`.toLowerCase() : "";
   const isOpportunity = primary === "opportunity_found";
@@ -263,22 +296,33 @@ export default function InvestigationForm({ outage, token, required = false, onC
       .filter(Boolean)
       .join("; ");
 
-    const fullNotes = [notes.trim(), scopeNote].filter(Boolean).join("\n");
+    const mergedNotes = [customer.notes.trim(), notes.trim(), scopeNote].filter(Boolean).join("\n");
 
     try {
       const trimmedAddress = editedAddress.trim();
-      if (trimmedAddress && trimmedAddress !== (outage.streetAddress ?? "").trim() && token) {
+      if (token) {
+        const customerPatch: Record<string, unknown> = {
+          id: outage.id,
+          customerName: customer.customerName.trim() || null,
+          customerPhone: customer.customerPhone.trim() || null,
+          customerEmail: customer.customerEmail.trim() || null,
+          photos: customer.photos,
+          notes: customer.notes.trim() || null,
+        };
+        if (trimmedAddress && trimmedAddress !== (outage.streetAddress ?? "").trim()) {
+          customerPatch.streetAddress = trimmedAddress;
+        }
         const addrRes = await fetch("/api/outages", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({ id: outage.id, streetAddress: trimmedAddress }),
+          body: JSON.stringify(customerPatch),
         });
         if (!addrRes.ok) {
           const d = await addrRes.json();
-          throw new Error(d.error || "Could not save address");
+          throw new Error(d.error || "Could not save customer info");
         }
       }
 
@@ -308,7 +352,8 @@ export default function InvestigationForm({ outage, token, required = false, onC
           techsRequired: techsRequired === "" ? null : techsRequired,
           verbalPriceQuoted: verbalPrice.trim() || null,
           noContactMade,
-          notes: fullNotes || null,
+          notes: mergedNotes || null,
+          photos: customer.photos,
           newStatus,
         }),
       });
@@ -561,6 +606,17 @@ export default function InvestigationForm({ outage, token, required = false, onC
               {shortAddress}
             </p>
           )}
+
+          <div style={{ marginBottom: "4px" }}>
+            <p style={{ margin: "0 0 8px", fontSize: "10px", fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+              Customer information
+            </p>
+            <CustomerInfoFields
+              value={customer}
+              onChange={setCustomer}
+              showName
+            />
+          </div>
         </div>
 
         <form ref={formRef} onSubmit={handleSubmit} style={{ padding: "16px 20px 24px" }}>
@@ -638,6 +694,14 @@ export default function InvestigationForm({ outage, token, required = false, onC
             onChange={() => { setPrimary("not_target"); setAction(""); }}
             label="Not a target property"
             sub="Warehouse, commercial, excluded zone"
+          />
+          <BigRadio
+            name="primary"
+            value="underground_service"
+            checked={primary === "underground_service"}
+            onChange={() => { setPrimary("underground_service"); setAction(""); }}
+            label="Underground service"
+            sub="Not our work — omit from routing"
           />
 
           {isOpportunity && (
@@ -764,7 +828,7 @@ export default function InvestigationForm({ outage, token, required = false, onC
               cursor: "pointer",
             }}
           >
-            {showOptional ? "▲ Hide optional details" : "▼ Optional: service type, notes, photos"}
+            {showOptional ? "▲ Hide optional details" : "▼ Optional: service type & tech notes"}
           </button>
 
           {showOptional && (
@@ -788,7 +852,7 @@ export default function InvestigationForm({ outage, token, required = false, onC
                   ))}
                 </select>
               </div>
-              <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>Notes</label>
+              <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>Field notes</label>
               <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} style={{ ...inp, resize: "vertical", marginBottom: "10px" }} placeholder="Access, materials…" />
               <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>Technicians needed</label>
               <input type="number" min={1} value={techsRequired} onChange={(e) => setTechsRequired(e.target.value === "" ? "" : Number(e.target.value))} style={{ ...inp, width: "100px" }} />

@@ -20,6 +20,7 @@ import { verifyJWT, extractBearerToken } from "@/lib/jwt";
 import { getActiveStormEvent, isPreviousStormMarker } from "@/lib/storm-events";
 import { syncLinkedJobLocation } from "@/lib/marker-location";
 import { MAX_MAP_CUSTOMERS } from "@/lib/routing-sweep";
+import { toPriority100 } from "@/lib/score-display";
 
 const CENTER = { lat: 44.9778, lng: -93.265 };
 const RADIUS_MILES = 40;
@@ -122,7 +123,7 @@ export async function GET(req: Request) {
   }
 
   // Filter to radius (unless skip)
-  const filtered = (skipFilter
+  let filtered = (skipFilter
     ? finalOutages
     : finalOutages.filter(
         (o) =>
@@ -138,15 +139,16 @@ export async function GET(req: Request) {
   let dbAddressMap: Record<string, string> = {};
   let dbMetaMap: Record<string, any> = {};
   let officeMarkers: any[] = [];
+  const inactiveUtilityIds = new Set<string>();
 
   if (isSupabaseConfigured) {
     try {
       const db = getAdmin();
       const ids = filtered.map((o) => o.id);
-      // Migration-007 columns that may not exist on older Supabase schemas.
-      const M007_COLS = "customer_name, customer_phone, lead_source, assigned_tech_name, office_notes, external_job_status";
-      const BASE_META_COLS = "id, status, street_address, priority_score, first_seen_at, source, zip_code, no_contact_made, needs_return_trip, storm_event_id, is_active";
-      const BASE_OFFICE_COLS = "id, source, lat, lng, street_address, city, county, state, customers, outage_type, cause, etr, crew_status, outage_impact, status, priority_score, first_seen_at";
+      // Migration-007+ columns that may not exist on older Supabase schemas.
+      const M007_COLS = "customer_name, customer_phone, customer_email, photos, lead_source, assigned_tech_name, office_notes, external_job_status";
+      const BASE_META_COLS = "id, status, street_address, priority_score, first_seen_at, last_updated_at, source, zip_code, no_contact_made, needs_return_trip, storm_event_id, is_active";
+      const BASE_OFFICE_COLS = "id, source, lat, lng, street_address, city, county, state, customers, outage_type, cause, etr, crew_status, outage_impact, status, priority_score, first_seen_at, last_updated_at";
 
       if (ids.length > 0) {
         // Try with migration-007 columns; fall back to legacy columns if the DB is behind.
@@ -172,8 +174,14 @@ export async function GET(req: Request) {
             dbStatusMap[r.id] = r.status;
             if (r.street_address) dbAddressMap[r.id] = r.street_address;
             dbMetaMap[r.id] = r;
+            if (r.is_active === false) inactiveUtilityIds.add(String(r.id));
           });
         }
+      }
+
+      // Hide ArcGIS / utility markers superseded by an office call-in triangle.
+      if (inactiveUtilityIds.size > 0) {
+        filtered = filtered.filter((o) => !inactiveUtilityIds.has(String(o.id)));
       }
 
       // Pull storm-app markers created outside utility feeds.
@@ -212,11 +220,24 @@ export async function GET(req: Request) {
 
       // Fallback safety: if office jobs exist but outage mirror rows failed/missed,
       // synthesize map markers directly from jobs so queue/map stay aligned.
-      const { data: officeJobs } = await db
-        .from("jobs")
-        .select("id, customer_name, customer_address, customer_lat, customer_lng, status, notes, priority_score, created_at")
-        .eq("source", "office")
-        .not("status", "in", "(\"completed\",\"cancelled\")");
+      let officeJobs: any[] | null = null;
+      {
+        const fullJobs = await db
+          .from("jobs")
+          .select("id, customer_name, customer_address, customer_phone, customer_email, customer_lat, customer_lng, status, notes, photos, priority_score, created_at")
+          .eq("source", "office")
+          .not("status", "in", "(\"completed\",\"cancelled\")");
+        if (!fullJobs.error) {
+          officeJobs = fullJobs.data;
+        } else {
+          const liteJobs = await db
+            .from("jobs")
+            .select("id, customer_name, customer_address, customer_phone, customer_lat, customer_lng, status, notes, priority_score, created_at")
+            .eq("source", "office")
+            .not("status", "in", "(\"completed\",\"cancelled\")");
+          officeJobs = liteJobs.data ?? [];
+        }
+      }
       if (officeJobs?.length) {
         const existing = new Set((officeRows ?? []).map((r) => String(r.id)));
         const { data: sweptOffice } = await db
@@ -229,6 +250,10 @@ export async function GET(req: Request) {
           if (status === "completed") return "completed";
           if (status === "assigned" || status === "in_progress") return "unvisited";
           return "unvisited";
+        };
+        const emailFromNotes = (notes: string | null | undefined) => {
+          const line = String(notes ?? "").split("\n").find((l) => l.startsWith("email="));
+          return line ? line.slice("email=".length).trim() : null;
         };
         const synthesized = officeJobs
           .filter((j) => j.customer_lat != null && j.customer_lng != null)
@@ -255,7 +280,9 @@ export async function GET(req: Request) {
               priority_score: j.priority_score ?? 0,
               first_seen_at: j.created_at ?? new Date().toISOString(),
               customer_name: j.customer_name ?? null,
-              customer_phone: null,
+              customer_phone: j.customer_phone ?? null,
+              customer_email: j.customer_email ?? emailFromNotes(j.notes),
+              photos: Array.isArray(j.photos) ? j.photos : [],
               lead_source: "office",
               assigned_tech_name: null,
               office_notes: j.notes ?? null,
@@ -362,17 +389,24 @@ export async function GET(req: Request) {
       scoreBreakdown.finalScore = score;
     }
 
+    const displayScore = toPriority100(
+      isNew && routingMode === "complicated" ? Math.max(score + 15, score) : score
+    );
+    scoreBreakdown = { ...scoreBreakdown, finalScore: displayScore };
+
     return {
       ...o,
       // Prefer DB-cached address over ArcGIS data (adapter doesn't provide streetAddress)
       streetAddress: dbAddressMap[o.id] ?? null,
       status: baseStatus,
-      priorityScore: isNew && routingMode === "complicated" ? Math.max(score + 15, score) : score,
+      priorityScore: displayScore,
       scoreBreakdown,
       isNew,
       milesFromCenter: haversineMiles(CENTER.lat, CENTER.lng, o.lat!, o.lng!),
       customerName: dbMetaMap[o.id]?.customer_name ?? null,
       customerPhone: dbMetaMap[o.id]?.customer_phone ?? null,
+      customerEmail: dbMetaMap[o.id]?.customer_email ?? null,
+      photos: Array.isArray(dbMetaMap[o.id]?.photos) ? dbMetaMap[o.id].photos : [],
       leadSource: dbMetaMap[o.id]?.lead_source ?? null,
       assignedTechName: dbMetaMap[o.id]?.assigned_tech_name ?? null,
       officeNotes: dbMetaMap[o.id]?.office_notes ?? null,
@@ -440,6 +474,13 @@ export async function GET(req: Request) {
         scoreBreakdown = { finalScore: v1.total, urgency: 0, parts: v1.parts };
       }
 
+      // Prefer stored job score (already 0–100) when present; else normalize routing score.
+      const stored = typeof o.priority_score === "number" ? o.priority_score : null;
+      const displayScore =
+        stored != null && stored >= 0 && stored <= 100
+          ? Math.round(stored)
+          : toPriority100(priorityScore);
+
       return {
       id: o.id,
       source: o.source,
@@ -456,14 +497,16 @@ export async function GET(req: Request) {
       outageImpact: o.outage_impact ?? null,
       streetAddress: o.street_address ?? null,
       status: baseStatus,
-      priorityScore,
-      scoreBreakdown,
+      priorityScore: displayScore,
+      scoreBreakdown: { ...scoreBreakdown, finalScore: displayScore },
       milesFromCenter,
       customerName: o.customer_name ?? null,
       customerPhone: o.customer_phone ?? null,
-      leadSource: o.lead_source ?? null,
+      customerEmail: o.customer_email ?? null,
+      photos: Array.isArray(o.photos) ? o.photos : [],
+      leadSource: o.lead_source ?? "office",
       assignedTechName: o.assigned_tech_name ?? null,
-      officeNotes: o.office_notes ?? null,
+      officeNotes: o.office_notes ?? o.cause ?? null,
       externalJobStatus: o.external_job_status ?? null,
       firstSeenAt: o.first_seen_at ?? null,
       lastUpdatedAt: o.last_updated_at ?? null,
@@ -545,7 +588,18 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
-    const { id, status, notes, streetAddress, lat, lng } = body;
+    const {
+      id,
+      status,
+      notes,
+      streetAddress,
+      lat,
+      lng,
+      customerName,
+      customerPhone,
+      customerEmail,
+      photos,
+    } = body;
 
     if (!id) {
       return NextResponse.json({ error: "id is required" }, { status: 400 });
@@ -555,9 +609,13 @@ export async function POST(req: Request) {
       streetAddress === undefined &&
       lat === undefined &&
       lng === undefined &&
-      notes === undefined
+      notes === undefined &&
+      customerName === undefined &&
+      customerPhone === undefined &&
+      customerEmail === undefined &&
+      photos === undefined
     ) {
-      return NextResponse.json({ error: "status, streetAddress, lat/lng, or notes required" }, { status: 400 });
+      return NextResponse.json({ error: "status, streetAddress, lat/lng, notes, or customer fields required" }, { status: 400 });
     }
 
     if (lat !== undefined || lng !== undefined) {
@@ -591,7 +649,18 @@ export async function POST(req: Request) {
       if (status) update.status = status;
       else update.status = statusToWrite;
       if (streetAddress !== undefined) update.street_address = streetAddress;
-      if (notes !== undefined) update.cause = notes;
+      if (notes !== undefined) {
+        update.cause = notes;
+        update.office_notes = notes;
+      }
+      if (customerName !== undefined) update.customer_name = customerName;
+      if (customerPhone !== undefined) update.customer_phone = customerPhone;
+      if (customerEmail !== undefined) update.customer_email = customerEmail;
+      if (photos !== undefined) {
+        update.photos = Array.isArray(photos)
+          ? photos.filter((p: unknown) => typeof p === "string").slice(0, 6)
+          : [];
+      }
       if (lat !== undefined && lng !== undefined) {
         update.lat = Number(lat);
         update.lng = Number(lng);
@@ -602,10 +671,16 @@ export async function POST(req: Request) {
       console.log("[outages POST] update payload for id=", id, "→", update);
 
       let { error } = await db.from("outages").update(update).eq("id", String(id));
+      // Strip unknown columns (older schemas) and retry.
+      while (error) {
+        const m = String(error.message || "").match(/Could not find the '([^']+)' column/);
+        if (!m) break;
+        delete update[m[1]];
+        const retry = await db.from("outages").update(update).eq("id", String(id));
+        error = retry.error;
+      }
       if (error && /lead_source/.test(error.message ?? "")) {
         console.warn("[outages POST] lead_source write rejected:", error.message);
-        // DB schema is behind migration 007 — retry without lead_source so the
-        // status update at least lands. Shape will fall back to status-driven.
         delete update.lead_source;
         const retry = await db.from("outages").update(update).eq("id", String(id));
         error = retry.error;

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import CustomerInfoFields, { type CustomerInfoValue } from "./CustomerInfoFields";
 
 type TechOption = { userId: string; name: string };
 
@@ -11,6 +12,8 @@ export type QueueDrawerItem = {
   address: string | null;
   status: string;
   customerPhone: string | null;
+  customerEmail?: string | null;
+  photos?: string[];
   assignedTechId: string | null;
   assignedTechName: string | null;
   notes: string | null;
@@ -29,6 +32,19 @@ type Props = {
   onAssignOutage?: (outageId: string, techId: string, lat: number, lng: number) => Promise<void>;
 };
 
+function emailFromNotes(notes: string | null | undefined): string {
+  const line = String(notes ?? "").split("\n").find((l) => l.startsWith("email="));
+  return line ? line.slice("email=".length).trim() : "";
+}
+
+function stripEmailFromNotes(notes: string): string {
+  return notes
+    .split("\n")
+    .filter((l) => !l.startsWith("email="))
+    .join("\n")
+    .trim();
+}
+
 export default function QueueItemDrawer({
   item,
   token,
@@ -39,18 +55,28 @@ export default function QueueItemDrawer({
   onNavigate,
   onAssignOutage,
 }: Props) {
-  const [displayName, setDisplayName] = useState(item.displayName);
+  const [customer, setCustomer] = useState<CustomerInfoValue>({
+    customerName: item.displayName,
+    customerPhone: item.customerPhone ?? "",
+    customerEmail: item.customerEmail ?? emailFromNotes(item.notes),
+    notes: stripEmailFromNotes(item.notes ?? ""),
+    photos: item.photos ?? [],
+  });
   const [address, setAddress] = useState(item.address ?? "");
-  const [notes, setNotes] = useState(item.notes ?? "");
   const [status, setStatus] = useState(item.status);
   const [assignedTechId, setAssignedTechId] = useState(item.assignedTechId ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setDisplayName(item.displayName);
+    setCustomer({
+      customerName: item.displayName,
+      customerPhone: item.customerPhone ?? "",
+      customerEmail: item.customerEmail ?? emailFromNotes(item.notes),
+      notes: stripEmailFromNotes(item.notes ?? ""),
+      photos: item.photos ?? [],
+    });
     setAddress(item.address ?? "");
-    setNotes(item.notes ?? "");
     setStatus(item.status);
     setAssignedTechId(item.assignedTechId ?? "");
   }, [item]);
@@ -64,9 +90,12 @@ export default function QueueItemDrawer({
           method: "PATCH",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify({
-            customerName: displayName,
+            customerName: customer.customerName,
             customerAddress: address,
-            notes,
+            customerPhone: customer.customerPhone.trim() || null,
+            customerEmail: customer.customerEmail.trim() || null,
+            notes: customer.notes,
+            photos: customer.photos,
             status,
             assignedTechId: assignedTechId || null,
           }),
@@ -80,7 +109,16 @@ export default function QueueItemDrawer({
         const res = await fetch("/api/outages", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ id: item.id, status, notes, streetAddress: address }),
+          body: JSON.stringify({
+            id: item.id,
+            status,
+            notes: customer.notes,
+            streetAddress: address,
+            customerName: customer.customerName.trim() || null,
+            customerPhone: customer.customerPhone.trim() || null,
+            customerEmail: customer.customerEmail.trim() || null,
+            photos: customer.photos,
+          }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Save failed");
@@ -174,21 +212,16 @@ export default function QueueItemDrawer({
             <div style={{ padding: "10px 12px", background: "#fef2f2", color: "#b91c1c", borderRadius: "8px", fontSize: "13px" }}>{error}</div>
           )}
 
-          {item.type === "job" && (
-            <label style={{ display: "block" }}>
-              <span style={{ fontSize: "12px", fontWeight: 600, color: "#374151" }}>Customer name</span>
-              <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} style={{ ...inp, marginTop: "6px" }} />
-            </label>
-          )}
+          <CustomerInfoFields
+            value={customer}
+            onChange={setCustomer}
+            showName={item.type === "job" || true}
+            nameRequired={item.type === "job"}
+          />
 
           <label style={{ display: "block" }}>
             <span style={{ fontSize: "12px", fontWeight: 600, color: "#374151" }}>Address</span>
             <input value={address} onChange={(e) => setAddress(e.target.value)} style={{ ...inp, marginTop: "6px" }} />
-          </label>
-
-          <label style={{ display: "block" }}>
-            <span style={{ fontSize: "12px", fontWeight: 600, color: "#374151" }}>Notes</span>
-            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} style={{ ...inp, marginTop: "6px", resize: "vertical" }} />
           </label>
 
           <label style={{ display: "block" }}>
@@ -231,9 +264,6 @@ export default function QueueItemDrawer({
 
           {item.assignedTechName && !assignedTechId && (
             <div style={{ fontSize: "12px", color: "#6b7280" }}>Currently: {item.assignedTechName}</div>
-          )}
-          {item.customerPhone && (
-            <div style={{ fontSize: "13px", color: "#374151" }}>Phone: {item.customerPhone}</div>
           )}
 
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "4px" }}>

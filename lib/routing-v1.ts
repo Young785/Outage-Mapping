@@ -193,7 +193,7 @@ function driveTimePenalty(miles?: number): number {
 }
 
 function exclusionPenalty(inExclusionZone?: boolean, investigationResult?: string, status?: string): number {
-  if (investigationResult === "not_target") return 10_000;
+  if (investigationResult === "not_target" || investigationResult === "underground_service") return 10_000;
   if (status === "no_opportunity" || status === "completed") return 10_000;
   if (inExclusionZone) return 800;
   return 0;

@@ -11,6 +11,7 @@ import { calculateV1RouteScore, computeClusterMap, type StormPhase } from "@/lib
 import { calculateSimpleRouteScore } from "@/lib/routing-simple";
 import { getRoutingMode } from "@/lib/routing-mode";
 import { isInTerritory, territoryFromRow } from "@/lib/territory-match";
+import { toPriority100 } from "@/lib/score-display";
 
 const ACTIVE_JOB_STATUSES = ["pending", "assigned", "in_progress"] as const;
 
@@ -23,7 +24,7 @@ const OUTAGE_QUEUE_STATUSES = [
 ] as const;
 
 const OUTAGE_SELECT =
-  "id, lat, lng, city, county, customers, outage_type, cause, etr, status, priority_score, street_address, source, first_seen_at, zip_code";
+  "id, lat, lng, city, county, customers, outage_type, cause, etr, status, priority_score, street_address, source, first_seen_at, zip_code, customer_phone, customer_email, photos";
 
 function estimateDriveMinutes(miles: number | null): number | null {
   if (miles == null) return null;
@@ -91,9 +92,23 @@ export async function GET(req: Request) {
 
     let { data: outages, error: outErr } = await outagesQuery;
 
+    if (outErr && /customer_email|photos|Could not find/i.test(outErr.message)) {
+      const liteSelect =
+        "id, lat, lng, city, county, customers, outage_type, cause, etr, status, priority_score, street_address, source, first_seen_at, zip_code";
+      let lite = db
+        .from("outages")
+        .select(liteSelect)
+        .eq("is_active", true)
+        .in("status", [...OUTAGE_QUEUE_STATUSES]);
+      lite = isSimulation ? lite.eq("is_simulation", true) : lite.eq("is_simulation", false);
+      const retry = await lite;
+      outages = (retry.data as typeof outages) ?? null;
+      outErr = retry.error;
+    }
+
     if (outErr && /status|check constraint|invalid input/i.test(outErr.message)) {
       const fallback = await db.from("outages").select(OUTAGE_SELECT).eq("is_active", true);
-      outages = fallback.data;
+      outages = (fallback.data as typeof outages) ?? null;
       outErr = fallback.error;
     }
 
@@ -144,12 +159,21 @@ export async function GET(req: Request) {
       inTerritory: boolean;
       jobType: string | null;
       customerPhone: string | null;
+      customerEmail: string | null;
+      photos: string[];
       assignedTechId: string | null;
       assignedTechName: string | null;
       notes: string | null;
       sortOrder: number | null;
       priority: number | null;
       createdAt: string;
+      /** Raw stored score before 0–100 display clamp (jobs already store 0–100). */
+      storedScore: number | null;
+    };
+
+    const emailFromNotes = (notes: string | null | undefined) => {
+      const line = String(notes ?? "").split("\n").find((l) => l.startsWith("email="));
+      return line ? line.slice("email=".length).trim() : null;
     };
 
     const queueItems: QueueItem[] = [];
@@ -175,13 +199,16 @@ export async function GET(req: Request) {
         estimatedMinutes: estimateDriveMinutes(dist),
         inTerritory: inTerritory(j.customer_lat, j.customer_lng),
         jobType: j.job_type,
-        customerPhone: j.customer_phone,
+        customerPhone: j.customer_phone ?? null,
+        customerEmail: j.customer_email ?? emailFromNotes(j.notes),
+        photos: Array.isArray(j.photos) ? j.photos : [],
         assignedTechId: j.assigned_tech_id,
         assignedTechName: (j.assigned_tech as { name?: string } | null)?.name ?? null,
         notes: j.notes ?? null,
         sortOrder: j.sort_order ?? null,
         priority: j.priority ?? null,
         createdAt: j.created_at,
+        storedScore: typeof j.priority_score === "number" ? j.priority_score : null,
       });
     }
 
@@ -209,13 +236,16 @@ export async function GET(req: Request) {
         estimatedMinutes: estimateDriveMinutes(dist),
         inTerritory: inTerritory(o.lat, o.lng, o.zip_code ?? null),
         jobType: o.outage_type,
-        customerPhone: null,
+        customerPhone: o.customer_phone ?? null,
+        customerEmail: o.customer_email ?? null,
+        photos: Array.isArray(o.photos) ? o.photos : [],
         assignedTechId: null,
         assignedTechName: null,
         notes: o.cause ?? null,
         sortOrder: null,
         priority: null,
         createdAt: o.first_seen_at,
+        storedScore: typeof o.priority_score === "number" ? o.priority_score : null,
       });
     }
 
@@ -240,14 +270,27 @@ export async function GET(req: Request) {
         : new Map();
 
     for (const item of queueItems) {
-      if (item.lat == null || item.lng == null) continue;
+      // Office jobs already store a 0–100 score at create time — keep it.
+      if (
+        item.type === "job" &&
+        item.storedScore != null &&
+        item.storedScore >= 0 &&
+        item.storedScore <= 100
+      ) {
+        item.priorityScore = Math.round(item.storedScore);
+        continue;
+      }
+      if (item.lat == null || item.lng == null) {
+        item.priorityScore = toPriority100(item.priorityScore);
+        continue;
+      }
       if (routingMode === "simple") {
         const simple = calculateSimpleRouteScore(
           { status: item.status, customers: item.customers, source: item.source },
           item.distanceMiles ?? 0,
           { tempOutMode }
         );
-        item.priorityScore = simple.total;
+        item.priorityScore = toPriority100(simple.total);
       } else {
         const v1 = calculateV1RouteScore(
           {
@@ -264,7 +307,7 @@ export async function GET(req: Request) {
           clusterMap.get(String(item.id)),
           { tempOutMode }
         );
-        item.priorityScore = v1.total;
+        item.priorityScore = toPriority100(v1.total);
       }
     }
 

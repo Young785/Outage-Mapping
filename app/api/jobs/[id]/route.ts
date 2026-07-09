@@ -30,6 +30,9 @@ export async function PATCH(
       priority,
       customerName,
       customerAddress,
+      customerPhone,
+      customerEmail,
+      photos,
       sortOrder,
     } = body;
 
@@ -49,19 +52,64 @@ export async function PATCH(
     if (priority !== undefined) update.priority = Math.min(4, Math.max(1, Number(priority)));
     if (customerName !== undefined) update.customer_name = customerName;
     if (customerAddress !== undefined) update.customer_address = customerAddress;
+    if (customerPhone !== undefined) update.customer_phone = customerPhone;
+    if (customerEmail !== undefined) update.customer_email = customerEmail;
+    if (photos !== undefined) {
+      update.photos = Array.isArray(photos)
+        ? photos.filter((p: unknown) => typeof p === "string").slice(0, 6)
+        : [];
+    }
     if (sortOrder !== undefined) update.sort_order = Number(sortOrder);
 
     const { data: jobBefore, error: fetchErr } = await db.from("jobs").select("id, source").eq("id", id).maybeSingle();
     if (fetchErr) return NextResponse.json({ error: fetchErr.message }, { status: 500 });
 
-    const { error } = await db.from("jobs").update(update).eq("id", id);
+    // Strip unknown columns if migration not applied yet.
+    let error: { message?: string } | null = null;
+    {
+      const first = await db.from("jobs").update(update).eq("id", id);
+      if (first.error) {
+        const m = String(first.error.message || "").match(/Could not find the '([^']+)' column/);
+        if (m && (m[1] === "customer_email" || m[1] === "photos")) {
+          const stripped = { ...update };
+          delete stripped.customer_email;
+          delete stripped.photos;
+          const second = await db.from("jobs").update(stripped).eq("id", id);
+          error = second.error;
+          if (!second.error && customerEmail !== undefined) {
+            // Preserve email in notes when column missing
+            const { data: existing } = await db.from("jobs").select("notes").eq("id", id).maybeSingle();
+            const withoutEmail = String(existing?.notes ?? "")
+              .split("\n")
+              .filter((line) => !line.startsWith("email="))
+              .join("\n");
+            const nextNotes = [withoutEmail, customerEmail ? `email=${customerEmail}` : null]
+              .filter(Boolean)
+              .join("\n");
+            await db.from("jobs").update({ notes: nextNotes || null }).eq("id", id);
+          }
+        } else {
+          error = first.error;
+        }
+      }
+    }
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
     if (jobBefore?.source === "office") {
       const mirrorUpdate: Record<string, unknown> = { last_updated_at: new Date().toISOString() };
       if (customerName !== undefined) mirrorUpdate.customer_name = customerName;
       if (customerAddress !== undefined) mirrorUpdate.street_address = customerAddress;
-      if (notes !== undefined) mirrorUpdate.cause = notes;
+      if (customerPhone !== undefined) mirrorUpdate.customer_phone = customerPhone;
+      if (customerEmail !== undefined) mirrorUpdate.customer_email = customerEmail;
+      if (photos !== undefined) {
+        mirrorUpdate.photos = Array.isArray(photos)
+          ? photos.filter((p: unknown) => typeof p === "string").slice(0, 6)
+          : [];
+      }
+      if (notes !== undefined) {
+        mirrorUpdate.cause = notes;
+        mirrorUpdate.office_notes = notes;
+      }
       if (status === "cancelled") mirrorUpdate.is_active = false;
       if (assignedTechId) {
         const { data: techUser } = await db.from("users").select("name").eq("id", assignedTechId).maybeSingle();
@@ -70,7 +118,15 @@ export async function PATCH(
         mirrorUpdate.assigned_tech_name = null;
       }
       if (Object.keys(mirrorUpdate).length > 1) {
-        await db.from("outages").update(mirrorUpdate).eq("id", `office-${id}`);
+        // Best-effort mirror; strip unknown columns if needed
+        let mirrorErr = (await db.from("outages").update(mirrorUpdate).eq("id", `office-${id}`)).error;
+        while (mirrorErr) {
+          const m = String(mirrorErr.message || "").match(/Could not find the '([^']+)' column/);
+          if (!m) break;
+          delete mirrorUpdate[m[1]];
+          if (Object.keys(mirrorUpdate).length <= 1) break;
+          mirrorErr = (await db.from("outages").update(mirrorUpdate).eq("id", `office-${id}`)).error;
+        }
       }
     }
 

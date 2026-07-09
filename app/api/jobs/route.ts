@@ -9,6 +9,8 @@ import { verifyJWT, extractBearerToken } from "@/lib/jwt";
 import { forwardGeocode } from "@/lib/geocache";
 import { calculateScore, getWeights } from "@/lib/priority";
 import { getActiveStormEvent } from "@/lib/storm-events";
+import { findSupersededUtilityMarkers } from "@/lib/address-match";
+import { toPriority100 } from "@/lib/score-display";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -69,6 +71,7 @@ export async function POST(req: Request) {
       lineDrop = false,
       powerOnLineDrop = false,
       neighborhoodDead = false,
+      photos = [],
     } = body;
 
     const composedAddress =
@@ -81,13 +84,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "customerName and address (street, city, state) are required" }, { status: 400 });
     }
 
-    const notesWithMeta = [
+    const cleanNotes = [
       notes?.trim(),
       neighborhoodDead && "neighborhood_dead=true",
-      customerEmail?.trim() && `email=${customerEmail.trim()}`,
     ]
       .filter(Boolean)
       .join("\n");
+
+    const photoList = Array.isArray(photos)
+      ? photos.filter((p: unknown) => typeof p === "string").slice(0, 6)
+      : [];
 
     // Forward-geocode address → lat/lng so the job appears on the map and can be dispatched
     let lat = customerLat;
@@ -104,7 +110,7 @@ export async function POST(req: Request) {
     const officeJobType = "repair";
 
     const weights = await getWeights();
-    const score = calculateScore({
+    const rawScore = calculateScore({
       customers: 1,
       outageType: officeJobType,
       isOfficeJob: true,
@@ -113,6 +119,7 @@ export async function POST(req: Request) {
       powerOnLineDrop,
       wantsToProceed: isConfirmedOpportunity,
     }, weights);
+    const score = toPriority100(rawScore);
 
     if (!isSupabaseConfigured) {
       return NextResponse.json({ success: true, stored: false });
@@ -131,28 +138,62 @@ export async function POST(req: Request) {
       );
     }
 
-    const { data: job, error } = await db
-      .from("jobs")
-      .insert({
-        source: "office",
-        outage_id: outageId || null,
-        customer_name: customerName,
-        customer_address: composedAddress,
-        customer_phone: customerPhone || null,
-        customer_lat: lat || null,
-        customer_lng: lng || null,
-        job_type: officeJobType,
-        priority: Math.min(4, Math.max(1, Number(priority))),
-        notes: notesWithMeta || null,
-        status: "pending",
-        is_confirmed_opportunity: isConfirmedOpportunity,
-        priority_score: score,
-        created_by: creator.id,
-      })
-      .select("*")
-      .single();
+    // Prefer inserting with email/photos; fall back if migration not applied yet.
+    const jobBase: Record<string, unknown> = {
+      source: "office",
+      outage_id: outageId || null,
+      customer_name: customerName,
+      customer_address: composedAddress,
+      customer_phone: customerPhone || null,
+      customer_lat: lat || null,
+      customer_lng: lng || null,
+      job_type: officeJobType,
+      priority: Math.min(4, Math.max(1, Number(priority))),
+      notes: cleanNotes || null,
+      status: "pending",
+      is_confirmed_opportunity: isConfirmedOpportunity,
+      priority_score: score,
+      created_by: creator.id,
+    };
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    let job: Record<string, any> | null = null;
+    let insertError: { message?: string } | null = null;
+    {
+      const full = await db
+        .from("jobs")
+        .insert({
+          ...jobBase,
+          customer_email: customerEmail?.trim() || null,
+          photos: photoList,
+        })
+        .select("*")
+        .single();
+      if (!full.error) {
+        job = full.data;
+      } else {
+        const missingCol = String(full.error.message || "").match(/Could not find the '([^']+)' column/);
+        if (missingCol) {
+          const fallback = await db.from("jobs").insert(jobBase).select("*").single();
+          job = fallback.data;
+          insertError = fallback.error;
+          // Keep email in notes if column missing
+          if (job && customerEmail?.trim()) {
+            await db
+              .from("jobs")
+              .update({
+                notes: [cleanNotes, `email=${customerEmail.trim()}`].filter(Boolean).join("\n") || null,
+              })
+              .eq("id", job.id);
+          }
+        } else {
+          insertError = full.error;
+        }
+      }
+    }
+
+    if (insertError || !job) {
+      return NextResponse.json({ error: insertError?.message || "Failed to create job" }, { status: 500 });
+    }
 
     // Mirror office call-in leads into outages so they appear as triangle markers on map.
     if (lat && lng) {
@@ -165,7 +206,7 @@ export async function POST(req: Request) {
         county: "Unknown",
         customers: 1,
         outage_type: "Office Call-in Lead",
-        cause: notesWithMeta || "Office-entered lead",
+        cause: cleanNotes || "Office-entered lead",
         status: "unvisited",
         street_address: composedAddress,
         city: city?.trim() || null,
@@ -173,6 +214,9 @@ export async function POST(req: Request) {
         zip_code: zip?.trim() || null,
         customer_name: customerName ?? null,
         customer_phone: customerPhone ?? null,
+        customer_email: customerEmail?.trim() || null,
+        photos: photoList,
+        office_notes: cleanNotes || null,
         lead_source: "office",
         priority_score: score,
         is_active: true,
@@ -188,6 +232,9 @@ export async function POST(req: Request) {
         "lead_source",
         "customer_name",
         "customer_phone",
+        "customer_email",
+        "photos",
+        "office_notes",
         "priority_score",
         "is_active",
         "first_seen_at",
@@ -216,9 +263,35 @@ export async function POST(req: Request) {
         }
         if (officeMirrored) break;
       }
-      // Office mirror is best-effort. The job itself was already saved above,
-      // so we don't fail the whole request if the mirror upsert never lands —
-      // the map will fall back to synthesising the triangle from the job row.
+
+      // Supersede nearby ArcGIS / utility white markers at the same address.
+      try {
+        const { data: nearby } = await db
+          .from("outages")
+          .select("id, lat, lng, street_address, source, is_active")
+          .eq("is_active", true)
+          .in("source", ["xcel", "connexus", "arcgis"]);
+        const superseded = findSupersededUtilityMarkers(
+          { lat, lng, address: composedAddress },
+          nearby ?? []
+        );
+        if (superseded.length) {
+          await db
+            .from("outages")
+            .update({
+              is_active: false,
+              office_notes: `Superseded by office call-in office-${job.id}`,
+              last_updated_at: new Date().toISOString(),
+            })
+            .in("id", superseded);
+          // Link first superseded utility outage to the job when not already linked
+          if (!outageId && superseded[0]) {
+            await db.from("jobs").update({ outage_id: superseded[0] }).eq("id", job.id);
+          }
+        }
+      } catch (err) {
+        console.warn("[jobs] ArcGIS supersede failed:", err);
+      }
     }
 
     return NextResponse.json({ success: true, job });

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import AddressFields, { type AddressValue } from "./AddressFields";
+import CustomerInfoFields, { type CustomerInfoValue } from "./CustomerInfoFields";
 
 type Props = {
   token: string;
@@ -25,16 +26,20 @@ const emptyAddress = (): AddressValue => ({
   lng: null,
 });
 
+const emptyCustomer = (): CustomerInfoValue => ({
+  customerName: "",
+  customerPhone: "",
+  customerEmail: "",
+  notes: "",
+  photos: [],
+});
+
 export default function JobForm({ token, onClose, onCreated }: Props) {
-  const [customerName, setCustomerName] = useState("");
+  const [customer, setCustomer] = useState<CustomerInfoValue>(emptyCustomer);
   const [address, setAddress] = useState<AddressValue>(emptyAddress);
-  const [customerPhone, setCustomerPhone] = useState("");
-  const [customerEmail, setCustomerEmail] = useState("");
   const [priority, setPriority] = useState(3);
-  const [lineDrop, setLineDrop] = useState(false);
-  const [powerOnLineDrop, setPowerOnLineDrop] = useState(false);
-  const [neighborhoodDead, setNeighborhoodDead] = useState(false);
-  const [notes, setNotes] = useState("");
+  const [primaryPower, setPrimaryPower] = useState<"" | "has_power" | "no_power">("");
+  const [noPowerDetail, setNoPowerDetail] = useState<"" | "no_power_on_drop" | "no_power_no_drop" | "neighborhood_dead">("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -44,12 +49,20 @@ export default function JobForm({ token, onClose, onCreated }: Props) {
       setError("Street, city, and state are required.");
       return;
     }
+    if (!customer.customerName.trim()) {
+      setError("Customer name is required.");
+      return;
+    }
     setSubmitting(true);
     setError(null);
 
     const customerAddress = [address.street.trim(), address.city.trim(), address.state.trim(), address.zip.trim()]
       .filter(Boolean)
       .join(", ");
+
+    const lineDrop = noPowerDetail === "no_power_on_drop" || noPowerDetail === "no_power_no_drop";
+    const powerOnLineDrop = noPowerDetail === "no_power_on_drop";
+    const neighborhoodDead = noPowerDetail === "neighborhood_dead";
 
     try {
       const res = await fetch("/api/jobs", {
@@ -59,21 +72,22 @@ export default function JobForm({ token, onClose, onCreated }: Props) {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          customerName,
+          customerName: customer.customerName.trim(),
           customerAddress,
           street: address.street.trim(),
           city: address.city.trim(),
           state: address.state.trim(),
           zip: address.zip.trim(),
-          customerPhone,
-          customerEmail,
+          customerPhone: customer.customerPhone.trim() || null,
+          customerEmail: customer.customerEmail.trim() || null,
           customerLat: address.lat,
           customerLng: address.lng,
           priority,
           lineDrop,
           powerOnLineDrop,
           neighborhoodDead,
-          notes,
+          notes: customer.notes.trim() || null,
+          photos: customer.photos,
           isConfirmedOpportunity: true,
         }),
       });
@@ -89,16 +103,6 @@ export default function JobForm({ token, onClose, onCreated }: Props) {
       setSubmitting(false);
     }
   }
-
-  const inputStyle: React.CSSProperties = {
-    width: "100%",
-    padding: "10px 12px",
-    fontSize: "14px",
-    border: "1px solid #e5e7eb",
-    borderRadius: "8px",
-    outline: "none",
-    boxSizing: "border-box",
-  };
 
   const labelStyle: React.CSSProperties = {
     display: "block",
@@ -125,20 +129,15 @@ export default function JobForm({ token, onClose, onCreated }: Props) {
           )}
 
           <div style={{ marginBottom: "16px" }}>
-            <label style={labelStyle}>Customer Name <span style={{ color: "#ef4444" }}>*</span></label>
-            <input type="text" value={customerName} onChange={(e) => setCustomerName(e.target.value)} required style={inputStyle} placeholder="Full name or company" />
-          </div>
-
-          <AddressFields value={address} onChange={setAddress} />
-
-          <div style={{ marginBottom: "16px" }}>
-            <label style={labelStyle}>Phone</label>
-            <input type="tel" value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} placeholder="(612) 555-0100" style={inputStyle} />
+            <CustomerInfoFields
+              value={customer}
+              onChange={setCustomer}
+              nameRequired
+            />
           </div>
 
           <div style={{ marginBottom: "16px" }}>
-            <label style={labelStyle}>Email</label>
-            <input type="email" value={customerEmail} onChange={(e) => setCustomerEmail(e.target.value)} placeholder="customer@email.com" style={inputStyle} />
+            <AddressFields value={address} onChange={setAddress} enableMapPicker={false} />
           </div>
 
           <div style={{ marginBottom: "16px" }}>
@@ -169,25 +168,63 @@ export default function JobForm({ token, onClose, onCreated }: Props) {
           </div>
 
           <div style={{ marginBottom: "16px", padding: "14px", background: "#f9fafb", borderRadius: "8px", border: "1px solid #e5e7eb" }}>
-            <label style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer", marginBottom: "8px" }}>
-              <input type="checkbox" checked={lineDrop} onChange={(e) => { setLineDrop(e.target.checked); if (!e.target.checked) setPowerOnLineDrop(false); }} style={{ width: "17px", height: "17px", accentColor: "#0d9488" }} />
-              <span style={{ fontSize: "14px", fontWeight: 600 }}>Line drop present</span>
-            </label>
-            {lineDrop && (
-              <label style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer", marginLeft: "26px", marginBottom: "8px" }}>
-                <input type="checkbox" checked={powerOnLineDrop} onChange={(e) => setPowerOnLineDrop(e.target.checked)} style={{ width: "17px", height: "17px", accentColor: "#0d9488" }} />
-                <span style={{ fontSize: "14px" }}>Power on line drop</span>
-              </label>
+            <p style={{ margin: "0 0 10px", fontSize: "13px", fontWeight: 700, color: "#374151" }}>Power status</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              {[
+                { v: "has_power" as const, l: "Has power" },
+                { v: "no_power" as const, l: "No power" },
+              ].map((o) => (
+                <button
+                  key={o.v}
+                  type="button"
+                  onClick={() => {
+                    setPrimaryPower(o.v);
+                    if (o.v === "has_power") setNoPowerDetail("");
+                  }}
+                  style={{
+                    padding: "10px 14px",
+                    borderRadius: "8px",
+                    fontSize: "14px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    textAlign: "left",
+                    border: `2px solid ${primaryPower === o.v ? "#0d9488" : "#e5e7eb"}`,
+                    background: primaryPower === o.v ? "#f0fdfa" : "#fff",
+                    color: primaryPower === o.v ? "#0d9488" : "#374151",
+                  }}
+                >
+                  {o.l}
+                </button>
+              ))}
+            </div>
+            {primaryPower === "no_power" && (
+              <div style={{ marginLeft: "12px", marginTop: "8px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                {[
+                  { v: "no_power_on_drop" as const, l: "Power on line drop" },
+                  { v: "no_power_no_drop" as const, l: "No power on line drop" },
+                  { v: "neighborhood_dead" as const, l: "Neighborhood dead (entire area out)" },
+                ].map((o) => (
+                  <button
+                    key={o.v}
+                    type="button"
+                    onClick={() => setNoPowerDetail(o.v)}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: "8px",
+                      fontSize: "14px",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      textAlign: "left",
+                      border: `2px solid ${noPowerDetail === o.v ? "#0d9488" : "#e5e7eb"}`,
+                      background: noPowerDetail === o.v ? "#f0fdfa" : "#fff",
+                      color: noPowerDetail === o.v ? "#0d9488" : "#374151",
+                    }}
+                  >
+                    {o.l}
+                  </button>
+                ))}
+              </div>
             )}
-            <label style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer" }}>
-              <input type="checkbox" checked={neighborhoodDead} onChange={(e) => setNeighborhoodDead(e.target.checked)} style={{ width: "17px", height: "17px", accentColor: "#0d9488" }} />
-              <span style={{ fontSize: "14px" }}>Entire neighborhood without power</span>
-            </label>
-          </div>
-
-          <div style={{ marginBottom: "16px" }}>
-            <label style={labelStyle}>Notes</label>
-            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} style={{ ...inputStyle, resize: "vertical" }} placeholder="Access instructions, special requirements…" />
           </div>
 
           <div style={{ display: "flex", gap: "12px" }}>

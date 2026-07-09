@@ -68,7 +68,7 @@ function passesBaseExclusions<T extends PipelineMarker>(
   if (isRoutingExcluded(item, visits)) return false;
   if (item.inExclusionZone) return false;
   if (hideStaleMarkers && item.isStaleMarker) return false;
-  if (item.investigationResult === "not_target") return false;
+  if (item.investigationResult === "not_target" || item.investigationResult === "underground_service") return false;
   return true;
 }
 

@@ -68,7 +68,7 @@ function passesExclusions<T extends SweepMarker>(
   if (isRoutingExcluded(item, visits)) return false;
   if (item.inExclusionZone) return false;
   if (ctx.hideStaleMarkers && item.isStaleMarker) return false;
-  if (item.investigationResult === "not_target") return false;
+  if (item.investigationResult === "not_target" || item.investigationResult === "underground_service") return false;
   if (
     item.assignedTechName &&
     ctx.currentTechName &&

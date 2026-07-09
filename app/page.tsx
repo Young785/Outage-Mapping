@@ -13,12 +13,13 @@ import TerritoryPanel from "./components/TerritoryPanel";
 import SiteGuideDocs from "./components/SiteGuideDocs";
 import PageHelp from "./components/PageHelp";
 import SiteHelpLauncher from "./components/SiteHelpLauncher";
+import MapSearchBar, { type MapSearchHit } from "./components/MapSearchBar";
 import Link from "next/link";
 import type { PageHelpId } from "@/lib/page-help";
 import { STATUS_CONFIG, getStatusConfig, getMarkerStyle, statusBadgeStyle, OUTAGE_FILTER_OPTIONS, isUnvisitedOnMap, type OutageStatus } from "@/lib/outage-status";
 import { loadSavedVisits, saveFieldVisit, type FieldVisitCache } from "@/lib/field-visit";
 import { loadPendingVisit, savePendingVisit, clearPendingVisit, needsInvestigation } from "@/lib/pending-visit";
-import { pickNextRouteStop, type RoutingContext } from "@/lib/route-next";
+import { pickNextRouteStops, type RoutingContext } from "@/lib/route-next";
 import { exceedsMapCustomerCap } from "@/lib/routing-sweep";
 import type { RoutingMode } from "@/lib/routing-mode";
 import { territoryFromRow, zoneTypeOf, isInBoundaryZone } from "@/lib/territory-match";
@@ -55,6 +56,8 @@ type Outage = {
   source?: string;
   customerName?: string | null;
   customerPhone?: string | null;
+  customerEmail?: string | null;
+  photos?: string[];
   leadSource?: string | null;
   assignedTechName?: string | null;
   officeNotes?: string | null;
@@ -181,6 +184,8 @@ export default function Page() {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapObj = useRef<google.maps.Map | null>(null);
   const markersRef = useRef<google.maps.Marker[]>([]);
+  const markersByIdRef = useRef<Map<string, google.maps.Marker>>(new Map());
+  const blinkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const techMarkersRef = useRef<google.maps.Marker[]>([]);
   const techMarkerByUserRef = useRef<Record<string, google.maps.Marker>>({});
   const techAnimByUserRef = useRef<Record<string, number>>({});
@@ -188,15 +193,20 @@ export default function Page() {
   const zonePolygonsRef = useRef<google.maps.Polygon[]>([]);
   const infoWindowRef = useRef<google.maps.InfoWindow | null>(null);
   const routeLineRef = useRef<google.maps.Polyline | null>(null);
+  const routePreviewPolylinesRef = useRef<google.maps.Polyline[]>([]);
   // navTargetRef holds the coordinates + user location; navVersion counter triggers the effect.
   // Using a ref (not state) for coords avoids the cleanup-cancels-timer bug.
   // userLoc is bundled at click-time so the route line always has the right value.
-  const navTargetRef = useRef<{ lat: number; lng: number; userLoc: { lat: number; lng: number } | null; outage: Outage | null } | null>(null);
+  const navTargetRef = useRef<{
+    lat: number;
+    lng: number;
+    userLoc: { lat: number; lng: number } | null;
+    outage: Outage | null;
+    previewStops?: Array<{ lat: number; lng: number }>;
+  } | null>(null);
   const [navVersion, setNavVersion] = useState(0);
   const [mapReady, setMapReady] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
-  const mapSearchInputRef = useRef<HTMLInputElement | null>(null);
-  const mapAutocompleteRef = useRef<google.maps.places.Autocomplete | null>(null);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [selectedOutage, setSelectedOutage] = useState<Outage | null>(null);
   const [navigatingTo, setNavigatingTo] = useState<number | string | null>(null);
@@ -332,6 +342,8 @@ export default function Page() {
           source: attrs.source ?? f.source ?? "xcel",
           customerName: attrs.customerName ?? f.customerName ?? null,
           customerPhone: attrs.customerPhone ?? f.customerPhone ?? null,
+          customerEmail: attrs.customerEmail ?? f.customerEmail ?? null,
+          photos: Array.isArray(attrs.photos) ? attrs.photos : Array.isArray(f.photos) ? f.photos : [],
           leadSource: attrs.leadSource ?? f.leadSource ?? null,
           assignedTechName: attrs.assignedTechName ?? f.assignedTechName ?? null,
           officeNotes: attrs.officeNotes ?? f.officeNotes ?? null,
@@ -646,44 +658,6 @@ export default function Page() {
     };
   }, [user, activeTab]);
 
-  // Wire office address search after map + input are mounted
-  useEffect(() => {
-    if (!mapReady || !mapObj.current || !mapSearchInputRef.current || activeTab !== "map") return;
-
-    let cancelled = false;
-
-    (async () => {
-      try {
-        await loadGoogleMaps();
-        if (cancelled || !mapSearchInputRef.current || mapAutocompleteRef.current) return;
-
-        const ac = new google.maps.places.Autocomplete(mapSearchInputRef.current, {
-          componentRestrictions: { country: "us" },
-          fields: ["geometry", "formatted_address", "name"],
-          types: ["geocode", "establishment"],
-        });
-        ac.addListener("place_changed", () => {
-          const place = ac.getPlace();
-          if (place?.geometry?.location && mapObj.current) {
-            mapObj.current.setCenter(place.geometry.location);
-            mapObj.current.setZoom(15);
-          }
-        });
-        mapAutocompleteRef.current = ac;
-      } catch {
-        /* search is optional when Places API is unavailable */
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      if (mapAutocompleteRef.current) {
-        google.maps.event.clearInstanceListeners(mapAutocompleteRef.current);
-        mapAutocompleteRef.current = null;
-      }
-    };
-  }, [mapReady, activeTab]);
-
   // ── Sync outage markers ──────────────────────────────────────────────────
   useEffect(() => {
     if (!mapObj.current || !mapReady) return;
@@ -706,6 +680,55 @@ export default function Page() {
     mapObj.current.setMapTypeId(mapType);
   }, [mapType]);
 
+  function clearRouteLines() {
+    routeLineRef.current?.setMap(null);
+    routeLineRef.current = null;
+    for (const line of routePreviewPolylinesRef.current) {
+      line.setMap(null);
+    }
+    routePreviewPolylinesRef.current = [];
+  }
+
+  /** Route-to-Next preview: leg 1 teal, leg 2 yellow, leg 3 red. Ephemeral — cleared on manual navigate. */
+  function drawRoutePreview(
+    userLoc: { lat: number; lng: number },
+    stops: Array<{ lat: number; lng: number }>
+  ) {
+    if (!mapObj.current || typeof google === "undefined" || stops.length === 0) return;
+
+    clearRouteLines();
+
+    const legStyles: Array<{ color: string; weight: number; opacity: number }> = [
+      { color: "#0d9488", weight: 5, opacity: 0.95 },
+      { color: "#eab308", weight: 4, opacity: 0.85 },
+      { color: "#ef4444", weight: 4, opacity: 0.8 },
+    ];
+
+    const bounds = new google.maps.LatLngBounds();
+    bounds.extend(userLoc);
+
+    let from = userLoc;
+    for (let i = 0; i < stops.length; i++) {
+      const to = stops[i];
+      const style = legStyles[i] ?? legStyles[legStyles.length - 1];
+      const line = new google.maps.Polyline({
+        path: [from, to],
+        geodesic: true,
+        strokeColor: style.color,
+        strokeOpacity: style.opacity,
+        strokeWeight: style.weight,
+        zIndex: 3 - i,
+      });
+      line.setMap(mapObj.current);
+      routePreviewPolylinesRef.current.push(line);
+      if (i === 0) routeLineRef.current = line;
+      bounds.extend(to);
+      from = to;
+    }
+
+    mapObj.current.fitBounds(bounds);
+  }
+
   // ── Apply navigation whenever navVersion increments and map is ready ────
   // navTargetRef holds the coords; navVersion (a counter) triggers the effect.
   // We deliberately do NOT set state inside this effect to avoid the
@@ -713,30 +736,34 @@ export default function Page() {
   useEffect(() => {
     if (!navTargetRef.current || activeTab !== "map" || !mapObj.current || !mapReady) return;
 
-    const { lat, lng, userLoc } = navTargetRef.current;
+    const { lat, lng, userLoc, previewStops } = navTargetRef.current;
     navTargetRef.current = null; // consume — safe: ref mutation, no re-render
 
     // Small delay lets the CSS display:block and map resize settle
     setTimeout(() => {
       if (!mapObj.current || typeof google === "undefined") return;
       const loc = userLoc;   // captured at click-time — no stale-ref risk
-      routeLineRef.current?.setMap(null);
-      if (loc) {
-        routeLineRef.current = new google.maps.Polyline({
-          path: [loc, { lat, lng }],
-          geodesic: true,
-          strokeColor: "#ef4444",
-          strokeOpacity: 0.9,
-          strokeWeight: 5,
-        });
-        routeLineRef.current.setMap(mapObj.current);
-        const bounds = new google.maps.LatLngBounds();
-        bounds.extend(loc);
-        bounds.extend({ lat, lng });
-        mapObj.current.fitBounds(bounds);
+      if (loc && previewStops && previewStops.length > 0) {
+        drawRoutePreview(loc, previewStops);
       } else {
-        mapObj.current.setCenter({ lat, lng });
-        mapObj.current.setZoom(14);
+        clearRouteLines();
+        if (loc) {
+          routeLineRef.current = new google.maps.Polyline({
+            path: [loc, { lat, lng }],
+            geodesic: true,
+            strokeColor: "#ef4444",
+            strokeOpacity: 0.9,
+            strokeWeight: 5,
+          });
+          routeLineRef.current.setMap(mapObj.current);
+          const bounds = new google.maps.LatLngBounds();
+          bounds.extend(loc);
+          bounds.extend({ lat, lng });
+          mapObj.current.fitBounds(bounds);
+        } else {
+          mapObj.current.setCenter({ lat, lng });
+          mapObj.current.setZoom(14);
+        }
       }
     }, 350);
     // No cleanup needed — timer draws a route line, not a subscription to tear down.
@@ -1019,12 +1046,17 @@ export default function Page() {
   // ── Outage markers ───────────────────────────────────────────────────────
   function placeOutageMarkers(data: Outage[]) {
     if (typeof google === "undefined" || !mapObj.current) return;
+    if (blinkTimerRef.current) {
+      clearInterval(blinkTimerRef.current);
+      blinkTimerRef.current = null;
+    }
     markersRef.current.forEach((m) => m.setMap(null));
     markersRef.current = [];
+    markersByIdRef.current = new Map();
 
     const visible = data.filter((o) => {
       if (exceedsMapCustomerCap(o.customers)) return false;
-      if (o.investigationResult === "not_target") return false;
+      if (o.investigationResult === "not_target" || o.investigationResult === "underground_service") return false;
       if (stormVisibilityMode === "active_only" && o.isPreviousStormMarker) return false;
       if (!showStaleOnMap && o.isStaleMarker && stormVisibilityMode !== "all") return false;
       if (hideDoneMarkers && o.status === "completed") return false;
@@ -1100,7 +1132,40 @@ export default function Page() {
       });
 
       markersRef.current.push(marker);
+      markersByIdRef.current.set(String(outage.id), marker);
     });
+  }
+
+  function blinkMarker(outageId: string | number) {
+    const marker = markersByIdRef.current.get(String(outageId));
+    if (!marker) return;
+    if (blinkTimerRef.current) {
+      clearInterval(blinkTimerRef.current);
+      blinkTimerRef.current = null;
+    }
+    let visible = true;
+    let ticks = 0;
+    blinkTimerRef.current = setInterval(() => {
+      visible = !visible;
+      marker.setVisible(visible);
+      ticks += 1;
+      if (ticks >= 8) {
+        marker.setVisible(true);
+        if (blinkTimerRef.current) clearInterval(blinkTimerRef.current);
+        blinkTimerRef.current = null;
+      }
+    }, 220);
+  }
+
+  function focusMapSearchHit(hit: MapSearchHit) {
+    const outage = outages.find((o) => String(o.id) === String(hit.id));
+    mapObj.current?.panTo({ lat: hit.lat, lng: hit.lng });
+    mapObj.current?.setZoom(17);
+    blinkMarker(hit.id);
+    if (outage) {
+      setSelectedOutage(outage);
+      openInvestigation(outage);
+    }
   }
 
   // ── Tech markers (square with initials) ──────────────────────────────────
@@ -1405,19 +1470,35 @@ export default function Page() {
       return;
     }
     const routable = buildRoutableOutages();
-    const next = pickNextRouteStop(
+    const visits = loadSavedVisits();
+    const previewStops = pickNextRouteStops(
       routable,
       userLocation,
       stormPhase,
-      loadSavedVisits(),
-      routingMode,
-      myRoutingContext
+      visits,
+      myRoutingContext,
+      3
     );
+    const next = previewStops[0] ?? null;
     if (!next) {
       alert("No actionable stops remaining on the map.");
       return;
     }
-    navigateToLatLng(next.lat, next.lng, next.streetAddress ?? next.city, next);
+    openGoogleMapsDirections({ lat: next.lat, lng: next.lng }, userLocation);
+    navTargetRef.current = {
+      lat: next.lat,
+      lng: next.lng,
+      userLoc: userLocation,
+      outage: next,
+      previewStops: previewStops.map((s) => ({ lat: s.lat, lng: s.lng })),
+    };
+    setSelectedOutage(next);
+    markPendingVisit(next);
+    if (user?.role === "tech" && needsInvestigation(next.status)) {
+      openInvestigation(next);
+    }
+    setActiveTab("map");
+    setNavVersion((v) => v + 1);
   }
 
   // ── Status update ────────────────────────────────────────────────────────
@@ -2460,43 +2541,33 @@ export default function Page() {
                 </div>
               )}
 
-              {/* Office address search */}
+              {/* Map search — office only */}
               {isOffice && (
-                <div style={{ position: "absolute", top: "20px", left: "50%", transform: "translateX(-50%)", width: isMobile ? "calc(100% - 40px)" : "min(420px, calc(100% - 280px))", zIndex: 3, opacity: mapReady ? 1 : 0, pointerEvents: mapReady ? "auto" : "none" }}>
-                  <input
-                    ref={mapSearchInputRef}
-                    type="text"
-                    placeholder="Search address or place..."
-                    autoComplete="off"
-                    onKeyDown={async (e) => {
-                      if (e.key !== "Enter") return;
-                      e.preventDefault();
-                      const q = mapSearchInputRef.current?.value?.trim();
-                      if (!q || !mapObj.current) return;
-                      try {
-                        await loadGoogleMaps();
-                        const geocoder = new google.maps.Geocoder();
-                        const { results } = await geocoder.geocode({
-                          address: q,
-                          componentRestrictions: { country: "us" },
+                <div style={{ position: "absolute", top: "20px", left: "50%", transform: "translateX(-50%)", width: isMobile ? "calc(100% - 40px)" : "min(420px, calc(100% - 280px))", zIndex: 5, opacity: mapReady ? 1 : 0, pointerEvents: mapReady ? "auto" : "none" }}>
+                  <MapSearchBar
+                    markers={outages.map((o) => ({
+                      id: o.id,
+                      lat: o.lat,
+                      lng: o.lng,
+                      label: o.streetAddress || o.customerName || o.city || `Outage ${o.id}`,
+                      sublabel: [o.customerName, o.customerPhone, o.customerEmail].filter(Boolean).join(" · ") || undefined,
+                    }))}
+                    onSelectMarker={focusMapSearchHit}
+                    onGeocodeLocation={({ lat, lng, label }) => {
+                      mapObj.current?.panTo({ lat, lng });
+                      mapObj.current?.setZoom(16);
+                      if (typeof google !== "undefined" && mapObj.current) {
+                        const temp = new google.maps.Marker({
+                          map: mapObj.current,
+                          position: { lat, lng },
+                          title: label,
+                          animation: google.maps.Animation.BOUNCE,
                         });
-                        const loc = results?.[0]?.geometry?.location;
-                        if (loc) {
-                          mapObj.current.setCenter(loc);
-                          mapObj.current.setZoom(15);
-                        }
-                      } catch {
-                        /* geocode fallback optional */
+                        setTimeout(() => {
+                          temp.setAnimation(null);
+                          setTimeout(() => temp.setMap(null), 2500);
+                        }, 1400);
                       }
-                    }}
-                    style={{
-                      width: "100%",
-                      padding: "10px 14px",
-                      border: "1px solid #e5e7eb",
-                      borderRadius: "8px",
-                      fontSize: "13px",
-                      boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
-                      background: "#fff",
                     }}
                   />
                 </div>
@@ -2519,7 +2590,7 @@ export default function Page() {
                 >
                   My Location
                 </button>
-                <button onClick={() => { routeLineRef.current?.setMap(null); setSelectedOutage(null); }} style={mapBtnCss}>
+                <button onClick={() => { clearRouteLines(); setSelectedOutage(null); }} style={mapBtnCss}>
                   Clear Route
                 </button>
                 <button onClick={() => setMapType((m) => (m === "roadmap" ? "satellite" : "roadmap"))} style={mapBtnCss}>

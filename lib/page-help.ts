@@ -127,7 +127,7 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
       { title: "Check the phase banner", detail: "The bar at the top shows Phase 1 (Hunting), Phase 2 (Dispatch), or Phase 3 (Cleanup). This changes what Route to Next prioritizes." },
       { title: "Pan and zoom the map", detail: "Use pinch/drag or mouse. Toggle Satellite in the bottom-right for roof-line context." },
       { title: "Tap an outage dot", detail: "Quick Investigate opens with customers affected, priority score, address, and a Google Navigation button at the top." },
-      { title: "Submit your investigation", detail: "Pick an outcome: utility issue, no damage, opportunity, or not a target. If you found damage, log door action and whether power is still on the drop." },
+      { title: "Submit your investigation", detail: "Pick an outcome: utility issue, no damage, opportunity, not a target, or underground service. If you found damage, log door action and whether power is still on the drop." },
       { title: "Use Route to Next", detail: "From your GPS, scores every visible stop. Phase 1 favors honey holes and small-outage clusters. Phase 2 favors sold jobs and office call-ins. Phase 3 favors temp power and cleanup returns." },
       { title: "Adjust map layers", detail: "Sidebar → Map Layers → Hide non-critical markers removes declined, completed, thinking, temp power, and grounding dots from view." },
     ],

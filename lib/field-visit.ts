@@ -29,7 +29,7 @@ export function saveFieldVisit(id: number | string, data: FieldVisitCache) {
 }
 
 export type InvestigationFormSeed = {
-  primary: "" | "utility_only" | "no_damage" | "not_target" | "opportunity_found";
+  primary: "" | "utility_only" | "no_damage" | "not_target" | "underground_service" | "opportunity_found";
   action:
     | ""
     | "door_hanger"
@@ -57,6 +57,7 @@ export function seedInvestigationForm(
 
   const result = cache?.investigationResult;
   if (result === "not_target") return { ...blank, primary: "not_target" };
+  if (result === "underground_service") return { ...blank, primary: "underground_service" };
   if (result === "utility_only") return { ...blank, primary: "utility_only" };
   if (result === "no_damage") return { ...blank, primary: "no_damage" };
 
@@ -65,6 +66,7 @@ export function seedInvestigationForm(
   switch (status) {
     case "no_opportunity":
       if (result === "not_target") return { ...blank, primary: "not_target" };
+      if (result === "underground_service") return { ...blank, primary: "underground_service" };
       if (result === "utility_only") return { ...blank, primary: "utility_only" };
       return { ...blank, primary: "no_damage" };
     case "door_hanger":
@@ -144,5 +146,5 @@ export function isRoutingExcluded(
 ): boolean {
   if (outage.status === "no_opportunity" || outage.status === "completed") return true;
   const cache = visits?.[String(outage.id)];
-  return cache?.investigationResult === "not_target";
+  return cache?.investigationResult === "not_target" || cache?.investigationResult === "underground_service";
 }

@@ -36,6 +36,8 @@ type QueueItem = {
   inTerritory: boolean;
   jobType: string | null;
   customerPhone: string | null;
+  customerEmail?: string | null;
+  photos?: string[];
   assignedTechId: string | null;
   assignedTechName: string | null;
   notes: string | null;
@@ -157,6 +159,8 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
       address: item.address,
       status: item.status,
       customerPhone: item.customerPhone,
+      customerEmail: item.customerEmail ?? null,
+      photos: item.photos ?? [],
       assignedTechId: item.assignedTechId,
       assignedTechName: item.assignedTechName,
       notes: item.notes,
