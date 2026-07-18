@@ -73,6 +73,14 @@ const SERVICE_SETUP_OPTIONS = [
   "Underground conversion",
 ] as const;
 
+/** Partner-lead tags — non-electrical damage for referral sales. */
+const NON_ELECTRICAL_OPTIONS = [
+  { value: "roofing", label: "Roofing damage" },
+  { value: "tree", label: "Tree down / tree damage" },
+  { value: "tree_service", label: "Tree service needed" },
+  { value: "structural", label: "Structural damage" },
+] as const;
+
 type Props = {
   outage: Outage;
   token: string | null;
@@ -153,11 +161,11 @@ export default function InvestigationForm({ outage, token, required = false, onC
   );
   const [jobScope, setJobScope] = useState("");
   const [showOptional, setShowOptional] = useState(false);
-  const [showAdditionalOutage, setShowAdditionalOutage] = useState(false);
   const [amperage, setAmperage] = useState("");
   const [serviceSetup, setServiceSetup] = useState("");
   const [notes, setNotes] = useState("");
   const [techsRequired, setTechsRequired] = useState<number | "">("");
+  const [nonElectrical, setNonElectrical] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editedAddress, setEditedAddress] = useState(outage.streetAddress ?? "");
@@ -292,6 +300,7 @@ export default function InvestigationForm({ outage, token, required = false, onC
       jobScope && `job_scope=${jobScope}`,
       neighborhoodDead && "neighborhood_dead=true",
       verbalPrice.trim() && `verbal_price=${verbalPrice.trim()}`,
+      nonElectrical.length > 0 && `non_electrical=${nonElectrical.join("|")}`,
     ]
       .filter(Boolean)
       .join("; ");
@@ -526,9 +535,19 @@ export default function InvestigationForm({ outage, token, required = false, onC
             zIndex: 1,
           }}
         >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
-            <h2 style={{ margin: 0, fontSize: "17px", fontWeight: 700 }}>Quick investigate</h2>
-            <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px", marginBottom: "10px" }}>
+            <h2 style={{ margin: 0, fontSize: "17px", fontWeight: 700, flexShrink: 0 }}>Quick investigate</h2>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: 1, justifyContent: "flex-end", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: "6px", alignItems: "stretch" }}>
+                <div style={{ padding: "4px 8px", background: "#f9fafb", borderRadius: "8px", border: "1px solid #e5e7eb", minWidth: 72, textAlign: "center" }}>
+                  <div style={{ fontSize: "9px", fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.04em" }}>Customers</div>
+                  <div style={{ fontSize: "15px", fontWeight: 700, color: "#1f2937", lineHeight: 1.2 }}>{outage.customers}</div>
+                </div>
+                <div style={{ padding: "4px 8px", background: "#f0fdfa", borderRadius: "8px", border: "1px solid #99f6e4", minWidth: 72, textAlign: "center" }}>
+                  <div style={{ fontSize: "9px", fontWeight: 700, color: "#0d9488", textTransform: "uppercase", letterSpacing: "0.04em" }}>Priority</div>
+                  <div style={{ fontSize: "15px", fontWeight: 700, color: "#0d9488", lineHeight: 1.2 }}>{Math.round(outage.priorityScore ?? 0)}</div>
+                </div>
+              </div>
               {canSubmit && (
                 <button
                   type="button"
@@ -541,7 +560,7 @@ export default function InvestigationForm({ outage, token, required = false, onC
               <button
                 type="button"
                 onClick={handleClose}
-                style={{ background: "#f3f4f6", border: "none", borderRadius: "8px", width: "36px", height: "36px", fontSize: "20px", cursor: "pointer", color: "#374151" }}
+                style={{ background: "#f3f4f6", border: "none", borderRadius: "8px", width: "36px", height: "36px", fontSize: "20px", cursor: "pointer", color: "#374151", flexShrink: 0 }}
               >
                 ×
               </button>
@@ -576,21 +595,24 @@ export default function InvestigationForm({ outage, token, required = false, onC
             </a>
           )}
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "6px" }}>
-            <div style={{ padding: "8px 10px", background: "#f9fafb", borderRadius: "8px" }}>
-              <div style={{ fontSize: "10px", fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.05em" }}>Customers affected</div>
-              <div style={{ fontSize: "18px", fontWeight: 700, color: "#1f2937" }}>{outage.customers}</div>
-            </div>
-            <div style={{ padding: "8px 10px", background: "#f9fafb", borderRadius: "8px" }}>
-              <div style={{ fontSize: "10px", fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.05em" }}>Priority score</div>
-              <div style={{ fontSize: "18px", fontWeight: 700, color: "#0d9488" }}>{Math.round(outage.priorityScore ?? 0)}</div>
-            </div>
-          </div>
           {required && (
             <div style={{ marginBottom: "10px", padding: "8px 10px", background: "#fef3c7", borderRadius: "8px", fontSize: "12px", color: "#92400e", fontWeight: 600 }}>
               Reminder: submit an investigation when you can — you can dismiss and continue working.
             </div>
           )}
+
+          <div style={{ marginBottom: "10px" }}>
+            <label style={{ display: "block", fontSize: "10px", fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "4px" }}>
+              Customer Name
+            </label>
+            <input
+              type="text"
+              value={customer.customerName}
+              onChange={(e) => setCustomer({ ...customer, customerName: e.target.value })}
+              placeholder="Full name or company"
+              style={{ width: "100%", padding: "10px 12px", border: "1px solid #d1d5db", borderRadius: "8px", fontSize: "14px", boxSizing: "border-box" }}
+            />
+          </div>
 
           <label style={{ display: "block", marginBottom: "10px" }}>
             <span style={{ fontSize: "10px", fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.05em" }}>Address</span>
@@ -607,15 +629,31 @@ export default function InvestigationForm({ outage, token, required = false, onC
             </p>
           )}
 
-          <div style={{ marginBottom: "4px" }}>
-            <p style={{ margin: "0 0 8px", fontSize: "10px", fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-              Customer information
-            </p>
-            <CustomerInfoFields
-              value={customer}
-              onChange={setCustomer}
-              showName
-            />
+          <div style={{ display: "flex", gap: "10px", marginBottom: "4px" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <label style={{ display: "block", fontSize: "10px", fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "4px" }}>
+                Phone Number
+              </label>
+              <input
+                type="tel"
+                value={customer.customerPhone}
+                onChange={(e) => setCustomer({ ...customer, customerPhone: e.target.value })}
+                placeholder="(612) 555-0100"
+                style={{ width: "100%", padding: "10px 12px", border: "1px solid #d1d5db", borderRadius: "8px", fontSize: "14px", boxSizing: "border-box" }}
+              />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <label style={{ display: "block", fontSize: "10px", fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "4px" }}>
+                Email Address
+              </label>
+              <input
+                type="email"
+                value={customer.customerEmail}
+                onChange={(e) => setCustomer({ ...customer, customerEmail: e.target.value })}
+                placeholder="customer@email.com"
+                style={{ width: "100%", padding: "10px 12px", border: "1px solid #d1d5db", borderRadius: "8px", fontSize: "14px", boxSizing: "border-box" }}
+              />
+            </div>
           </div>
         </div>
 
@@ -623,37 +661,6 @@ export default function InvestigationForm({ outage, token, required = false, onC
           {error && (
             <div style={{ padding: "10px 12px", background: "#fee2e2", borderRadius: "8px", color: "#dc2626", fontSize: "14px", marginBottom: "12px" }}>
               {error}
-            </div>
-          )}
-
-          <button
-            type="button"
-            onClick={() => setShowAdditionalOutage(!showAdditionalOutage)}
-            style={{
-              width: "100%",
-              marginBottom: "14px",
-              padding: "10px",
-              background: "#f9fafb",
-              border: "1px solid #e5e7eb",
-              borderRadius: "8px",
-              fontSize: "13px",
-              fontWeight: 600,
-              color: "#6b7280",
-              cursor: "pointer",
-              textAlign: "left",
-            }}
-          >
-            {showAdditionalOutage ? "▲ Hide additional outage information" : "▼ Show additional outage information"}
-          </button>
-
-          {showAdditionalOutage && (
-            <div style={{ marginBottom: "16px", padding: "12px 14px", background: "#f9fafb", borderRadius: "10px", border: "1px solid #e5e7eb", fontSize: "13px", color: "#374151" }}>
-              {outage.outageType && <div style={{ marginBottom: "4px" }}><b>Type:</b> {outage.outageType}</div>}
-              {outage.cause && <div style={{ marginBottom: "4px" }}><b>Cause:</b> {outage.cause}</div>}
-              {outage.crewStatus && <div style={{ marginBottom: "4px" }}><b>Crew status:</b> {outage.crewStatus}</div>}
-              {outage.outageImpact && <div style={{ marginBottom: "4px" }}><b>Impact:</b> {outage.outageImpact}</div>}
-              {outage.etr && <div style={{ marginBottom: "4px" }}><b>ETR:</b> {outage.etr}</div>}
-              {outage.source && <div><b>Source:</b> {outage.source}</div>}
             </div>
           )}
 
@@ -703,6 +710,33 @@ export default function InvestigationForm({ outage, token, required = false, onC
             label="Underground service"
             sub="Not our work — omit from routing"
           />
+
+          <p style={{ ...sectionHead, marginTop: "16px" }}>
+            Non-electrical damage{" "}
+            <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, color: "#9ca3af" }}>
+              — partner lead (optional)
+            </span>
+          </p>
+          <p style={{ margin: "0 0 8px", fontSize: 12, color: "#6b7280" }}>
+            Tag roofing / tree / structural for partner referrals (does not change electrical outcome).
+          </p>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "4px" }}>
+            {NON_ELECTRICAL_OPTIONS.map((o) => {
+              const selected = nonElectrical.includes(o.value);
+              return (
+                <Chip
+                  key={o.value}
+                  selected={selected}
+                  onClick={() =>
+                    setNonElectrical((prev) =>
+                      selected ? prev.filter((v) => v !== o.value) : [...prev, o.value]
+                    )
+                  }
+                  label={o.label}
+                />
+              );
+            })}
+          </div>
 
           {isOpportunity && (
             <>
@@ -855,7 +889,16 @@ export default function InvestigationForm({ outage, token, required = false, onC
               <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>Field notes</label>
               <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} style={{ ...inp, resize: "vertical", marginBottom: "10px" }} placeholder="Access, materials…" />
               <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>Technicians needed</label>
-              <input type="number" min={1} value={techsRequired} onChange={(e) => setTechsRequired(e.target.value === "" ? "" : Number(e.target.value))} style={{ ...inp, width: "100px" }} />
+              <input type="number" min={1} value={techsRequired} onChange={(e) => setTechsRequired(e.target.value === "" ? "" : Number(e.target.value))} style={{ ...inp, width: "100px", marginBottom: "12px" }} />
+              <CustomerInfoFields
+                value={customer}
+                onChange={setCustomer}
+                showName={false}
+                showPhone={false}
+                showEmail={false}
+                showNotes={false}
+                showPhotos
+              />
             </div>
           )}
 

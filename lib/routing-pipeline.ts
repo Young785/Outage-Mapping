@@ -63,12 +63,21 @@ const PEER_AVOIDANCE_MILES = 0.4;
 function passesBaseExclusions<T extends PipelineMarker>(
   item: T,
   visits: Record<string, FieldVisitCache>,
-  hideStaleMarkers: boolean
+  hideStaleMarkers: boolean,
+  currentTechName?: string | null
 ): boolean {
   if (isRoutingExcluded(item, visits)) return false;
   if (item.inExclusionZone) return false;
   if (hideStaleMarkers && item.isStaleMarker) return false;
   if (item.investigationResult === "not_target" || item.investigationResult === "underground_service") return false;
+  // Skip stops already assigned to another technician — prevents duplicate routing.
+  if (
+    item.assignedTechName &&
+    currentTechName &&
+    item.assignedTechName.trim().toLowerCase() !== currentTechName.trim().toLowerCase()
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -94,7 +103,9 @@ export function buildEligiblePool<T extends PipelineMarker>(
   const fallback = context.installerFallback ?? DEFAULT_INSTALLER_FALLBACK;
   const hideStale = context.hideStaleMarkers ?? false;
 
-  const base = items.filter((o) => passesBaseExclusions(o, visits, hideStale));
+  const base = items.filter((o) =>
+    passesBaseExclusions(o, visits, hideStale, context.currentTechName)
+  );
   const inTerritory = filterByTerritory(base, context.territory);
 
   for (const tryRole of roleFallbackChain(role, fallback)) {

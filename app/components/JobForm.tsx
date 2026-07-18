@@ -133,6 +133,7 @@ export default function JobForm({ token, onClose, onCreated }: Props) {
               value={customer}
               onChange={setCustomer}
               nameRequired
+              contactRow
             />
           </div>
 

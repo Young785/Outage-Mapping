@@ -150,6 +150,23 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
 
   const filtered = queue.filter((item) => filter === "all" || item.type === filter);
 
+  const groupedByTech = (() => {
+    const groups = new Map<string, { key: string; label: string; items: QueueItem[] }>();
+    for (const item of filtered) {
+      const key = item.assignedTechId || item.assignedTechName || "__unassigned__";
+      const label = item.assignedTechName || (item.assignedTechId ? "Assigned tech" : "Unassigned");
+      const g = groups.get(key) ?? { key, label, items: [] };
+      g.items.push(item);
+      groups.set(key, g);
+    }
+    // Unassigned last
+    return [...groups.values()].sort((a, b) => {
+      if (a.key === "__unassigned__") return 1;
+      if (b.key === "__unassigned__") return -1;
+      return a.label.localeCompare(b.label);
+    });
+  })();
+
   function openDrawer(item: QueueItem) {
     if (!isOffice) return;
     setSelectedItem({
@@ -665,8 +682,33 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
           <div style={{ fontSize: "14px" }}>No call-ins or sold jobs to dispatch</div>
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-          {filtered.map((item, idx) => {
+        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          {isOffice && (
+            <div style={{ fontSize: 13, color: "#0f766e", fontWeight: 600 }}>
+              Queue divided by technician — edit assignments below or use Live Map → Routing Logic.
+            </div>
+          )}
+          {(isOffice ? groupedByTech : [{ key: "all", label: "", items: filtered }]).map((group) => (
+            <div key={group.key}>
+              {isOffice && group.label && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    marginBottom: 8,
+                    padding: "8px 12px",
+                    background: group.key === "__unassigned__" ? "#f9fafb" : "#f0fdfa",
+                    borderRadius: 10,
+                    border: "1px solid #e5e7eb",
+                  }}
+                >
+                  <div style={{ fontSize: 14, fontWeight: 800, color: "#134e4a" }}>{group.label}</div>
+                  <div style={{ fontSize: 12, color: "#6b7280" }}>{group.items.length} stop{group.items.length === 1 ? "" : "s"}</div>
+                </div>
+              )}
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+          {group.items.map((item, idx) => {
             const sc = STATUS_COLORS[item.status] ?? { bg: "#f3f4f6", color: "#374151" };
             return (
               <div key={item.id} style={{ background: "#fff", border: item.isConfirmed ? "2px solid #3b82f6" : "1px solid #e5e7eb", borderRadius: "10px", padding: isMobile ? "12px" : "14px 16px", boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}>
@@ -858,6 +900,9 @@ export default function JobQueue({ token, role, routingMode, userLocation, onNav
               </div>
             );
           })}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

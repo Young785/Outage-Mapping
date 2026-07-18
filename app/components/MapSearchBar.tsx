@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Loader } from "@googlemaps/js-api-loader";
+import { loadGoogleMaps } from "@/lib/google-maps";
 
 export type MapSearchHit = {
   id: string | number;
@@ -29,7 +29,14 @@ export default function MapSearchBar({ markers, onSelectMarker, onGeocodeLocatio
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [placesReady, setPlacesReady] = useState(false);
+  const [placesError, setPlacesError] = useState<string | null>(null);
   const autocompleteRef = useRef<google.maps.places.Autocomplete | null>(null);
+  const markersRef = useRef(markers);
+  markersRef.current = markers;
+  const onSelectRef = useRef(onSelectMarker);
+  onSelectRef.current = onSelectMarker;
+  const onGeocodeRef = useRef(onGeocodeLocation);
+  onGeocodeRef.current = onGeocodeLocation;
 
   const q = normalize(query);
   const localHits =
@@ -43,14 +50,17 @@ export default function MapSearchBar({ markers, onSelectMarker, onGeocodeLocatio
           .slice(0, 8);
 
   useEffect(() => {
-    const key = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
-    if (!key || !inputRef.current) return;
+    if (!inputRef.current) return;
     let cancelled = false;
     (async () => {
       try {
-        const loader = new Loader({ apiKey: key, version: "weekly", libraries: ["places"] });
-        await loader.load();
+        // Reuse the shared Maps loader so Places does not conflict with the main map.
+        await loadGoogleMaps();
         if (cancelled || !inputRef.current) return;
+        if (!window.google?.maps?.places) {
+          setPlacesError("Places library unavailable");
+          return;
+        }
         const ac = new google.maps.places.Autocomplete(inputRef.current, {
           fields: ["geometry", "formatted_address", "name"],
           componentRestrictions: { country: "us" },
@@ -63,27 +73,27 @@ export default function MapSearchBar({ markers, onSelectMarker, onGeocodeLocatio
           const lat = loc.lat();
           const lng = loc.lng();
           const label = place.formatted_address || place.name || "Selected location";
-          // Prefer an existing marker near this place
-          const near = markers.find(
+          const near = markersRef.current.find(
             (m) => Math.abs(m.lat - lat) < 0.0008 && Math.abs(m.lng - lng) < 0.0008
           );
           if (near) {
-            onSelectMarker(near);
+            onSelectRef.current(near);
           } else {
-            onGeocodeLocation?.({ lat, lng, label });
+            onGeocodeRef.current?.({ lat, lng, label });
           }
           setQuery(label);
           setOpen(false);
         });
         setPlacesReady(true);
-      } catch {
-        /* Places optional */
+        setPlacesError(null);
+      } catch (err) {
+        setPlacesError(err instanceof Error ? err.message : "Maps search unavailable");
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [markers, onGeocodeLocation, onSelectMarker]);
+  }, []);
 
   async function searchSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -127,17 +137,18 @@ export default function MapSearchBar({ markers, onSelectMarker, onGeocodeLocatio
             setOpen(true);
           }}
           onFocus={() => setOpen(true)}
-          placeholder={placesReady ? "Search address or customer…" : "Search markers…"}
+          placeholder={placesReady ? "Search address, customer, phone…" : "Search markers or address…"}
           style={{
             flex: 1,
-            padding: "10px 14px",
-            fontSize: 13,
+            padding: "10px 12px",
+            borderRadius: 10,
             border: "1px solid #e5e7eb",
-            borderRadius: 8,
-            background: "rgba(255,255,255,0.97)",
-            boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
+            fontSize: 14,
             outline: "none",
+            background: "#fff",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
           }}
+          aria-label="Search map"
         />
         <button
           type="submit"
@@ -147,17 +158,21 @@ export default function MapSearchBar({ markers, onSelectMarker, onGeocodeLocatio
             background: "#0d9488",
             color: "#fff",
             border: "none",
-            borderRadius: 8,
-            fontSize: 13,
+            borderRadius: 10,
             fontWeight: 700,
-            cursor: "pointer",
-            boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
+            fontSize: 13,
+            cursor: busy ? "wait" : "pointer",
             opacity: busy ? 0.7 : 1,
           }}
         >
           {busy ? "…" : "Go"}
         </button>
       </form>
+      {placesError && (
+        <div style={{ marginTop: 4, fontSize: 11, color: "#b45309" }}>
+          Address suggestions limited — {placesError}. Marker search still works.
+        </div>
+      )}
       {open && localHits.length > 0 && (
         <div
           style={{
@@ -167,11 +182,12 @@ export default function MapSearchBar({ markers, onSelectMarker, onGeocodeLocatio
             right: 0,
             marginTop: 4,
             background: "#fff",
-            borderRadius: 8,
             border: "1px solid #e5e7eb",
-            boxShadow: "0 8px 24px rgba(0,0,0,0.15)",
+            borderRadius: 10,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
             zIndex: 50,
-            overflow: "hidden",
+            maxHeight: 280,
+            overflow: "auto",
           }}
         >
           {localHits.map((hit) => (
@@ -187,7 +203,7 @@ export default function MapSearchBar({ markers, onSelectMarker, onGeocodeLocatio
                 display: "block",
                 width: "100%",
                 textAlign: "left",
-                padding: "10px 14px",
+                padding: "10px 12px",
                 border: "none",
                 borderBottom: "1px solid #f3f4f6",
                 background: "#fff",
@@ -196,7 +212,7 @@ export default function MapSearchBar({ markers, onSelectMarker, onGeocodeLocatio
             >
               <div style={{ fontSize: 13, fontWeight: 600, color: "#111827" }}>{hit.label}</div>
               {hit.sublabel && (
-                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>{hit.sublabel}</div>
+                <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>{hit.sublabel}</div>
               )}
             </button>
           ))}

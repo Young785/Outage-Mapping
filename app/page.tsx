@@ -14,6 +14,7 @@ import SiteGuideDocs from "./components/SiteGuideDocs";
 import PageHelp from "./components/PageHelp";
 import SiteHelpLauncher from "./components/SiteHelpLauncher";
 import MapSearchBar, { type MapSearchHit } from "./components/MapSearchBar";
+import RoutingLogicPane from "./components/RoutingLogicPane";
 import Link from "next/link";
 import type { PageHelpId } from "@/lib/page-help";
 import { STATUS_CONFIG, getStatusConfig, getMarkerStyle, statusBadgeStyle, OUTAGE_FILTER_OPTIONS, isUnvisitedOnMap, type OutageStatus } from "@/lib/outage-status";
@@ -25,6 +26,7 @@ import type { RoutingMode } from "@/lib/routing-mode";
 import { territoryFromRow, zoneTypeOf, isInBoundaryZone } from "@/lib/territory-match";
 import { isDelayedUtilityConfirmed } from "@/lib/utility-outage";
 import type { FieldDispatchRole, InstallerFallback } from "@/lib/field-dispatch-role";
+import type { TechRouteBundle } from "@/lib/tech-routes";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 type Role = "office" | "tech" | "admin" | "owner";
@@ -125,6 +127,13 @@ const TECH_STATUS_COLOR = {
   offline:   "#6b7280",
 };
 
+const TECH_STATUS_LABEL: Record<keyof typeof TECH_STATUS_COLOR, string> = {
+  available: "Available",
+  working: "On Job",
+  paused: "Paused",
+  offline: "Offline",
+};
+
 // ── Component ────────────────────────────────────────────────────────────────
 export default function Page() {
   // Auth state
@@ -190,10 +199,14 @@ export default function Page() {
   const techMarkerByUserRef = useRef<Record<string, google.maps.Marker>>({});
   const techAnimByUserRef = useRef<Record<string, number>>({});
   const techDataByUserRef = useRef<Record<string, Tech>>({});
+  const tokenRef = useRef<string | null>(null);
+  const userRef = useRef<User | null>(null);
+  const fetchTechsRef = useRef<() => Promise<void>>(async () => {});
   const zonePolygonsRef = useRef<google.maps.Polygon[]>([]);
   const infoWindowRef = useRef<google.maps.InfoWindow | null>(null);
   const routeLineRef = useRef<google.maps.Polyline | null>(null);
   const routePreviewPolylinesRef = useRef<google.maps.Polyline[]>([]);
+  const techRoutePolylinesRef = useRef<google.maps.Polyline[]>([]);
   // navTargetRef holds the coordinates + user location; navVersion counter triggers the effect.
   // Using a ref (not state) for coords avoids the cleanup-cancels-timer bug.
   // userLoc is bundled at click-time so the route line always has the right value.
@@ -234,6 +247,19 @@ export default function Page() {
   const [stormVisibilityMode, setStormVisibilityMode] = useState<"active_only" | "active_and_previous" | "all">("active_and_previous");
   const [activeStormEvent, setActiveStormEvent] = useState<{ id: string; name: string; started_at: string } | null>(null);
   const [legendCollapsed, setLegendCollapsed] = useState(false);
+  const [routingPaneCollapsed, setRoutingPaneCollapsed] = useState(false);
+  const [techRoutes, setTechRoutes] = useState<TechRouteBundle[]>([]);
+  const [selectedRouteTechIds, setSelectedRouteTechIds] = useState<Set<string>>(() => new Set());
+  const [routePickTechId, setRoutePickTechId] = useState<string | null>(null);
+  const [markerContextMenu, setMarkerContextMenu] = useState<{
+    x: number;
+    y: number;
+    outage: Outage;
+  } | null>(null);
+  const [routeAssignTechId, setRouteAssignTechId] = useState<string>("");
+  const routePickTechIdRef = useRef<string | null>(null);
+  const selectedRouteTechIdsRef = useRef<Set<string>>(new Set());
+  const techRoutesRef = useRef<TechRouteBundle[]>([]);
   const [reportAddressEdit, setReportAddressEdit] = useState("");
   const [reportStreet, setReportStreet] = useState("");
   const [reportCity, setReportCity] = useState("");
@@ -381,6 +407,12 @@ export default function Page() {
       setTechs(data.techs ?? []);
     } catch {}
   }, [token]);
+  fetchTechsRef.current = fetchTechs;
+  tokenRef.current = token;
+  userRef.current = user;
+  routePickTechIdRef.current = routePickTechId;
+  selectedRouteTechIdsRef.current = selectedRouteTechIds;
+  techRoutesRef.current = techRoutes;
 
   const fetchZones = useCallback(async () => {
     try {
@@ -687,6 +719,78 @@ export default function Page() {
       line.setMap(null);
     }
     routePreviewPolylinesRef.current = [];
+  }
+
+  function clearTechRouteLines() {
+    for (const line of techRoutePolylinesRef.current) {
+      line.setMap(null);
+    }
+    techRoutePolylinesRef.current = [];
+  }
+
+  function drawSelectedTechRoutes() {
+    if (!mapObj.current || typeof google === "undefined") return;
+    clearTechRouteLines();
+    const selected = selectedRouteTechIdsRef.current;
+    if (selected.size === 0) return;
+
+    for (const route of techRoutesRef.current) {
+      if (!selected.has(route.techUserId)) continue;
+      const stops = route.stops.slice(0, 10);
+      if (stops.length === 0) continue;
+      const color = route.mapColor || "#0d9488";
+      const path: Array<{ lat: number; lng: number }> = [];
+      if (route.lat != null && route.lng != null) {
+        path.push({ lat: route.lat, lng: route.lng });
+      }
+      for (const s of stops) {
+        if (Number.isFinite(s.lat) && Number.isFinite(s.lng)) {
+          path.push({ lat: s.lat, lng: s.lng });
+        }
+      }
+      if (path.length < 2) continue;
+      const line = new google.maps.Polyline({
+        path,
+        geodesic: true,
+        strokeColor: color,
+        strokeOpacity: 0.9,
+        strokeWeight: 5,
+        zIndex: 4,
+      });
+      line.setMap(mapObj.current);
+      techRoutePolylinesRef.current.push(line);
+    }
+  }
+
+  useEffect(() => {
+    if (!mapReady || activeTab !== "map") return;
+    drawSelectedTechRoutes();
+  }, [techRoutes, selectedRouteTechIds, mapReady, activeTab]);
+
+  async function mutateTechRoute(body: Record<string, unknown>) {
+    if (!tokenRef.current) return;
+    const res = await fetch("/api/routing/tech-routes", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${tokenRef.current}`,
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Route update failed");
+    if (Array.isArray(data.routes)) {
+      setTechRoutes(data.routes);
+      // Auto-select techs that have stops
+      setSelectedRouteTechIds((prev) => {
+        const next = new Set(prev);
+        for (const r of data.routes as TechRouteBundle[]) {
+          if (r.stops.length > 0) next.add(r.techUserId);
+        }
+        return next;
+      });
+    }
+    await fetchOutages();
   }
 
   /** Route-to-Next preview: leg 1 teal, leg 2 yellow, leg 3 red. Ephemeral — cleared on manual navigate. */
@@ -1124,11 +1228,42 @@ export default function Page() {
 
       marker.addListener("click", () => {
         infoWindowRef.current?.close();
-        if (user?.role === "tech" || isOffice) {
+        setMarkerContextMenu(null);
+
+        // Tech (or office in pick mode): tap dots to append to a route
+        const pickId = routePickTechIdRef.current;
+        if (pickId) {
+          void mutateTechRoute({
+            action: "add",
+            techUserId: pickId,
+            outageId: String(outage.id),
+          })
+            .then(() => {
+              setSelectedRouteTechIds((prev) => new Set(prev).add(pickId));
+            })
+            .catch((err) => alert(err instanceof Error ? err.message : "Could not add stop"));
+          return;
+        }
+
+        if (userRef.current?.role === "tech" || userRef.current?.role === "office" || userRef.current?.role === "admin" || userRef.current?.role === "owner") {
           openInvestigation(outage);
         } else {
           showInfoWindow(outage, marker);
         }
+      });
+
+      marker.addListener("rightclick", (e: google.maps.MapMouseEvent) => {
+        const role = userRef.current?.role;
+        if (role !== "office" && role !== "admin" && role !== "owner") return;
+        e.domEvent?.preventDefault?.();
+        const dom = e.domEvent as MouseEvent | undefined;
+        setMarkerContextMenu({
+          x: dom?.clientX ?? 120,
+          y: dom?.clientY ?? 120,
+          outage,
+        });
+        const firstTech = techRoutesRef.current[0]?.techUserId ?? techs[0]?.userId ?? "";
+        setRouteAssignTechId(firstTech);
       });
 
       markersRef.current.push(marker);
@@ -1208,9 +1343,30 @@ export default function Page() {
           if (!infoWindowRef.current || !mapObj.current) return;
           const cur = techDataByUserRef.current[key];
           if (!cur) return;
-          const statusLabel = cur.status.charAt(0).toUpperCase() + cur.status.slice(1);
+          const statusLabel = TECH_STATUS_LABEL[cur.status] ?? cur.status;
           const lastUpdate = cur.updatedAt ? new Date(cur.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Unknown";
           const color2 = TECH_STATUS_COLOR[cur.status] ?? "#6b7280";
+          const canEditStatus =
+            userRef.current?.role === "office" ||
+            userRef.current?.role === "admin" ||
+            userRef.current?.role === "owner";
+          const isSelf = userRef.current?.id === cur.userId;
+          const canPickRoute = canEditStatus || isSelf || userRef.current?.role === "tech";
+          const statusBtns = canEditStatus
+            ? (`<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px">` +
+              (["available", "working", "paused"] as const)
+                .map(
+                  (s) =>
+                    `<button type="button" data-tech-status="${s}" data-tech-id="${cur.userId}" style="padding:5px 10px;border-radius:8px;border:1px solid ${TECH_STATUS_COLOR[s]}55;background:${TECH_STATUS_COLOR[s]}18;color:${TECH_STATUS_COLOR[s]};font-size:11px;font-weight:700;cursor:pointer">${TECH_STATUS_LABEL[s]}</button>`
+                )
+                .join("") +
+              `</div><div style="font-size:10px;color:#9ca3af;margin-top:6px">Tap a status to remove from / add to auto-routing</div>`)
+            : "";
+          const pickBtn = canPickRoute
+            ? `<button type="button" data-route-pick="${cur.userId}" style="margin-top:10px;width:100%;padding:8px 10px;border:none;border-radius:8px;background:#0d9488;color:#fff;font-size:12px;font-weight:700;cursor:pointer">${
+                isSelf ? "Build my next 5 stops" : "Click map to add stops"
+              }</button>`
+            : "";
           infoWindowRef.current.setContent(`
             <div style="font-family:system-ui;padding:10px;min-width:200px">
               <div style="font-weight:700;font-size:14px;margin-bottom:4px">${cur.name}</div>
@@ -1219,8 +1375,51 @@ export default function Page() {
               <div style="font-size:12px;margin-top:6px;color:#374151"><b>Current job:</b> ${cur.currentJobName ?? "None"}</div>
               <div style="font-size:12px;margin-top:4px;color:#6b7280"><b>Last update:</b> ${lastUpdate}</div>
               ${cur.phone ? `<div style="font-size:12px;margin-top:6px;color:#374151">${cur.phone}</div>` : ""}
+              ${statusBtns}
+              ${pickBtn}
             </div>`);
           infoWindowRef.current.open({ map: mapObj.current, anchor: marker });
+          // Wire status buttons after InfoWindow DOM mounts
+          window.setTimeout(() => {
+            document.querySelectorAll<HTMLButtonElement>("[data-tech-status][data-tech-id]").forEach((btn) => {
+              btn.onclick = async () => {
+                const techId = btn.getAttribute("data-tech-id");
+                const nextStatus = btn.getAttribute("data-tech-status");
+                const authToken = tokenRef.current;
+                if (!techId || !nextStatus || !authToken) return;
+                btn.disabled = true;
+                try {
+                  const res = await fetch("/api/techs", {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "application/json",
+                      Authorization: `Bearer ${authToken}`,
+                    },
+                    body: JSON.stringify({ action: "update_tech", techId, status: nextStatus }),
+                  });
+                  if (!res.ok) {
+                    const d = await res.json().catch(() => ({}));
+                    throw new Error(d.error || "Failed to update status");
+                  }
+                  await fetchTechsRef.current();
+                  infoWindowRef.current?.close();
+                } catch (err) {
+                  alert(err instanceof Error ? err.message : "Failed to update status");
+                  btn.disabled = false;
+                }
+              };
+            });
+            document.querySelectorAll<HTMLButtonElement>("[data-route-pick]").forEach((btn) => {
+              btn.onclick = () => {
+                const techId = btn.getAttribute("data-route-pick");
+                if (!techId) return;
+                setRoutePickTechId(techId);
+                setSelectedRouteTechIds((prev) => new Set(prev).add(techId));
+                setRoutingPaneCollapsed(false);
+                infoWindowRef.current?.close();
+              };
+            });
+          }, 50);
         });
         techMarkerByUserRef.current[key] = marker;
       } else {
@@ -2389,7 +2588,7 @@ export default function Page() {
                     {(["available", "working", "paused", "offline"] as const).map((s) => (
                       <div key={s} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                         <div style={{ width: "10px", height: "10px", background: TECH_STATUS_COLOR[s], borderRadius: "50%" }} />
-                        <span style={{ fontSize: "13px", color: "#374151" }}>{techs.filter((t) => t.status === s).length} {s}</span>
+                        <span style={{ fontSize: "13px", color: "#374151" }}>{techs.filter((t) => t.status === s).length} {TECH_STATUS_LABEL[s]}</span>
                       </div>
                     ))}
                   </div>
@@ -2465,6 +2664,191 @@ export default function Page() {
               )}
               <div ref={mapRef} style={{ width: "100%", height: "100%", borderRadius: "8px" }} />
 
+              {routePickTechId && (
+                <div
+                  style={{
+                    position: "absolute",
+                    top: isOffice ? (isMobile ? 68 : 72) : 20,
+                    left: "50%",
+                    transform: "translateX(-50%)",
+                    zIndex: 7,
+                    background: "#134e4a",
+                    color: "#fff",
+                    padding: "8px 14px",
+                    borderRadius: 999,
+                    fontSize: 13,
+                    fontWeight: 700,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+                  }}
+                >
+                  Tap map dots to add stops
+                  <button
+                    type="button"
+                    onClick={() => setRoutePickTechId(null)}
+                    style={{
+                      background: "rgba(255,255,255,0.2)",
+                      border: "none",
+                      color: "#fff",
+                      borderRadius: 8,
+                      padding: "4px 8px",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Done
+                  </button>
+                </div>
+              )}
+
+              {token && (isOffice || user?.role === "tech") && !isMobile && (
+                <RoutingLogicPane
+                  token={token}
+                  collapsed={routingPaneCollapsed}
+                  onToggleCollapsed={() => setRoutingPaneCollapsed((v) => !v)}
+                  selectedTechIds={selectedRouteTechIds}
+                  onSelectedTechIdsChange={setSelectedRouteTechIds}
+                  routes={techRoutes}
+                  onRoutesChange={setTechRoutes}
+                  isOffice={isOffice}
+                  currentUserId={user?.id ?? null}
+                  onFocusStop={(stop) => {
+                    mapObj.current?.panTo({ lat: stop.lat, lng: stop.lng });
+                    mapObj.current?.setZoom(16);
+                    blinkMarker(stop.outageId);
+                  }}
+                />
+              )}
+
+              {markerContextMenu && isOffice && (
+                <div
+                  style={{
+                    position: "fixed",
+                    left: markerContextMenu.x,
+                    top: markerContextMenu.y,
+                    zIndex: 80,
+                    background: "#fff",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: 10,
+                    boxShadow: "0 10px 30px rgba(0,0,0,0.18)",
+                    minWidth: 240,
+                    padding: 8,
+                  }}
+                  onMouseLeave={() => setMarkerContextMenu(null)}
+                >
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", padding: "4px 8px 8px" }}>
+                    {markerContextMenu.outage.streetAddress?.split(",")[0] || `Outage ${markerContextMenu.outage.id}`}
+                  </div>
+                  <label style={{ display: "block", padding: "4px 8px", fontSize: 12, color: "#374151" }}>
+                    Technician
+                    <select
+                      value={routeAssignTechId}
+                      onChange={(e) => setRouteAssignTechId(e.target.value)}
+                      style={{ width: "100%", marginTop: 4, padding: "6px 8px", borderRadius: 8, border: "1px solid #d1d5db" }}
+                    >
+                      <option value="">Select tech…</option>
+                      {(techRoutes.length > 0
+                        ? techRoutes.map((t) => ({ id: t.techUserId, name: t.techName }))
+                        : techs.map((t) => ({ id: t.userId, name: t.name }))
+                      ).map((t) => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    disabled={!routeAssignTechId}
+                    onClick={async () => {
+                      try {
+                        await mutateTechRoute({
+                          action: "add",
+                          techUserId: routeAssignTechId,
+                          outageId: String(markerContextMenu.outage.id),
+                        });
+                        setSelectedRouteTechIds((prev) => new Set(prev).add(routeAssignTechId));
+                        setMarkerContextMenu(null);
+                      } catch (err) {
+                        alert(err instanceof Error ? err.message : "Failed");
+                      }
+                    }}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
+                      padding: "8px 10px",
+                      border: "none",
+                      background: "none",
+                      fontWeight: 600,
+                      fontSize: 13,
+                      cursor: routeAssignTechId ? "pointer" : "not-allowed",
+                      color: "#0f766e",
+                    }}
+                  >
+                    Add to Technician Route
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!routeAssignTechId}
+                    onClick={async () => {
+                      try {
+                        await mutateTechRoute({
+                          action: "remove",
+                          techUserId: routeAssignTechId,
+                          outageId: String(markerContextMenu.outage.id),
+                        });
+                        setMarkerContextMenu(null);
+                      } catch (err) {
+                        alert(err instanceof Error ? err.message : "Failed");
+                      }
+                    }}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
+                      padding: "8px 10px",
+                      border: "none",
+                      background: "none",
+                      fontWeight: 600,
+                      fontSize: 13,
+                      cursor: routeAssignTechId ? "pointer" : "not-allowed",
+                      color: "#b45309",
+                    }}
+                  >
+                    Remove from Technician Route
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await mutateTechRoute({
+                          action: "not_target",
+                          outageId: String(markerContextMenu.outage.id),
+                        });
+                        setMarkerContextMenu(null);
+                      } catch (err) {
+                        alert(err instanceof Error ? err.message : "Failed");
+                      }
+                    }}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      textAlign: "left",
+                      padding: "8px 10px",
+                      border: "none",
+                      background: "none",
+                      fontWeight: 600,
+                      fontSize: 13,
+                      cursor: "pointer",
+                      color: "#b91c1c",
+                    }}
+                  >
+                    Not a target property
+                  </button>
+                </div>
+              )}
+
               {/* Legend — collapsible; hidden on mobile to save space */}
               {!isMobile && (
                 <div style={{
@@ -2533,7 +2917,7 @@ export default function Page() {
                       {(["available", "working", "paused"] as const).map((s) => (
                         <div key={s} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
                           <div style={{ width: "12px", height: "12px", background: TECH_STATUS_COLOR[s], borderRadius: "2px", flexShrink: 0 }} />
-                          <span style={{ color: "#374151", textTransform: "capitalize" }}>{s}</span>
+                          <span style={{ color: "#374151" }}>{TECH_STATUS_LABEL[s]}</span>
                         </div>
                       ))}
                     </>

@@ -212,12 +212,13 @@ export default function QueueItemDrawer({
             <div style={{ padding: "10px 12px", background: "#fef2f2", color: "#b91c1c", borderRadius: "8px", fontSize: "13px" }}>{error}</div>
           )}
 
-          <CustomerInfoFields
-            value={customer}
-            onChange={setCustomer}
-            showName={item.type === "job" || true}
-            nameRequired={item.type === "job"}
-          />
+            <CustomerInfoFields
+              value={customer}
+              onChange={setCustomer}
+              showName={item.type === "job" || true}
+              nameRequired={item.type === "job"}
+              contactRow
+            />
 
           <label style={{ display: "block" }}>
             <span style={{ fontSize: "12px", fontWeight: 600, color: "#374151" }}>Address</span>

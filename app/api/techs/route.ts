@@ -191,6 +191,22 @@ export async function POST(req: Request) {
       }
 
       const techUpdate: Record<string, unknown> = { updated_at: new Date().toISOString() };
+      if (status !== undefined) {
+        const validStatuses = ["available", "working", "paused", "offline"];
+        if (!validStatuses.includes(status)) {
+          return NextResponse.json({ error: "Invalid status" }, { status: 400 });
+        }
+        techUpdate.status = status;
+        if (status === "working") {
+          techUpdate.working_since = new Date().toISOString();
+        }
+        if (status === "available" || status === "paused" || status === "offline") {
+          techUpdate.working_since = null;
+          if (status === "available" || status === "offline") {
+            techUpdate.current_job_id = null;
+          }
+        }
+      }
       if (territoryId !== undefined) {
         if (territoryId) {
           const blocked = await assertAssignableTerritory(db, territoryId);

@@ -122,7 +122,7 @@ type Props = {
 
 const STATUS_CONFIG = {
   available: { color: "#10b981", bg: "#d1fae5", label: "Available" },
-  working:   { color: "#ef4444", bg: "#fee2e2", label: "Working" },
+  working:   { color: "#ef4444", bg: "#fee2e2", label: "On Job" },
   paused:    { color: "#f59e0b", bg: "#fef3c7", label: "Paused" },
   offline:   { color: "#6b7280", bg: "#f3f4f6", label: "Offline" },
 };

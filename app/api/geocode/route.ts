@@ -48,7 +48,19 @@ export async function POST(req: Request) {
       );
     }
 
-    return NextResponse.json({ success: true, mode: "reverse", address: result });
+    // `address` is always a display string for clients that expect a string.
+    // Structured fields are also returned for form auto-fill (street/city/state/ZIP).
+    return NextResponse.json({
+      success: true,
+      mode: "reverse",
+      address: result.formattedAddress,
+      formattedAddress: result.formattedAddress,
+      city: result.city,
+      county: result.county,
+      state: result.state,
+      postalCode: result.postalCode,
+      street: result.formattedAddress.split(",")[0]?.trim() ?? null,
+    });
   } catch (err: any) {
     console.error("[geocode] Error:", err);
     return NextResponse.json({ error: err.message ?? "Geocoding failed" }, { status: 500 });

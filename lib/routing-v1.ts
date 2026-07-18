@@ -165,7 +165,8 @@ function leadStatusScore(
     return 25;
   }
 
-  // Phase 1 — Hunting: clusters & small outages beat large utility main-line events
+  // Phase 1 — Hunting: call-ins and clusters beat large utility main-line events
+  if (isOffice) return 95;
   if (status === "sold") return 40;
   if (status === "wants_to_proceed") return 48;
   if (status === "opportunity") return 46;
@@ -176,7 +177,6 @@ function leadStatusScore(
   if (status === "job_started") return 32;
   if (status === "temp_power") return 28;
   if (status === "grounding") return 26;
-  if (isOffice) return 42;
   if (status === "no_opportunity" || status === "completed") return 0;
   return 12;
 }

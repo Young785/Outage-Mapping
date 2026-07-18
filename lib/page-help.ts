@@ -93,7 +93,7 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
     steps: [
       { title: "Check the phase banner", detail: "Phase 1 = hunt new dots. Phase 2 = dispatch sold work. Phase 3 = cleanup and follow-ups." },
       { title: "Read the stat cards", detail: "Unvisited = nobody has knocked yet. Opportunities = damage found but not sold. Queue count = dispatch-ready jobs." },
-      { title: "Glance at technician summary", detail: "Available (green) crews can take new assignments. Working (red) are on a job." },
+      { title: "Glance at technician summary", detail: "Available (green) crews can take new assignments. On Job (red) are on a job." },
       { title: "Choose your next screen", detail: "Hunting → Live Map or Outages. Dispatch → Job Queue. Crew balance → Techs." },
     ],
     inputs: [
@@ -302,7 +302,7 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
     title: "Techs",
     summary: "Live crew status and GPS — who is available and where they are.",
     bullets: [
-      "Status: green = available, red = working, amber = paused, gray = offline.",
+      "Status: green = available, red = on job, amber = paused, gray = offline.",
       "GPS refreshes ~every 30 seconds while the app is open.",
       "Next stop recommendation shown for available techs with location.",
     ],
@@ -313,13 +313,13 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
       tryThis: ["Check Available before assigning", "Route from tech GPS to their next job"],
     },
     steps: [
-      { title: "Scan status counts", detail: "Available vs Working vs Offline at the top." },
+      { title: "Scan status counts", detail: "Available vs On Job vs Offline at the top." },
       { title: "Find an available tech", detail: "Green = can take a new assignment." },
       { title: "Review next stop", detail: "System suggests highest-priority queue item from that tech's location." },
       { title: "Navigate or Route", detail: "Go = your map to the job. Route = line from tech GPS to job." },
     ],
     inputs: [
-      { name: "Status chips", description: "Available, Working, Paused, Offline." },
+      { name: "Status chips", description: "Available, On Job, Paused, Offline." },
       { name: "Go", description: "Navigate to recommended stop." },
       { name: "Route", description: "Draw route from tech location to job." },
       { name: "Refresh", description: "Reload tech list and GPS." },
