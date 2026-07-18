@@ -1,13 +1,15 @@
 /**
- * MetroGIS regional parcel land-use lookup + R1/R2/R3-style residential targeting.
+ * MetroGIS / MN Geospatial Commons parcel land-use lookup + R1/R2/R3-style targeting.
  *
- * Data: Metropolitan Council / MetroGIS Administrative Parcels FeatureServer
- * (USECLASS1–4, NUM_UNITS, DWELL_TYPE). See:
+ * Primary (reliable): MNGeo Plan Parcels Open FeatureServer
+ * Fallback: Met Council LPH/Administrative_Parcels
+ *
+ * Docs:
  * https://metrocouncil.org/Data-and-Maps/MetroGIS.aspx
  * https://metrogis.org/how-do-i-get/parcel-data/
+ * https://enterprise.gisdata.mn.gov/aghost/rest/services/us_mn_state_mngeo/plan_parcels_open/FeatureServer
  *
- * Target allowlist ≈ residential 1–3 units (R1 single-family, R2 duplex, R3 triplex).
- * Non-residential / larger multifamily → auto-exclude candidates.
+ * Target allowlist ≈ residential 1–3 units (R1 / R2 / R3 style).
  */
 
 export type ParcelAttrs = {
@@ -41,23 +43,63 @@ export type ParcelLookupResult = {
   found: boolean;
   classification: ParcelClassification | null;
   source: "live" | "cache" | "unavailable";
+  provider?: "mngeo" | "metc";
   error?: string;
 };
 
-const METROGIS_PARCEL_QUERY =
+/** Working statewide open parcels (verified HTTP 200 + feature hits). */
+const MNGEO_PARCEL_QUERY =
+  process.env.MNGEO_PARCEL_QUERY_URL ||
+  "https://enterprise.gisdata.mn.gov/aghost/rest/services/us_mn_state_mngeo/plan_parcels_open/FeatureServer/1/query";
+
+/** Met Council MetroGIS regional parcels (can time out from some networks). */
+const METC_PARCEL_QUERY =
   process.env.METROGIS_PARCEL_QUERY_URL ||
   "https://arcgis.metc.state.mn.us/arcgis/rest/services/LPH/Administrative_Parcels/FeatureServer/0/query";
 
-const LOOKUP_TIMEOUT_MS = Number(process.env.METROGIS_LOOKUP_TIMEOUT_MS || 12000);
+const LOOKUP_TIMEOUT_MS = Number(process.env.METROGIS_LOOKUP_TIMEOUT_MS || 15000);
 
 /** Explicit R1/R2/R3 (and close variants) in free-text use class / zoning notes. */
-const R123_RE = /\b(?:r[\s\-]?[123]|residential[\s\-]?[123]|1[\s\-]?(?:to|-)[\s\-]?3\s*(?:unit|family)|single[\s\-]?family|duplex|two[\s\-]?family|triplex|three[\s\-]?family|1[\s\-]?(?:&|and)[\s\-]?3\s*family)\b/i;
+const R123_RE =
+  /\b(?:r[\s\-]?[123]|residential[\s\-]?[123]|1[\s\-]?(?:to|-)[\s\-]?3\s*(?:unit|family)|single[\s\-]?family|duplex|two[\s\-]?family|triplex|three[\s\-]?family|1[\s\-]?(?:&|and)[\s\-]?3\s*family)\b/i;
 
 const RESIDENTIAL_HINT =
-  /\b(?:residen|dwell|home|house|homestead|townhome|townhouse|row\s*house|condo(?:minium)?)\b/i;
+  /\b(?:residen|dwell|home|house|homestead|townhome|townhouse|row\s*house)\b/i;
 
 const EXCLUDE_HARD =
-  /\b(?:commercial|industrial|retail|office|warehouse|manufactur|agricultur|farm|vacant\s*land|parking|utility|railroad|church|school|hospital|hotel|motel|apartment|apt\.?|multi[\s\-]?family|4\+|four\s*\+|condo\s*complex|government|tax\s*exempt|cemetery|golf|airport|quarry|mining)\b/i;
+  /\b(?:commercial|industrial|retail|office|warehouse|manufactur|agricultur|farm|vacant\s*land|parking|utility|railroad|church|school|hospital|nursing\s*home|hotel|motel|apartment|apt\.?|condo(?:minium)?|cooperative|multi[\s\-]?family|4\+|four\s*\+|government|tax\s*exempt|cemetery|golf|airport|quarry|mining)\b/i;
+
+function pickAttr(raw: Record<string, unknown>, ...keys: string[]): unknown {
+  for (const k of keys) {
+    if (raw[k] != null && raw[k] !== "") return raw[k];
+    const lower = k.toLowerCase();
+    if (raw[lower] != null && raw[lower] !== "") return raw[lower];
+    const upper = k.toUpperCase();
+    if (raw[upper] != null && raw[upper] !== "") return raw[upper];
+  }
+  return null;
+}
+
+/** Normalize MetC (UPPER) and MNGeo (lower) attribute shapes. */
+export function normalizeParcelAttrs(raw: Record<string, unknown> | null | undefined): ParcelAttrs {
+  if (!raw) return {};
+  const num = pickAttr(raw, "NUM_UNITS", "num_units");
+  return {
+    COUNTY_PIN: (pickAttr(raw, "COUNTY_PIN", "county_pin") as string | null) ?? null,
+    USECLASS1: (pickAttr(raw, "USECLASS1", "useclass1") as string | null) ?? null,
+    USECLASS2: (pickAttr(raw, "USECLASS2", "useclass2") as string | null) ?? null,
+    USECLASS3: (pickAttr(raw, "USECLASS3", "useclass3") as string | null) ?? null,
+    USECLASS4: (pickAttr(raw, "USECLASS4", "useclass4") as string | null) ?? null,
+    NUM_UNITS: num != null && Number.isFinite(Number(num)) ? Number(num) : null,
+    DWELL_TYPE: (pickAttr(raw, "DWELL_TYPE", "dwell_type") as string | null) ?? null,
+    ANUMBER: (pickAttr(raw, "ANUMBER", "anumber") as number | string | null) ?? null,
+    ST_NAME: (pickAttr(raw, "ST_NAME", "st_name") as string | null) ?? null,
+    ST_POS_TYP: (pickAttr(raw, "ST_POS_TYP", "st_pos_typ") as string | null) ?? null,
+    ZIP: (pickAttr(raw, "ZIP", "zip") as string | null) ?? null,
+    CO_NAME: (pickAttr(raw, "CO_NAME", "co_name") as string | null) ?? null,
+    CTU_NAME: (pickAttr(raw, "CTU_NAME", "ctu_name") as string | null) ?? null,
+  };
+}
 
 function joinUseClasses(attrs: ParcelAttrs): string {
   return [attrs.USECLASS1, attrs.USECLASS2, attrs.USECLASS3, attrs.USECLASS4]
@@ -78,8 +120,8 @@ function buildStreetAddress(attrs: ParcelAttrs): string | null {
 }
 
 /**
- * Classify MetroGIS parcel attributes for storm-chasing residential targeting.
- * Prefer NUM_UNITS when present; otherwise USECLASS / DWELL_TYPE text heuristics.
+ * Classify parcel attributes for storm-chasing residential targeting.
+ * Prefer NUM_UNITS when present (1–3 = target); otherwise USECLASS text heuristics.
  */
 export function classifyParcelLandUse(attrs: ParcelAttrs): ParcelClassification {
   const useClassLabel = joinUseClasses(attrs) || (attrs.DWELL_TYPE || "").trim() || "unknown";
@@ -92,47 +134,30 @@ export function classifyParcelLandUse(attrs: ParcelAttrs): ParcelClassification 
   const streetAddress = buildStreetAddress(attrs);
   const blob = `${useClassLabel} ${dwellType || ""}`.toLowerCase();
 
-  if (EXCLUDE_HARD.test(blob) && !R123_RE.test(blob)) {
-    // Apartments / commercial / industrial always out unless clearly R1–R3 wording.
-    if (/\b(?:apartment|apt\.?|commercial|industrial|retail|office|warehouse)\b/i.test(blob)) {
-      return {
-        isTargetResidential: false,
-        excludeReason: `Non-target land use: ${useClassLabel || "excluded class"}`,
-        useClassLabel,
-        countyPin,
-        numUnits,
-        dwellType,
-        streetAddress,
-        attrs,
-      };
-    }
+  if (numUnits != null && numUnits >= 1 && numUnits <= 3) {
+    return {
+      isTargetResidential: true,
+      excludeReason: null,
+      useClassLabel,
+      countyPin,
+      numUnits,
+      dwellType,
+      streetAddress,
+      attrs,
+    };
   }
 
-  if (numUnits != null) {
-    if (numUnits >= 1 && numUnits <= 3) {
-      return {
-        isTargetResidential: true,
-        excludeReason: null,
-        useClassLabel,
-        countyPin,
-        numUnits,
-        dwellType,
-        streetAddress,
-        attrs,
-      };
-    }
-    if (numUnits >= 4) {
-      return {
-        isTargetResidential: false,
-        excludeReason: `Multifamily (${numUnits} units) — outside R1/R2/R3 target`,
-        useClassLabel,
-        countyPin,
-        numUnits,
-        dwellType,
-        streetAddress,
-        attrs,
-      };
-    }
+  if (numUnits != null && numUnits >= 4) {
+    return {
+      isTargetResidential: false,
+      excludeReason: `Multifamily (${numUnits} units) — outside R1/R2/R3 target`,
+      useClassLabel,
+      countyPin,
+      numUnits,
+      dwellType,
+      streetAddress,
+      attrs,
+    };
   }
 
   if (R123_RE.test(blob)) {
@@ -161,8 +186,8 @@ export function classifyParcelLandUse(attrs: ParcelAttrs): ParcelClassification 
     };
   }
 
-  // Generic "Residential" without unit count → treat as target (likely SF/duplex in county data).
-  if (RESIDENTIAL_HINT.test(blob) && !/\b(?:apartment|apt\.?|multi)\b/i.test(blob)) {
+  // Generic residential without unit count → treat as target (typical SF/duplex county labeling).
+  if (RESIDENTIAL_HINT.test(blob)) {
     return {
       isTargetResidential: true,
       excludeReason: null,
@@ -210,53 +235,128 @@ async function fetchWithTimeout(url: string, ms: number): Promise<Response> {
   }
 }
 
-/** Live point-in-parcel query against MetroGIS FeatureServer. */
-export async function lookupParcelAtLive(lat: number, lng: number): Promise<ParcelLookupResult> {
-  const params = new URLSearchParams({
-    f: "json",
-    geometry: `${lng},${lat}`,
-    geometryType: "esriGeometryPoint",
-    inSR: "4326",
-    spatialRel: "esriSpatialRelIntersects",
+type Provider = {
+  id: "mngeo" | "metc";
+  queryUrl: string;
+  outFields: string;
+};
+
+const PROVIDERS: Provider[] = [
+  {
+    id: "mngeo",
+    queryUrl: MNGEO_PARCEL_QUERY,
+    outFields:
+      "county_pin,useclass1,useclass2,useclass3,useclass4,num_units,dwell_type,anumber,st_name,st_pos_typ,zip,co_name,ctu_name",
+  },
+  {
+    id: "metc",
+    queryUrl: METC_PARCEL_QUERY,
     outFields:
       "COUNTY_PIN,USECLASS1,USECLASS2,USECLASS3,USECLASS4,NUM_UNITS,DWELL_TYPE,ANUMBER,ST_NAME,ST_POS_TYP,ZIP,CO_NAME,CTU_NAME",
+  },
+];
+
+/** Tiny envelope around the point — more reliable than bare point hits on some layers. */
+function envelopeGeometry(lat: number, lng: number, pad = 0.00015): string {
+  return JSON.stringify({
+    xmin: lng - pad,
+    ymin: lat - pad,
+    xmax: lng + pad,
+    ymax: lat + pad,
+    spatialReference: { wkid: 4326 },
+  });
+}
+
+async function queryProvider(
+  provider: Provider,
+  lat: number,
+  lng: number
+): Promise<ParcelLookupResult> {
+  const params = new URLSearchParams({
+    f: "json",
+    geometry: envelopeGeometry(lat, lng),
+    geometryType: "esriGeometryEnvelope",
+    inSR: "4326",
+    spatialRel: "esriSpatialRelIntersects",
+    outFields: provider.outFields,
     returnGeometry: "false",
     resultRecordCount: "1",
+    orderByFields: provider.id === "mngeo" ? "objectid" : "OBJECTID",
   });
 
   try {
-    const res = await fetchWithTimeout(`${METROGIS_PARCEL_QUERY}?${params}`, LOOKUP_TIMEOUT_MS);
+    const res = await fetchWithTimeout(`${provider.queryUrl}?${params}`, LOOKUP_TIMEOUT_MS);
     if (!res.ok) {
       return {
         found: false,
         classification: null,
         source: "unavailable",
-        error: `MetroGIS HTTP ${res.status}`,
+        provider: provider.id,
+        error: `${provider.id} HTTP ${res.status}`,
       };
     }
     const data = (await res.json()) as {
       error?: { message?: string };
-      features?: Array<{ attributes?: ParcelAttrs }>;
+      features?: Array<{ attributes?: Record<string, unknown> }>;
     };
     if (data.error) {
       return {
         found: false,
         classification: null,
         source: "unavailable",
-        error: data.error.message || "MetroGIS query error",
+        provider: provider.id,
+        error: data.error.message || `${provider.id} query error`,
       };
     }
-    const attrs = data.features?.[0]?.attributes;
-    if (!attrs) {
-      return { found: false, classification: null, source: "live" };
+    const raw = data.features?.[0]?.attributes;
+    if (!raw) {
+      return { found: false, classification: null, source: "live", provider: provider.id };
     }
+    const attrs = normalizeParcelAttrs(raw);
     return {
       found: true,
       classification: classifyParcelLandUse(attrs),
       source: "live",
+      provider: provider.id,
     };
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "MetroGIS unreachable";
-    return { found: false, classification: null, source: "unavailable", error: msg };
+    const msg = err instanceof Error ? err.message : `${provider.id} unreachable`;
+    return {
+      found: false,
+      classification: null,
+      source: "unavailable",
+      provider: provider.id,
+      error: msg,
+    };
   }
+}
+
+/**
+ * Live parcel lookup: MNGeo first (proven), then Met Council MetroGIS fallback.
+ */
+export async function lookupParcelAtLive(lat: number, lng: number): Promise<ParcelLookupResult> {
+  let lastUnavailable: ParcelLookupResult | null = null;
+
+  for (const provider of PROVIDERS) {
+    const result = await queryProvider(provider, lat, lng);
+    if (result.found && result.classification) return result;
+    if (result.source === "live" && !result.found) {
+      // Service up, no parcel at this location — try next provider before giving up.
+      lastUnavailable = result;
+      continue;
+    }
+    if (result.source === "unavailable") {
+      lastUnavailable = result;
+      continue;
+    }
+  }
+
+  return (
+    lastUnavailable || {
+      found: false,
+      classification: null,
+      source: "unavailable",
+      error: "No parcel provider returned data",
+    }
+  );
 }
