@@ -12,6 +12,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { loadGoogleMaps, triggerMapResize } from "@/lib/google-maps";
 import ZipCodePicker from "./ZipCodePicker";
+import ExcludedPropertiesPanel from "./ExcludedPropertiesPanel";
 import {
   DISPATCH_ROLE_LABELS,
   type FieldDispatchRole,
@@ -89,6 +90,10 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
   const [mapReady, setMapReady] = useState(false);
   const [mapLoadError, setMapLoadError] = useState<string | null>(null);
   const [mapExpanded, setMapExpanded] = useState(false);
+  const [showLayerTerritory, setShowLayerTerritory] = useState(true);
+  const [showLayerPriority, setShowLayerPriority] = useState(true);
+  const [showLayerExclusion, setShowLayerExclusion] = useState(true);
+  const [overviewMode, setOverviewMode] = useState(false);
 
   const mapRef = useRef<HTMLDivElement | null>(null);
   const mapObj = useRef<google.maps.Map | null>(null);
@@ -99,6 +104,8 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
   const draftVerticesRef = useRef<LatLng[]>([]);
   const draftMarkersRef = useRef<google.maps.Marker[]>([]);
   const polygonDragListenerRef = useRef<google.maps.MapsEventListener | null>(null);
+  const contextPolysRef = useRef<google.maps.Polygon[]>([]);
+  const contextLabelsRef = useRef<google.maps.Marker[]>([]);
   const mapInitGen = useRef(0);
 
   const isOffice = role === "office" || role === "admin" || role === "owner";
@@ -170,7 +177,12 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
 
   function stopDrawingMode() {
     setIsDrawingPolygon(false);
-    mapObj.current?.setOptions({ draggable: true, draggableCursor: null, draggingCursor: null });
+    mapObj.current?.setOptions({
+      draggable: true,
+      draggableCursor: null,
+      draggingCursor: null,
+      disableDoubleClickZoom: false,
+    });
     if (drawClickListenerRef.current) {
       google.maps.event.removeListener(drawClickListenerRef.current);
       drawClickListenerRef.current = null;
@@ -183,9 +195,17 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
     draftVerticesRef.current = [];
   }
 
+  function clearContextOverlays() {
+    contextPolysRef.current.forEach((p) => p.setMap(null));
+    contextPolysRef.current = [];
+    contextLabelsRef.current.forEach((m) => m.setMap(null));
+    contextLabelsRef.current = [];
+  }
+
   function teardownMap() {
     stopDrawingMode();
     clearPathListeners();
+    clearContextOverlays();
     if (polygonDragListenerRef.current) {
       google.maps.event.removeListener(polygonDragListenerRef.current);
       polygonDragListenerRef.current = null;
@@ -196,6 +216,7 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
     }
     mapObj.current = null;
     setMapReady(false);
+    setOverviewMode(false);
   }
 
   function resetForm() {
@@ -207,11 +228,103 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
     setPolygonPath([]);
     setMapExpanded(false);
     setMapLoadError(null);
+    setOverviewMode(false);
     stopDrawingMode();
     clearPathListeners();
+    clearContextOverlays();
     if (editablePolyRef.current) {
       editablePolyRef.current.setMap(null);
       editablePolyRef.current = null;
+    }
+  }
+
+  function ringCentroid(path: LatLng[]): LatLng | null {
+    if (path.length === 0) return null;
+    let lat = 0;
+    let lng = 0;
+    for (const p of path) {
+      lat += p.lat;
+      lng += p.lng;
+    }
+    return { lat: lat / path.length, lng: lng / path.length };
+  }
+
+  function syncContextOverlays() {
+    if (!mapObj.current || !mapReady) return;
+    clearContextOverlays();
+    const bounds = new google.maps.LatLngBounds();
+    let hasBounds = false;
+
+    for (const t of territories) {
+      if (t.type !== "polygon") continue;
+      const zt = zoneTypeOf(t);
+      if (zt === "territory" && !showLayerTerritory) continue;
+      if (zt === "priority" && !showLayerPriority) continue;
+      if (zt === "exclusion" && !showLayerExclusion) continue;
+      if (editingId && t.id === editingId) continue;
+
+      const rings = t.geometry?.coordinates as number[][][] | undefined;
+      const ring = rings?.[0];
+      if (!ring || ring.length < 3) continue;
+
+      const path = ring.map((pt) => ({ lat: pt[1], lng: pt[0] }));
+      // Drop closing duplicate if present
+      if (
+        path.length > 1 &&
+        path[0].lat === path[path.length - 1].lat &&
+        path[0].lng === path[path.length - 1].lng
+      ) {
+        path.pop();
+      }
+      if (path.length < 3) continue;
+
+      const color = zoneColor(zt);
+      const poly = new google.maps.Polygon({
+        map: mapObj.current,
+        paths: path,
+        editable: false,
+        draggable: false,
+        clickable: false,
+        fillColor: color,
+        fillOpacity: zt === "exclusion" ? 0.22 : 0.12,
+        strokeColor: color,
+        strokeOpacity: 0.85,
+        strokeWeight: 2,
+        zIndex: zt === "exclusion" ? 1 : 0,
+      });
+      contextPolysRef.current.push(poly);
+      path.forEach((p) => {
+        bounds.extend(p);
+        hasBounds = true;
+      });
+
+      const center = ringCentroid(path);
+      if (center) {
+        const label = new google.maps.Marker({
+          map: mapObj.current,
+          position: center,
+          clickable: false,
+          optimized: false,
+          zIndex: 3,
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 0,
+            fillOpacity: 0,
+            strokeOpacity: 0,
+          },
+          label: {
+            text: t.name.slice(0, 28),
+            color: color,
+            fontSize: "11px",
+            fontWeight: "700",
+          },
+        });
+        contextLabelsRef.current.push(label);
+      }
+    }
+
+    if (hasBounds && (mapExpanded || overviewMode)) {
+      mapObj.current.fitBounds(bounds, 48);
     }
   }
 
@@ -255,9 +368,11 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
     );
   }
 
-  // Initialize polygon draw map when form is visible
+  const mapVisible = (showForm && tMode === "polygon") || overviewMode;
+
+  // Initialize polygon draw / overview map
   useEffect(() => {
-    if (!showForm || tMode !== "polygon") {
+    if (!mapVisible) {
       return;
     }
 
@@ -279,6 +394,7 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
             mapTypeControl: true,
             streetViewControl: false,
             fullscreenControl: false,
+            gestureHandling: "greedy",
           });
         }
 
@@ -319,7 +435,23 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
       cancelled = true;
       cancelAnimationFrame(raf);
     };
-  }, [showForm, tMode, tZoneType]);
+  }, [mapVisible, tZoneType]);
+
+  // Show all territories / priority / exclusions under the editor
+  useEffect(() => {
+    if (!mapReady) return;
+    syncContextOverlays();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    mapReady,
+    territories,
+    showLayerTerritory,
+    showLayerPriority,
+    showLayerExclusion,
+    editingId,
+    mapExpanded,
+    overviewMode,
+  ]);
 
   // Resize map when expanding or window changes
   useEffect(() => {
@@ -329,16 +461,25 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
       window.setTimeout(() => triggerMapResize(mapObj.current), ms)
     );
     return () => timers.forEach((t) => clearTimeout(t));
-  }, [mapExpanded, mapReady, showForm, tMode]);
+  }, [mapExpanded, mapReady, showForm, tMode, overviewMode]);
 
   useEffect(() => {
-    if (!mapExpanded) return;
+    if (!mapExpanded && !overviewMode) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMapExpanded(false);
+      if (e.key === "Escape") {
+        if (overviewMode) {
+          setOverviewMode(false);
+          setMapExpanded(false);
+          teardownMap();
+        } else {
+          setMapExpanded(false);
+        }
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [mapExpanded]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapExpanded, overviewMode]);
 
   // Restore polygon when editing
   useEffect(() => {
@@ -415,6 +556,7 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
       draggable: false,
       draggableCursor: "crosshair",
       draggingCursor: "crosshair",
+      disableDoubleClickZoom: true,
     });
 
     previewPolylineRef.current = new google.maps.Polyline({
@@ -433,6 +575,13 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
       draftVerticesRef.current = [...draftVerticesRef.current, point];
       addDraftVertex(point, index);
       refreshDraftOverlay();
+    });
+
+    // Double-click finishes the polygon when at least 3 points exist
+    google.maps.event.addListenerOnce(mapObj.current, "dblclick", () => {
+      if (draftVerticesRef.current.length >= 3) {
+        finishPolygonDraw();
+      }
     });
   }
 
@@ -636,7 +785,7 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
   const mapHeight = mapExpanded ? "calc(100vh - 140px)" : "min(560px, 58vh)";
 
   return (
-    <div style={{ maxWidth: showForm && tMode === "polygon" ? "none" : "900px", width: "100%" }}>
+    <div style={{ maxWidth: (showForm && tMode === "polygon") || overviewMode ? "none" : "900px", width: "100%" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
         <div>
           <h2 style={{ margin: 0, fontSize: "18px", fontWeight: 700, color: "#1f2937" }}>Boundaries & Territories</h2>
@@ -645,22 +794,56 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
           </p>
         </div>
         {isOffice && (
-          <button
-            onClick={() => {
-              const next = !showForm;
-              setShowForm(next);
-              if (!next) {
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={() => {
                 resetForm();
                 teardownMap();
-                setMapExpanded(false);
-              }
-            }}
-            style={{ padding: "8px 16px", background: "#0d9488", color: "#fff", border: "none", borderRadius: "8px", fontSize: "14px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}
-          >
-            + New Boundary
-          </button>
+                setShowForm(false);
+                setOverviewMode(true);
+                setMapExpanded(true);
+                setTMode("polygon");
+              }}
+              style={{
+                padding: "8px 14px",
+                background: "#f3f4f6",
+                color: "#374151",
+                border: "1px solid #d1d5db",
+                borderRadius: "8px",
+                fontSize: "13px",
+                fontWeight: 600,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              View all zones
+            </button>
+            <button
+              onClick={() => {
+                const next = !showForm;
+                setShowForm(next);
+                setOverviewMode(false);
+                if (!next) {
+                  resetForm();
+                  teardownMap();
+                  setMapExpanded(false);
+                }
+              }}
+              style={{ padding: "8px 16px", background: "#0d9488", color: "#fff", border: "none", borderRadius: "8px", fontSize: "14px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}
+            >
+              + New Boundary
+            </button>
+          </div>
         )}
       </div>
+
+      {isOffice && (
+        <ExcludedPropertiesPanel
+          token={token}
+          onSessionExpired={onSessionExpired}
+        />
+      )}
 
       {error && (
         <div style={{ padding: "12px 16px", background: "#fee2e2", border: "1px solid #fecaca", borderRadius: "8px", color: "#dc2626", fontSize: "13px", marginBottom: "16px" }}>
@@ -670,6 +853,122 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
       {success && (
         <div style={{ padding: "12px 16px", background: "#d1fae5", border: "1px solid #a7f3d0", borderRadius: "8px", color: "#065f46", fontSize: "13px", marginBottom: "16px" }}>
           {success}
+        </div>
+      )}
+
+      {overviewMode && isOffice && !showForm && (
+        <div
+          style={
+            mapExpanded
+              ? {
+                  position: "fixed",
+                  inset: 0,
+                  zIndex: 950,
+                  background: "#fff",
+                  padding: "16px",
+                  display: "flex",
+                  flexDirection: "column",
+                  boxSizing: "border-box",
+                  marginBottom: 0,
+                }
+              : {
+                  background: "#f9fafb",
+                  border: "1px solid #e5e7eb",
+                  borderRadius: "12px",
+                  padding: "16px",
+                  marginBottom: "24px",
+                }
+          }
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap", marginBottom: "10px" }}>
+            <div>
+              <div style={{ fontSize: "15px", fontWeight: 700, color: "#1f2937" }}>
+                All territories & exclusions
+              </div>
+              <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 2 }}>
+                Teal = territory · Amber = priority · Red = exclusion
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+              {(
+                [
+                  ["Territory", showLayerTerritory, setShowLayerTerritory, "#0d9488"],
+                  ["Priority", showLayerPriority, setShowLayerPriority, "#f59e0b"],
+                  ["Exclusion", showLayerExclusion, setShowLayerExclusion, "#ef4444"],
+                ] as const
+              ).map(([label, on, setOn, color]) => (
+                <label
+                  key={label}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color,
+                    cursor: "pointer",
+                    userSelect: "none",
+                  }}
+                >
+                  <input type="checkbox" checked={on} onChange={(e) => setOn(e.target.checked)} />
+                  {label}
+                </label>
+              ))}
+              <button
+                type="button"
+                onClick={() => syncContextOverlays()}
+                style={{
+                  padding: "7px 12px",
+                  background: "#f3f4f6",
+                  border: "1px solid #d1d5db",
+                  borderRadius: "6px",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Fit all
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOverviewMode(false);
+                  setMapExpanded(false);
+                  teardownMap();
+                }}
+                style={{
+                  padding: "7px 12px",
+                  background: "#0d9488",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: "6px",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+          <div
+            ref={mapRef}
+            style={{
+              width: "100%",
+              height: mapExpanded ? "calc(100vh - 120px)" : "min(560px, 58vh)",
+              minHeight: 360,
+              borderRadius: "10px",
+              border: "1px solid #d1d5db",
+              background: "#e5e7eb",
+              flex: mapExpanded ? 1 : undefined,
+            }}
+          />
+          {!mapReady && !mapLoadError && (
+            <div style={{ marginTop: 8, fontSize: 13, color: "#6b7280" }}>Loading map…</div>
+          )}
+          {mapLoadError && (
+            <div style={{ marginTop: 8, fontSize: 13, color: "#b91c1c" }}>{mapLoadError}</div>
+          )}
         </div>
       )}
 
@@ -825,26 +1124,72 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
                   }
                 >
                   {mapExpanded && (
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", gap: "12px", flexShrink: 0 }}>
-                      <div style={{ fontSize: "15px", fontWeight: 700, color: "#1f2937" }}>
-                        Draw boundary — large map
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", gap: "12px", flexShrink: 0, flexWrap: "wrap" }}>
+                      <div>
+                        <div style={{ fontSize: "15px", fontWeight: 700, color: "#1f2937" }}>
+                          Draw boundary — large map
+                        </div>
+                        <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 2 }}>
+                          Click corners · double-click or Finish to close · all existing zones shown below
+                        </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => setMapExpanded(false)}
-                        style={{
-                          padding: "8px 14px",
-                          background: "#0d9488",
-                          color: "#fff",
-                          border: "none",
-                          borderRadius: "8px",
-                          fontSize: "13px",
-                          fontWeight: 600,
-                          cursor: "pointer",
-                        }}
-                      >
-                        Done (Esc)
-                      </button>
+                      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                        {(
+                          [
+                            ["Territory", showLayerTerritory, setShowLayerTerritory, "#0d9488"],
+                            ["Priority", showLayerPriority, setShowLayerPriority, "#f59e0b"],
+                            ["Exclusion", showLayerExclusion, setShowLayerExclusion, "#ef4444"],
+                          ] as const
+                        ).map(([label, on, setOn, color]) => (
+                          <label
+                            key={label}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 6,
+                              fontSize: 12,
+                              fontWeight: 600,
+                              color,
+                              cursor: "pointer",
+                              userSelect: "none",
+                            }}
+                          >
+                            <input type="checkbox" checked={on} onChange={(e) => setOn(e.target.checked)} />
+                            {label}
+                          </label>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={() => syncContextOverlays()}
+                          style={{
+                            padding: "8px 12px",
+                            background: "#f3f4f6",
+                            border: "1px solid #d1d5db",
+                            borderRadius: "8px",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Fit all
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMapExpanded(false)}
+                          style={{
+                            padding: "8px 14px",
+                            background: "#0d9488",
+                            color: "#fff",
+                            border: "none",
+                            borderRadius: "8px",
+                            fontSize: "13px",
+                            fontWeight: 600,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Done (Esc)
+                        </button>
+                      </div>
                     </div>
                   )}
                   <div

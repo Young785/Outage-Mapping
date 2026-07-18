@@ -194,6 +194,12 @@ export async function POST(req: Request) {
       const outageId = String(body.outageId || "");
       if (!outageId) return NextResponse.json({ error: "outageId required" }, { status: 400 });
 
+      const { data: outageRow } = await db
+        .from("outages")
+        .select("id, lat, lng, street_address")
+        .eq("id", outageId)
+        .maybeSingle();
+
       await db
         .from("outages")
         .update({
@@ -204,6 +210,32 @@ export async function POST(req: Request) {
         .eq("id", outageId);
 
       await db.from("tech_route_stops").delete().eq("outage_id", outageId);
+
+      // Persist to permanent excluded-properties list when coords exist
+      if (
+        outageRow &&
+        outageRow.lat != null &&
+        outageRow.lng != null &&
+        Number.isFinite(Number(outageRow.lat)) &&
+        Number.isFinite(Number(outageRow.lng))
+      ) {
+        const { normalizeAddressKey } = await import("@/lib/address-match");
+        const address = outageRow.street_address || null;
+        await db.from("excluded_properties").insert({
+          address,
+          address_key: address ? normalizeAddressKey(address) : null,
+          lat: Number(outageRow.lat),
+          lng: Number(outageRow.lng),
+          radius_meters: 30,
+          reason: "Not a target property",
+          source: "investigation",
+          notes: `From outage ${outageId}`,
+          created_by: payload.name || payload.sub || null,
+          is_active: true,
+          updated_at: new Date().toISOString(),
+        });
+      }
+
       return NextResponse.json({ success: true });
     }
 

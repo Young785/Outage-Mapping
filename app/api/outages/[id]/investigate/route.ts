@@ -353,6 +353,32 @@ export async function POST(
       console.log("[investigate] readback for id=", outageId, "→", rb);
     }
 
+    // Permanent exclude list when marked not a target
+    if (investigationResult === "not_target") {
+      const { data: loc } = await db
+        .from("outages")
+        .select("lat, lng, street_address")
+        .eq("id", outageId)
+        .maybeSingle();
+      if (loc?.lat != null && loc?.lng != null) {
+        const { normalizeAddressKey } = await import("@/lib/address-match");
+        const address = loc.street_address || null;
+        await db.from("excluded_properties").insert({
+          address,
+          address_key: address ? normalizeAddressKey(address) : null,
+          lat: Number(loc.lat),
+          lng: Number(loc.lng),
+          radius_meters: 30,
+          reason: "Not a target property",
+          source: "investigation",
+          notes: `From investigation on outage ${outageId}`,
+          created_by: payload.email || payload.sub || null,
+          is_active: true,
+          updated_at: new Date().toISOString(),
+        });
+      }
+    }
+
     return NextResponse.json({ success: true, investigationId: inv.id, newStatus: statusToSet });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });

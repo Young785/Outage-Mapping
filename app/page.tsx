@@ -24,6 +24,7 @@ import { pickNextRouteStops, type RoutingContext } from "@/lib/route-next";
 import { exceedsMapCustomerCap } from "@/lib/routing-sweep";
 import type { RoutingMode } from "@/lib/routing-mode";
 import { territoryFromRow, zoneTypeOf, isInBoundaryZone } from "@/lib/territory-match";
+import { isPermanentlyExcluded, type ExcludedProperty } from "@/lib/excluded-properties";
 import { isDelayedUtilityConfirmed } from "@/lib/utility-outage";
 import type { FieldDispatchRole, InstallerFallback } from "@/lib/field-dispatch-role";
 import type { TechRouteBundle } from "@/lib/tech-routes";
@@ -188,6 +189,7 @@ export default function Page() {
   // Filters
   const [filterStatus, setFilterStatus] = useState<OutageStatus | "all" | "job_sold">("all");
   const [zones, setZones] = useState<BoundaryZone[]>([]);
+  const [excludedProperties, setExcludedProperties] = useState<ExcludedProperty[]>([]);
 
   // Map refs
   const mapRef = useRef<HTMLDivElement>(null);
@@ -426,6 +428,18 @@ export default function Page() {
     }
   }, [token]);
 
+  const fetchExcludedProperties = useCallback(async () => {
+    try {
+      const res = await fetch("/api/excluded-properties", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const data = await res.json();
+      setExcludedProperties(data.excludedProperties ?? []);
+    } catch {
+      setExcludedProperties([]);
+    }
+  }, [token]);
+
   const canPersistSources =
     user?.role === "office" || user?.role === "admin" || user?.role === "owner";
 
@@ -495,6 +509,7 @@ export default function Page() {
     fetchOutages();
     fetchTechs();
     fetchZones();
+    fetchExcludedProperties();
     // Update own location for techs
     if (user.role === "tech" && navigator.geolocation) {
       navigator.geolocation.getCurrentPosition((pos) => {
@@ -694,7 +709,17 @@ export default function Page() {
   useEffect(() => {
     if (!mapObj.current || !mapReady) return;
     placeOutageMarkers(outages);
-  }, [outages, mapReady, hideDoneMarkers, hideDeclinedMarkers, hideNonCriticalMarkers, showStaleOnMap, stormVisibilityMode]);
+  }, [
+    outages,
+    mapReady,
+    hideDoneMarkers,
+    hideDeclinedMarkers,
+    hideNonCriticalMarkers,
+    showStaleOnMap,
+    stormVisibilityMode,
+    excludedProperties,
+    zones,
+  ]);
 
   useEffect(() => {
     if (!mapObj.current || !mapReady) return;
@@ -1170,8 +1195,12 @@ export default function Page() {
         if (o.status === "temp_power") return false;
         if (o.status === "grounding") return false;
       }
-      const excluded = zones.some((z) => zoneTypeOf(z) === "exclusion" && isInZone(o, z));
-      if (excluded) return false;
+      const inPolyExclusion = zones.some((z) => zoneTypeOf(z) === "exclusion" && isInZone(o, z));
+      const inPropExclusion = isPermanentlyExcluded(
+        { lat: o.lat, lng: o.lng, streetAddress: o.streetAddress },
+        excludedProperties
+      );
+      if (inPolyExclusion || inPropExclusion) return false;
       return true;
     });
 
@@ -1657,7 +1686,12 @@ export default function Page() {
       .map((o) => ({
         ...o,
         inPriorityZone: zones.some((z) => zoneTypeOf(z) === "priority" && isInZone(o, z)),
-        inExclusionZone: zones.some((z) => zoneTypeOf(z) === "exclusion" && isInZone(o, z)),
+        inExclusionZone:
+          zones.some((z) => zoneTypeOf(z) === "exclusion" && isInZone(o, z)) ||
+          isPermanentlyExcluded(
+            { lat: o.lat, lng: o.lng, streetAddress: o.streetAddress },
+            excludedProperties
+          ),
         isHoneyHole:
           (o.status === "opportunity" || o.status === "wants_to_proceed") && o.customers > 1,
       }));
