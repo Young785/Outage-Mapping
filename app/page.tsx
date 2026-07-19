@@ -140,6 +140,7 @@ export default function Page() {
   // Auth state
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const isOffice = user?.role === "office" || user?.role === "admin" || user?.role === "owner";
   const [authBootstrapping, setAuthBootstrapping] = useState(() => {
     if (typeof window === "undefined") return false;
     return !!(localStorage.getItem("fieldmap_token") && localStorage.getItem("fieldmap_user"));
@@ -205,6 +206,7 @@ export default function Page() {
   const userRef = useRef<User | null>(null);
   const fetchTechsRef = useRef<() => Promise<void>>(async () => {});
   const zonePolygonsRef = useRef<google.maps.Polygon[]>([]);
+  const excludedPropertyMarkersRef = useRef<google.maps.Marker[]>([]);
   const infoWindowRef = useRef<google.maps.InfoWindow | null>(null);
   const routeLineRef = useRef<google.maps.Polyline | null>(null);
   const routePreviewPolylinesRef = useRef<google.maps.Polyline[]>([]);
@@ -726,6 +728,11 @@ export default function Page() {
     placeZonePolygons(zones);
   }, [zones, mapReady]);
 
+  useEffect(() => {
+    if (!mapObj.current || !mapReady) return;
+    placeExcludedPropertyMarkers(excludedProperties);
+  }, [excludedProperties, mapReady, isOffice]);
+
   // ── Sync tech markers ────────────────────────────────────────────────────
   useEffect(() => {
     if (!mapObj.current || !mapReady) return;
@@ -1170,6 +1177,72 @@ export default function Page() {
       });
       zonePolygonsRef.current.push(poly);
     });
+  }
+
+  /** Office-only red S markers make permanent property exclusions visible/testable. */
+  function placeExcludedPropertyMarkers(data: ExcludedProperty[]) {
+    if (typeof google === "undefined" || !mapObj.current) return;
+    excludedPropertyMarkersRef.current.forEach((m) => m.setMap(null));
+    excludedPropertyMarkersRef.current = [];
+    if (!isOffice) return;
+
+    data
+      .filter((row) => row.is_active !== false && Number.isFinite(Number(row.lat)) && Number.isFinite(Number(row.lng)))
+      .forEach((row) => {
+        const marker = new google.maps.Marker({
+          map: mapObj.current!,
+          position: { lat: Number(row.lat), lng: Number(row.lng) },
+          title: `Excluded: ${row.address || row.reason || "property"}`,
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 11,
+            fillColor: "#dc2626",
+            fillOpacity: 0.92,
+            strokeColor: "#991b1b",
+            strokeWeight: 2,
+          },
+          label: {
+            text: "S",
+            color: "#fff",
+            fontSize: "11px",
+            fontWeight: "700",
+          },
+          zIndex: 9500,
+        });
+
+        marker.addListener("click", () => {
+          const content = document.createElement("div");
+          content.style.maxWidth = "260px";
+          content.style.fontFamily = "system-ui, sans-serif";
+
+          const heading = document.createElement("div");
+          heading.textContent = "Skipped / excluded property";
+          heading.style.fontWeight = "700";
+          heading.style.color = "#991b1b";
+          heading.style.marginBottom = "4px";
+          content.appendChild(heading);
+
+          const address = document.createElement("div");
+          address.textContent = row.address || `${Number(row.lat).toFixed(5)}, ${Number(row.lng).toFixed(5)}`;
+          address.style.fontSize = "13px";
+          content.appendChild(address);
+
+          if (row.reason || row.use_class) {
+            const details = document.createElement("div");
+            details.textContent = [row.reason, row.use_class].filter(Boolean).join(" · ");
+            details.style.fontSize = "11px";
+            details.style.color = "#6b7280";
+            details.style.marginTop = "4px";
+            content.appendChild(details);
+          }
+
+          infoWindowRef.current?.close();
+          infoWindowRef.current = new google.maps.InfoWindow({ content });
+          infoWindowRef.current.open({ map: mapObj.current!, anchor: marker });
+        });
+
+        excludedPropertyMarkersRef.current.push(marker);
+      });
   }
 
   // ── Outage markers ───────────────────────────────────────────────────────
@@ -2078,7 +2151,6 @@ export default function Page() {
   });
 
   // ── Role-based tab visibility ────────────────────────────────────────────
-  const isOffice = user?.role === "office" || user?.role === "admin" || user?.role === "owner";
   const isAdmin = user?.role === "admin" || user?.role === "owner";
 
   const tabs: { id: Tab; label: string; icon: string; officeOnly?: boolean; adminOnly?: boolean }[] = [
@@ -3176,7 +3248,12 @@ export default function Page() {
           {activeTab === "territories" && isOffice && token && (
             <div style={{ padding: isMobile ? "0" : "0", overflowY: "auto", flex: 1 }}>
               <PageHelp pageId="territories" />
-              <TerritoryPanel token={token} role={user?.role ?? "office"} onSessionExpired={handleSessionExpired} />
+              <TerritoryPanel
+                token={token}
+                role={user?.role ?? "office"}
+                onSessionExpired={handleSessionExpired}
+                onExclusionsChanged={fetchExcludedProperties}
+              />
             </div>
           )}
 

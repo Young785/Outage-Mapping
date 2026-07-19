@@ -46,6 +46,7 @@ type Props = {
   token: string;
   role: string;
   onSessionExpired?: (message?: string) => void;
+  onExclusionsChanged?: () => void;
 };
 
 const MAP_CENTER = { lat: 44.9778, lng: -93.265 };
@@ -69,7 +70,12 @@ function apiErrorMessage(res: Response, data: { error?: string }, fallback: stri
   return data.error || fallback;
 }
 
-export default function TerritoryPanel({ token, role, onSessionExpired }: Props) {
+export default function TerritoryPanel({
+  token,
+  role,
+  onSessionExpired,
+  onExclusionsChanged,
+}: Props) {
   const [territories, setTerritories] = useState<Territory[]>([]);
   const [techs, setTechs] = useState<Tech[]>([]);
   const [loading, setLoading] = useState(true);
@@ -842,6 +848,7 @@ export default function TerritoryPanel({ token, role, onSessionExpired }: Props)
         <ExcludedPropertiesPanel
           token={token}
           onSessionExpired={onSessionExpired}
+          onChanged={onExclusionsChanged}
         />
       )}
 
