@@ -75,10 +75,11 @@ async function loadRouteBundles(
     const { data: outages } = await db
       .from("outages")
       .select(
-        "id, lat, lng, street_address, customers, source, status, customer_name, customer_phone, priority_score"
+        "id, lat, lng, street_address, customers, source, status, customer_name, customer_phone, priority_score, is_active"
       )
       .in("id", outageIds);
     for (const o of outages ?? []) {
+      if (o.is_active === false) continue;
       outageMap.set(String(o.id), o);
     }
   }
@@ -91,22 +92,25 @@ async function loadRouteBundles(
   }
 
   return (techs ?? []).map((t, i) => {
-    const techStops = (stopsByTech.get(t.user_id) ?? []).map((s) => {
-      const o = outageMap.get(String(s.outage_id));
-      return {
-        outageId: String(s.outage_id),
-        sortOrder: s.sort_order,
-        lat: o?.lat ?? 0,
-        lng: o?.lng ?? 0,
-        address: o?.street_address ?? null,
-        customers: o?.customers ?? 0,
-        source: o?.source ?? null,
-        status: o?.status ?? "unvisited",
-        customerName: o?.customer_name ?? null,
-        customerPhone: o?.customer_phone ?? null,
-        priorityScore: o?.priority_score ?? 0,
-      };
-    }).filter((s) => s.lat !== 0 || s.lng !== 0 || s.address);
+    const techStops = (stopsByTech.get(t.user_id) ?? [])
+      .map((s) => {
+        const o = outageMap.get(String(s.outage_id));
+        if (!o || o.lat == null || o.lng == null) return null;
+        return {
+          outageId: String(s.outage_id),
+          sortOrder: s.sort_order,
+          lat: o.lat,
+          lng: o.lng,
+          address: o.street_address ?? null,
+          customers: o.customers ?? 0,
+          source: o.source ?? null,
+          status: o.status ?? "unvisited",
+          customerName: o.customer_name ?? null,
+          customerPhone: o.customer_phone ?? null,
+          priorityScore: o.priority_score ?? 0,
+        };
+      })
+      .filter((s): s is NonNullable<typeof s> => s != null);
 
     return {
       techUserId: t.user_id,

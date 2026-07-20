@@ -14,7 +14,14 @@ export async function POST(req: Request) {
       typeof body.address === "string" ? body.address.trim() : "";
 
     if (addr) {
-      const result = await forwardGeocode(addr);
+      const bias =
+        body.bias &&
+        typeof body.bias.lat === "number" &&
+        typeof body.bias.lng === "number"
+          ? { lat: body.bias.lat, lng: body.bias.lng }
+          : undefined;
+      const region = typeof body.region === "string" ? body.region : "us";
+      const result = await forwardGeocode(addr, { bias, region });
       if (!result) {
         return NextResponse.json(
           { error: "Could not geocode that address" },

@@ -36,7 +36,7 @@ export type TechRouteBundle = {
 
 const OFFICE_SOURCES = new Set(["office", "manual", "user", "self_generated", "crm", "housecall"]);
 
-/** Prefer call-ins, then score, then distance from tech. */
+/** Prefer call-ins, then score, then distance from tech — then nearest-neighbor order for driving. */
 export function rankCandidatesForTech<
   T extends {
     id: string | number;
@@ -66,7 +66,34 @@ export function rankCandidatesForTech<
     return a.miles - b.miles;
   });
 
-  return scored.slice(0, maxStops).map((s) => s.c);
+  const picked = scored.slice(0, Math.max(maxStops * 2, maxStops)).map((s) => s.c);
+  // Nearest-neighbor tour from tech location reduces zig-zag across town.
+  return orderNearestNeighbor(techLoc, picked).slice(0, maxStops);
+}
+
+function orderNearestNeighbor<T extends { lat: number; lng: number }>(
+  start: { lat: number; lng: number },
+  stops: T[]
+): T[] {
+  if (stops.length <= 1) return stops;
+  const remaining = [...stops];
+  const ordered: T[] = [];
+  let cur = start;
+  while (remaining.length) {
+    let bestIdx = 0;
+    let bestMiles = Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      const m = haversineMiles(cur.lat, cur.lng, remaining[i].lat, remaining[i].lng);
+      if (m < bestMiles) {
+        bestMiles = m;
+        bestIdx = i;
+      }
+    }
+    const [next] = remaining.splice(bestIdx, 1);
+    ordered.push(next);
+    cur = next;
+  }
+  return ordered;
 }
 
 export function defaultTruckColor(index: number): string {

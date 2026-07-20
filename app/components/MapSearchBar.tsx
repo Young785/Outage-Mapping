@@ -19,8 +19,27 @@ type Props = {
   onGeocodeLocation?: (loc: { lat: number; lng: number; label: string }) => void;
 };
 
+/** Twin Cities metro bias for Places autocomplete + forward geocode. */
+const SERVICE_CENTER = { lat: 44.9778, lng: -93.265 };
+const SERVICE_RADIUS_M = 70_000; // ~43 miles
+
 function normalize(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function scoreLocalHit(m: MapSearchHit, q: string): number {
+  const name = normalize(m.sublabel?.split(" · ")[0] ?? "");
+  const label = normalize(m.label);
+  const hay = normalize(`${m.label} ${m.sublabel ?? ""}`);
+  if (!q) return 0;
+  if (name === q) return 100;
+  if (name.startsWith(q)) return 90;
+  if (name.includes(q)) return 80;
+  if (label.includes(q)) return 60;
+  if (hay.includes(q)) return 50;
+  const tokens = q.split(" ").filter(Boolean);
+  if (tokens.length > 1 && tokens.every((tok) => hay.includes(tok))) return 40;
+  return 0;
 }
 
 export default function MapSearchBar({ markers, onSelectMarker, onGeocodeLocation }: Props) {
@@ -43,11 +62,11 @@ export default function MapSearchBar({ markers, onSelectMarker, onGeocodeLocatio
     q.length < 2
       ? []
       : markers
-          .filter((m) => {
-            const hay = normalize(`${m.label} ${m.sublabel ?? ""}`);
-            return hay.includes(q) || q.split(" ").every((tok) => hay.includes(tok));
-          })
-          .slice(0, 8);
+          .map((m) => ({ m, score: scoreLocalHit(m, q) }))
+          .filter((x) => x.score > 0)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 8)
+          .map((x) => x.m);
 
   useEffect(() => {
     if (!inputRef.current) return;
@@ -61,9 +80,15 @@ export default function MapSearchBar({ markers, onSelectMarker, onGeocodeLocatio
           setPlacesError("Places library unavailable");
           return;
         }
+        const circle = new google.maps.Circle({
+          center: SERVICE_CENTER,
+          radius: SERVICE_RADIUS_M,
+        });
         const ac = new google.maps.places.Autocomplete(inputRef.current, {
           fields: ["geometry", "formatted_address", "name"],
           componentRestrictions: { country: "us" },
+          bounds: circle.getBounds() ?? undefined,
+          strictBounds: false,
         });
         autocompleteRef.current = ac;
         ac.addListener("place_changed", () => {
@@ -92,6 +117,10 @@ export default function MapSearchBar({ markers, onSelectMarker, onGeocodeLocatio
     })();
     return () => {
       cancelled = true;
+      if (autocompleteRef.current && window.google?.maps?.event) {
+        google.maps.event.clearInstanceListeners(autocompleteRef.current);
+      }
+      autocompleteRef.current = null;
     };
   }, []);
 
@@ -108,7 +137,11 @@ export default function MapSearchBar({ markers, onSelectMarker, onGeocodeLocatio
       const res = await fetch("/api/geocode", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ address: query.trim() }),
+        body: JSON.stringify({
+          address: query.trim(),
+          bias: SERVICE_CENTER,
+          region: "us",
+        }),
       });
       const data = await res.json();
       if (data?.lat != null && data?.lng != null) {
@@ -137,7 +170,7 @@ export default function MapSearchBar({ markers, onSelectMarker, onGeocodeLocatio
             setOpen(true);
           }}
           onFocus={() => setOpen(true)}
-          placeholder={placesReady ? "Search address, customer, phone…" : "Search markers or address…"}
+          placeholder={placesReady ? "Search customer name, address, phone…" : "Search markers or address…"}
           style={{
             flex: 1,
             padding: "10px 12px",
@@ -170,7 +203,7 @@ export default function MapSearchBar({ markers, onSelectMarker, onGeocodeLocatio
       </form>
       {placesError && (
         <div style={{ marginTop: 4, fontSize: 11, color: "#b45309" }}>
-          Address suggestions limited — {placesError}. Marker search still works.
+          Address suggestions limited — {placesError}. Marker / customer search still works.
         </div>
       )}
       {open && localHits.length > 0 && (

@@ -844,14 +844,6 @@ export default function TerritoryPanel({
         )}
       </div>
 
-      {isOffice && (
-        <ExcludedPropertiesPanel
-          token={token}
-          onSessionExpired={onSessionExpired}
-          onChanged={onExclusionsChanged}
-        />
-      )}
-
       {error && (
         <div style={{ padding: "12px 16px", background: "#fee2e2", border: "1px solid #fecaca", borderRadius: "8px", color: "#dc2626", fontSize: "13px", marginBottom: "16px" }}>
           {error}
@@ -1402,6 +1394,36 @@ export default function TerritoryPanel({
             })}
           </div>
         </div>
+      )}
+
+      {isOffice && (
+        <details
+          style={{
+            marginTop: 28,
+            background: "#fff",
+            border: "1px solid #e5e7eb",
+            borderRadius: 12,
+            padding: "4px 8px 8px",
+          }}
+        >
+          <summary
+            style={{
+              cursor: "pointer",
+              fontWeight: 700,
+              fontSize: 14,
+              color: "#374151",
+              padding: "12px 8px",
+              listStyle: "none",
+            }}
+          >
+            Excluded Properties (collapsible)
+          </summary>
+          <ExcludedPropertiesPanel
+            token={token}
+            onSessionExpired={onSessionExpired}
+            onChanged={onExclusionsChanged}
+          />
+        </details>
       )}
     </div>
   );

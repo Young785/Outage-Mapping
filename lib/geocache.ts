@@ -112,13 +112,25 @@ export type ForwardResult = {
  * Forward geocode: address string → lat/lng.
  * No DB cache for forward geocoding (addresses are unique, not repeated like lat/lng pairs).
  */
-export async function forwardGeocode(address: string): Promise<ForwardResult | null> {
+export async function forwardGeocode(
+  address: string,
+  opts?: { bias?: { lat: number; lng: number }; region?: string }
+): Promise<ForwardResult | null> {
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
   if (!apiKey || !address) return null;
 
   try {
-    const encoded = encodeURIComponent(address);
-    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encoded}&key=${apiKey}`;
+    const params = new URLSearchParams({
+      address: address,
+      key: apiKey,
+      region: opts?.region ?? "us",
+      components: "country:US|administrative_area:MN",
+    });
+    // Prefer Twin Cities metro when the query is ambiguous (e.g. common street names).
+    const bias = opts?.bias ?? { lat: 44.9778, lng: -93.265 };
+    params.set("bounds", `${bias.lat - 0.6},${bias.lng - 0.8}|${bias.lat + 0.6},${bias.lng + 0.8}`);
+
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?${params.toString()}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(8_000) });
     const json = await res.json();
 

@@ -29,8 +29,8 @@ export function addressesLikelyMatch(a: string | null | undefined, b: string | n
   return ta[0] === tb[0] && ta[1] === tb[1];
 }
 
-/** ~400 ft — same parcel / driveway proximity for call-in vs ArcGIS pin. */
-export const SUPERSEDE_RADIUS_MILES = 0.08;
+/** ~0.15 mi (~800 ft) — same parcel / driveway proximity for call-in vs ArcGIS pin. */
+export const SUPERSEDE_RADIUS_MILES = 0.15;
 
 export function isNearSameLocation(
   a: { lat: number; lng: number },

@@ -1179,7 +1179,7 @@ export default function Page() {
     });
   }
 
-  /** Office-only red S markers make permanent property exclusions visible/testable. */
+  /** Office-only red E markers make permanent property exclusions visible/testable. */
   function placeExcludedPropertyMarkers(data: ExcludedProperty[]) {
     if (typeof google === "undefined" || !mapObj.current) return;
     excludedPropertyMarkersRef.current.forEach((m) => m.setMap(null));
@@ -1202,7 +1202,7 @@ export default function Page() {
             strokeWeight: 2,
           },
           label: {
-            text: "S",
+            text: "E",
             color: "#fff",
             fontSize: "11px",
             fontWeight: "700",
@@ -1216,7 +1216,7 @@ export default function Page() {
           content.style.fontFamily = "system-ui, sans-serif";
 
           const heading = document.createElement("div");
-          heading.textContent = "Skipped / excluded property";
+          heading.textContent = "Excluded property";
           heading.style.fontWeight = "700";
           heading.style.color = "#991b1b";
           heading.style.marginBottom = "4px";
@@ -1239,6 +1239,74 @@ export default function Page() {
           infoWindowRef.current?.close();
           infoWindowRef.current = new google.maps.InfoWindow({ content });
           infoWindowRef.current.open({ map: mapObj.current!, anchor: marker });
+        });
+
+        marker.addListener("rightclick", (e: google.maps.MapMouseEvent) => {
+          e.domEvent?.preventDefault?.();
+          const dom = e.domEvent as MouseEvent | undefined;
+          const menu = document.createElement("div");
+          menu.style.cssText =
+            "position:fixed;z-index:90;background:#fff;border:1px solid #e5e7eb;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,0.18);min-width:200px;padding:8px;font-family:system-ui,sans-serif";
+          menu.style.left = `${dom?.clientX ?? 120}px`;
+          menu.style.top = `${dom?.clientY ?? 120}px`;
+
+          const title = document.createElement("div");
+          title.textContent = row.address?.split(",")[0] || "Excluded property";
+          title.style.cssText = "font-size:11px;font-weight:700;color:#6b7280;padding:4px 8px 8px";
+          menu.appendChild(title);
+
+          const keepBtn = document.createElement("button");
+          keepBtn.type = "button";
+          keepBtn.textContent = "Permanently Exclude";
+          keepBtn.style.cssText =
+            "display:block;width:100%;text-align:left;padding:8px 10px;border:none;background:#fff;cursor:pointer;font-size:13px;font-weight:600;color:#991b1b";
+          keepBtn.onclick = async () => {
+            menu.remove();
+            if (!tokenRef.current || !row.id) return;
+            try {
+              await fetch("/api/excluded-properties", {
+                method: "PATCH",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${tokenRef.current}`,
+                },
+                body: JSON.stringify({ id: row.id, is_active: true }),
+              });
+              await fetchExcludedProperties();
+            } catch {
+              alert("Could not update exclusion");
+            }
+          };
+          menu.appendChild(keepBtn);
+
+          const removeBtn = document.createElement("button");
+          removeBtn.type = "button";
+          removeBtn.textContent = "Do Not Exclude";
+          removeBtn.style.cssText =
+            "display:block;width:100%;text-align:left;padding:8px 10px;border:none;background:#fff;cursor:pointer;font-size:13px;font-weight:600;color:#0f766e";
+          removeBtn.onclick = async () => {
+            menu.remove();
+            if (!tokenRef.current || !row.id) return;
+            try {
+              const res = await fetch("/api/excluded-properties", {
+                method: "PATCH",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${tokenRef.current}`,
+                },
+                body: JSON.stringify({ id: row.id, is_active: false }),
+              });
+              if (!res.ok) throw new Error("failed");
+              await fetchExcludedProperties();
+            } catch {
+              alert("Could not clear exclusion");
+            }
+          };
+          menu.appendChild(removeBtn);
+
+          const close = () => menu.remove();
+          setTimeout(() => document.addEventListener("click", close, { once: true }), 0);
+          document.body.appendChild(menu);
         });
 
         excludedPropertyMarkersRef.current.push(marker);
@@ -1280,14 +1348,13 @@ export default function Page() {
     visible.forEach((outage) => {
       const cfg = getMarkerStyle(outage.status, { noContactMade: outage.noContactMade });
 
-      // Honey hole: opportunity with >1 customer → bigger marker + label
-      const isHoneyHole =
-        (outage.status === "opportunity" || outage.status === "wants_to_proceed") &&
-        outage.customers > 1;
+      // Customer count shown inside every outage dot (replaces honey-hole-only numbering).
       const inPriorityZone = zones.some((z) => zoneTypeOf(z) === "priority" && isInZone(outage, z));
-      const baseSizeRaw = isHoneyHole
-        ? Math.min(22, Math.max(14, 12 + Math.sqrt(outage.customers)))
-        : 10;
+      const customerCount = Math.max(0, Number(outage.customers) || 0);
+      const baseSizeRaw =
+        customerCount > 1
+          ? Math.min(20, Math.max(12, 11 + Math.sqrt(customerCount)))
+          : 11;
       const baseSize = inPriorityZone ? baseSizeRaw + 2 : baseSizeRaw;
 
       // Initial storm wave: white circles only. Delayed utility-confirmed (5+ hrs): white + red outline.
@@ -1308,7 +1375,10 @@ export default function Page() {
           : isUnvisitedArcGIS
             ? utilitySourceStroke(outage.source)
             : cfg.strokeColor;
-      const strokeWeight = isDelayedConfirmed ? 4 : isHoneyHole ? 4 : 3;
+      const strokeWeight = isDelayedConfirmed ? 4 : customerCount > 1 ? 3.5 : 3;
+
+      const customerLabel =
+        customerCount > 0 ? (customerCount > 99 ? "99+" : String(customerCount)) : "";
 
       const marker = new google.maps.Marker({
         map: mapObj.current!,
@@ -1321,9 +1391,15 @@ export default function Page() {
           strokeColor,
           strokeWeight,
           scale: baseSize,
+          labelOrigin: new google.maps.Point(0, 0),
         },
-        label: isHoneyHole
-          ? { text: String(outage.customers), color: "#fff", fontSize: "10px", fontWeight: "700" }
+        label: customerLabel
+          ? {
+              text: customerLabel,
+              color: isUnvisitedArcGIS ? "#111827" : "#fff",
+              fontSize: customerCount > 9 ? "9px" : "10px",
+              fontWeight: "700",
+            }
           : undefined,
         zIndex: isDelayedConfirmed ? 9999 : ((outage.priorityScore ?? 0) + (inPriorityZone ? 1000 : 0)),
       });
@@ -1364,7 +1440,13 @@ export default function Page() {
           y: dom?.clientY ?? 120,
           outage,
         });
-        const firstTech = techRoutesRef.current[0]?.techUserId ?? techs[0]?.userId ?? "";
+        const assignedId =
+          techs.find((t) => t.name === outage.assignedTechName)?.userId ??
+          techRoutesRef.current.find((r) =>
+            r.stops.some((s) => String(s.outageId) === String(outage.id))
+          )?.techUserId ??
+          "";
+        const firstTech = assignedId || techRoutesRef.current[0]?.techUserId || techs[0]?.userId || "";
         setRouteAssignTechId(firstTech);
       });
 
@@ -2847,6 +2929,22 @@ export default function Page() {
                   <div style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", padding: "4px 8px 8px" }}>
                     {markerContextMenu.outage.streetAddress?.split(",")[0] || `Outage ${markerContextMenu.outage.id}`}
                   </div>
+                  {markerContextMenu.outage.assignedTechName && (
+                    <div
+                      style={{
+                        margin: "0 8px 8px",
+                        padding: "6px 8px",
+                        background: "#f0fdfa",
+                        border: "1px solid #99f6e4",
+                        borderRadius: 8,
+                        fontSize: 12,
+                        fontWeight: 700,
+                        color: "#0f766e",
+                      }}
+                    >
+                      Assigned: {markerContextMenu.outage.assignedTechName}
+                    </div>
+                  )}
                   <label style={{ display: "block", padding: "4px 8px", fontSize: 12, color: "#374151" }}>
                     Technician
                     <select
@@ -3014,7 +3112,7 @@ export default function Page() {
                         </div>
                       ))}
                       <div style={{ fontSize: "10px", color: "#9ca3af", marginTop: "4px", marginBottom: "6px" }}>
-                        Larger orange = honey hole (multi-customer)
+                        Number inside dot = customers affected
                       </div>
                       <div style={{ fontSize: "10px", color: "#9ca3af", marginBottom: "6px" }}>
                         Shape never changes (lead source). Faded = previous storm — toggle in sidebar.
@@ -3031,61 +3129,75 @@ export default function Page() {
                 </div>
               )}
 
-              {/* Map search — office only */}
-              {isOffice && (
-                <div style={{ position: "absolute", top: "20px", left: "50%", transform: "translateX(-50%)", width: isMobile ? "calc(100% - 40px)" : "min(420px, calc(100% - 280px))", zIndex: 5, opacity: mapReady ? 1 : 0, pointerEvents: mapReady ? "auto" : "none" }}>
-                  <MapSearchBar
-                    markers={outages.map((o) => ({
-                      id: o.id,
-                      lat: o.lat,
-                      lng: o.lng,
-                      label: o.streetAddress || o.customerName || o.city || `Outage ${o.id}`,
-                      sublabel: [o.customerName, o.customerPhone, o.customerEmail].filter(Boolean).join(" · ") || undefined,
-                    }))}
-                    onSelectMarker={focusMapSearchHit}
-                    onGeocodeLocation={({ lat, lng, label }) => {
-                      mapObj.current?.panTo({ lat, lng });
-                      mapObj.current?.setZoom(16);
-                      if (typeof google !== "undefined" && mapObj.current) {
-                        const temp = new google.maps.Marker({
-                          map: mapObj.current,
-                          position: { lat, lng },
-                          title: label,
-                          animation: google.maps.Animation.BOUNCE,
-                        });
-                        setTimeout(() => {
-                          temp.setAnimation(null);
-                          setTimeout(() => temp.setMap(null), 2500);
-                        }, 1400);
+              {/* Map search + controls — beside search so Routing pane doesn't cover them */}
+              <div
+                style={{
+                  position: "absolute",
+                  top: "16px",
+                  left: "16px",
+                  right: routingPaneCollapsed ? "16px" : "min(376px, calc(25vw + 16px))",
+                  zIndex: 7,
+                  opacity: mapReady ? 1 : 0,
+                  pointerEvents: mapReady ? "auto" : "none",
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "flex-start",
+                  flexWrap: "wrap",
+                }}
+              >
+                {isOffice && (
+                  <div style={{ flex: "1 1 280px", maxWidth: 420, minWidth: 180 }}>
+                    <MapSearchBar
+                      markers={outages.map((o) => ({
+                        id: o.id,
+                        lat: o.lat,
+                        lng: o.lng,
+                        label: o.streetAddress || o.customerName || o.city || `Outage ${o.id}`,
+                        sublabel: [o.customerName, o.customerPhone, o.customerEmail].filter(Boolean).join(" · ") || undefined,
+                      }))}
+                      onSelectMarker={focusMapSearchHit}
+                      onGeocodeLocation={({ lat, lng, label }) => {
+                        mapObj.current?.panTo({ lat, lng });
+                        mapObj.current?.setZoom(16);
+                        if (typeof google !== "undefined" && mapObj.current) {
+                          const temp = new google.maps.Marker({
+                            map: mapObj.current,
+                            position: { lat, lng },
+                            title: label,
+                            animation: google.maps.Animation.BOUNCE,
+                          });
+                          setTimeout(() => {
+                            temp.setAnimation(null);
+                            setTimeout(() => temp.setMap(null), 2500);
+                          }, 1400);
+                        }
+                      }}
+                    />
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    onClick={() => {
+                      if (navigator.geolocation) {
+                        navigator.geolocation.getCurrentPosition((pos) => {
+                          const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+                          setUserLocation(loc);
+                          mapObj.current?.setCenter(loc);
+                          mapObj.current?.setZoom(14);
+                        }, () => alert("Location denied"));
                       }
                     }}
-                  />
+                    style={mapBtnCss}
+                  >
+                    My Location
+                  </button>
+                  <button onClick={() => { clearRouteLines(); setSelectedOutage(null); }} style={mapBtnCss}>
+                    Clear Route
+                  </button>
+                  <button onClick={() => setMapType((m) => (m === "roadmap" ? "satellite" : "roadmap"))} style={mapBtnCss}>
+                    {mapType === "roadmap" ? "Satellite" : "Roadmap"}
+                  </button>
                 </div>
-              )}
-
-              {/* Map controls */}
-              <div style={{ position: "absolute", top: isOffice ? (isMobile ? "68px" : "72px") : "20px", right: "20px", display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end", zIndex: 3 }}>
-                <button
-                  onClick={() => {
-                    if (navigator.geolocation) {
-                      navigator.geolocation.getCurrentPosition((pos) => {
-                        const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-                        setUserLocation(loc);
-                        mapObj.current?.setCenter(loc);
-                        mapObj.current?.setZoom(14);
-                      }, () => alert("Location denied"));
-                    }
-                  }}
-                  style={mapBtnCss}
-                >
-                  My Location
-                </button>
-                <button onClick={() => { clearRouteLines(); setSelectedOutage(null); }} style={mapBtnCss}>
-                  Clear Route
-                </button>
-                <button onClick={() => setMapType((m) => (m === "roadmap" ? "satellite" : "roadmap"))} style={mapBtnCss}>
-                  {mapType === "roadmap" ? "Satellite" : "Roadmap"}
-                </button>
               </div>
 
             </div>

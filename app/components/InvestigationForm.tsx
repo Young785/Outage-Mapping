@@ -76,10 +76,18 @@ const SERVICE_SETUP_OPTIONS = [
 /** Partner-lead tags — non-electrical damage for referral sales. */
 const NON_ELECTRICAL_OPTIONS = [
   { value: "roofing", label: "Roofing damage" },
-  { value: "tree", label: "Tree down / tree damage" },
-  { value: "tree_service", label: "Tree service needed" },
+  { value: "tree", label: "Tree Damage" },
   { value: "structural", label: "Structural damage" },
 ] as const;
+
+function normalizeNonElectricalTags(tags: string[]): string[] {
+  const next = new Set<string>();
+  for (const t of tags) {
+    if (t === "tree_service") next.add("tree");
+    else if (t === "roofing" || t === "tree" || t === "structural") next.add(t);
+  }
+  return [...next];
+}
 
 type Props = {
   outage: Outage;
@@ -212,9 +220,19 @@ export default function InvestigationForm({ outage, token, required = false, onC
   const serviceType = amperage && serviceSetup ? `${amperage} ${serviceSetup}`.toLowerCase() : "";
   const isOpportunity = primary === "opportunity_found";
   const needsThinking = action === "customer_thinking" && !thinkingIntent;
-  const canSubmit =
+  const hasDocumentation =
+    customer.photos.length > 0 ||
+    nonElectrical.length > 0 ||
+    !!customer.customerName.trim() ||
+    !!customer.customerPhone.trim() ||
+    !!customer.customerEmail.trim() ||
+    !!customer.notes.trim() ||
+    !!notes.trim();
+  const investigationReady =
     !!primary &&
     (primary !== "opportunity_found" || (!!action && !needsThinking));
+  /** Allow photo / partner-tag / customer-info saves without a full investigation outcome. */
+  const canSubmit = investigationReady || (!primary && hasDocumentation);
 
   const power =
     primaryPower === "has_power"
@@ -288,19 +306,24 @@ export default function InvestigationForm({ outage, token, required = false, onC
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) {
-      setError("Select an outcome" + (isOpportunity ? " and what happened at the door." : "."));
+      setError(
+        investigationReady
+          ? "Select an outcome" + (isOpportunity ? " and what happened at the door." : ".")
+          : "Add photos, partner tags, or customer info — or select an investigation outcome."
+      );
       return;
     }
     setSubmitting(true);
     setError(null);
 
-    const newStatus = deriveStatus(primary, action, startedSub);
+    const documentationOnly = !primary && hasDocumentation;
+    const newStatus = documentationOnly ? outage.status : deriveStatus(primary, action, startedSub);
 
     const scopeNote = [
       jobScope && `job_scope=${jobScope}`,
       neighborhoodDead && "neighborhood_dead=true",
       verbalPrice.trim() && `verbal_price=${verbalPrice.trim()}`,
-      nonElectrical.length > 0 && `non_electrical=${nonElectrical.join("|")}`,
+      nonElectrical.length > 0 && `non_electrical=${normalizeNonElectricalTags(nonElectrical).join("|")}`,
     ]
       .filter(Boolean)
       .join("; ");
@@ -316,7 +339,7 @@ export default function InvestigationForm({ outage, token, required = false, onC
           customerPhone: customer.customerPhone.trim() || null,
           customerEmail: customer.customerEmail.trim() || null,
           photos: customer.photos,
-          notes: customer.notes.trim() || null,
+          notes: mergedNotes || null,
         };
         if (trimmedAddress && trimmedAddress !== (outage.streetAddress ?? "").trim()) {
           customerPatch.streetAddress = trimmedAddress;
@@ -333,6 +356,12 @@ export default function InvestigationForm({ outage, token, required = false, onC
           const d = await addrRes.json();
           throw new Error(d.error || "Could not save customer info");
         }
+      }
+
+      if (documentationOnly) {
+        onSubmitted(outage.id, newStatus);
+        onClose();
+        return;
       }
 
       const res = await fetch(`/api/outages/${outage.id}/investigate`, {
@@ -711,16 +740,8 @@ export default function InvestigationForm({ outage, token, required = false, onC
             sub="Not our work — omit from routing"
           />
 
-          <p style={{ ...sectionHead, marginTop: "16px" }}>
-            Non-electrical damage{" "}
-            <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, color: "#9ca3af" }}>
-              — partner lead (optional)
-            </span>
-          </p>
-          <p style={{ margin: "0 0 8px", fontSize: 12, color: "#6b7280" }}>
-            Tag roofing / tree / structural for partner referrals (does not change electrical outcome).
-          </p>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "4px" }}>
+          <p style={{ ...sectionHead, marginTop: "16px" }}>Non-electrical damage</p>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "12px" }}>
             {NON_ELECTRICAL_OPTIONS.map((o) => {
               const selected = nonElectrical.includes(o.value);
               return (
@@ -736,6 +757,33 @@ export default function InvestigationForm({ outage, token, required = false, onC
                 />
               );
             })}
+          </div>
+
+          <div style={{ marginBottom: "8px" }}>
+            <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>
+              Office / field notes
+            </label>
+            <textarea
+              value={customer.notes}
+              onChange={(e) => setCustomer({ ...customer, notes: e.target.value })}
+              rows={2}
+              placeholder="Customer notes, referral details…"
+              style={{ ...inp, resize: "vertical", marginBottom: "10px" }}
+            />
+            <CustomerInfoFields
+              value={customer}
+              onChange={setCustomer}
+              showName={false}
+              showPhone={false}
+              showEmail={false}
+              showNotes={false}
+              showPhotos
+            />
+            {!primary && hasDocumentation && (
+              <p style={{ margin: "8px 0 0", fontSize: 12, color: "#0d9488", fontWeight: 600 }}>
+                Photos and notes can be saved without selecting an investigation outcome.
+              </p>
+            )}
           </div>
 
           {isOpportunity && (
@@ -886,19 +934,10 @@ export default function InvestigationForm({ outage, token, required = false, onC
                   ))}
                 </select>
               </div>
-              <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>Field notes</label>
+              <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>Field notes (tech)</label>
               <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} style={{ ...inp, resize: "vertical", marginBottom: "10px" }} placeholder="Access, materials…" />
               <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#374151", marginBottom: "6px" }}>Technicians needed</label>
               <input type="number" min={1} value={techsRequired} onChange={(e) => setTechsRequired(e.target.value === "" ? "" : Number(e.target.value))} style={{ ...inp, width: "100px", marginBottom: "12px" }} />
-              <CustomerInfoFields
-                value={customer}
-                onChange={setCustomer}
-                showName={false}
-                showPhone={false}
-                showEmail={false}
-                showNotes={false}
-                showPhotos
-              />
             </div>
           )}
 
@@ -925,7 +964,11 @@ export default function InvestigationForm({ outage, token, required = false, onC
               cursor: submitting || !canSubmit ? "not-allowed" : "pointer",
             }}
           >
-            {submitting ? "Saving…" : "Save & close"}
+            {submitting
+              ? "Saving…"
+              : !primary && hasDocumentation
+                ? "Save photos & notes"
+                : "Save & close"}
           </button>
         </form>
       </div>
