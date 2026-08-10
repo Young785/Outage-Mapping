@@ -148,7 +148,7 @@ export default function ProfilePanel({ user, token, onUserUpdate }: Props) {
       onUserUpdate(data.user, data.token);
       setSaveMsg({ type: "ok", text: "Profile saved" });
     } catch { setSaveMsg({ type: "err", text: "Network error" }); }
-    setSaving(false);
+    finally { setSaving(false); }
   }
 
   // ── Change password ───────────────────────────────────────────────────────
@@ -169,7 +169,7 @@ export default function ProfilePanel({ user, token, onUserUpdate }: Props) {
       setPwMsg({ type: "ok", text: "Password changed successfully" });
       setCurPw(""); setNewPw(""); setConfPw("");
     } catch { setPwMsg({ type: "err", text: "Network error" }); }
-    setPwSaving(false);
+    finally { setPwSaving(false); }
   }
 
   // ── Update tech status ────────────────────────────────────────────────────

@@ -16,7 +16,11 @@ export async function POST(req: Request) {
 
     // ── REGISTER ───────────────────────────────────────────────────────────
     if (action === "register") {
-      const { email, password, name, phone, role = "tech" } = body;
+      const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+      const password = typeof body.password === "string" ? body.password : "";
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const phone = typeof body.phone === "string" ? body.phone.trim() : "";
+      const role = body.role ?? "tech";
       if (!email || !password || !name) {
         return NextResponse.json({ error: "email, password, name are required" }, { status: 400 });
       }
@@ -34,7 +38,11 @@ export async function POST(req: Request) {
       const pwHash = hashPassword(password);
 
       // Check duplicate
-      const { data: existing } = await db.from("users").select("id").eq("email", email).maybeSingle();
+      const { data: existing, error: dupErr } = await db.from("users").select("id").eq("email", email).maybeSingle();
+      if (dupErr) {
+        console.error("[auth] register duplicate check:", dupErr.message);
+        return NextResponse.json({ error: "Registration temporarily unavailable. Please try again." }, { status: 503 });
+      }
       if (existing) return NextResponse.json({ error: "Email already registered" }, { status: 409 });
 
       const { data: newUser, error: insertErr } = await db
@@ -58,12 +66,20 @@ export async function POST(req: Request) {
 
     // ── LOGIN ──────────────────────────────────────────────────────────────
     if (action === "login") {
-      const { email, password } = body;
+      const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+      const password = typeof body.password === "string" ? body.password : "";
       if (!email || !password) {
         return NextResponse.json({ error: "email and password are required" }, { status: 400 });
       }
 
-      const { data: user } = await db.from("users").select("*").eq("email", email).maybeSingle();
+      const { data: user, error: loginErr } = await db.from("users").select("*").eq("email", email).maybeSingle();
+      if (loginErr) {
+        console.error("[auth] login lookup:", loginErr.message);
+        return NextResponse.json(
+          { error: "Login temporarily unavailable. Please try again in a moment." },
+          { status: 503 }
+        );
+      }
       if (!user || !verifyPassword(password, user.password_hash)) {
         return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
       }
@@ -78,11 +94,18 @@ export async function POST(req: Request) {
       if (!token) return NextResponse.json({ error: "No token" }, { status: 401 });
       try {
         const payload = verifyJWT(token);
-        const { data: dbUser } = await db
+        const { data: dbUser, error: meErr } = await db
           .from("users")
           .select("id, email, name, phone, role")
           .eq("id", payload.sub)
           .maybeSingle();
+        if (meErr) {
+          console.error("[auth] me lookup:", meErr.message);
+          return NextResponse.json(
+            { error: "Session check temporarily unavailable. Please try again." },
+            { status: 503 }
+          );
+        }
         if (!dbUser) {
           return NextResponse.json(
             { error: "Session expired — please sign in again." },
@@ -107,7 +130,14 @@ export async function POST(req: Request) {
 
       const { name: newName, phone: newPhone, currentPassword, newPassword } = body;
 
-      const { data: existing } = await db.from("users").select("*").eq("id", payload.sub).maybeSingle();
+      const { data: existing, error: loadErr } = await db.from("users").select("*").eq("id", payload.sub).maybeSingle();
+      if (loadErr) {
+        console.error("[auth] update load:", loadErr.message);
+        return NextResponse.json(
+          { error: "Profile update temporarily unavailable. Please try again." },
+          { status: 503 }
+        );
+      }
       if (!existing) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
       const updates: Record<string, any> = {};

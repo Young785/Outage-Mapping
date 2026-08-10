@@ -12,6 +12,7 @@ import { fetchAndNormalize } from "@/lib/adapters";
 import { reverseGeocode } from "@/lib/geocache";
 import { calculateScore, getWeights } from "@/lib/priority";
 import { getActiveStormEvent } from "@/lib/storm-events";
+import { mapPool } from "@/lib/map-pool";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -56,22 +57,20 @@ export async function GET(req: Request) {
   const { outages: features, results } = await fetchAndNormalize(sources as Array<"xcel" | "connexus">);
   const errors = results.filter((r) => r.error).map((r) => `[${r.source}] ${r.error}`);
 
-  // Geocode any outage that is missing a street_address (resolved from cache or Google API)
+  // Geocode with limited concurrency — unbounded Promise.all exhausted PostgREST pool
   const weights = await getWeights();
-  const enriched = await Promise.all(
-    features.map(async (f) => {
-      let streetAddress: string | null = null;
-      if (f.lat && f.lng) {
-        const geo = await reverseGeocode(f.lat, f.lng);
-        streetAddress = geo?.formattedAddress ?? null;
-      }
-      const score = calculateScore(
-        { customers: f.customers, outageType: f.outageType, isOfficeJob: false },
-        weights
-      );
-      return { ...f, streetAddress, priorityScore: score };
-    })
-  );
+  const enriched = await mapPool(features, 4, async (f) => {
+    let streetAddress: string | null = null;
+    if (f.lat && f.lng) {
+      const geo = await reverseGeocode(f.lat, f.lng);
+      streetAddress = geo?.formattedAddress ?? null;
+    }
+    const score = calculateScore(
+      { customers: f.customers, outageType: f.outageType, isOfficeJob: false },
+      weights
+    );
+    return { ...f, streetAddress, priorityScore: score };
+  });
 
   // Upsert into outages table
   if (enriched.length > 0) {

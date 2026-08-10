@@ -21,6 +21,7 @@ import { getActiveStormEvent, isPreviousStormMarker } from "@/lib/storm-events";
 import { syncLinkedJobLocation } from "@/lib/marker-location";
 import { MAX_MAP_CUSTOMERS } from "@/lib/routing-sweep";
 import { toPriority100 } from "@/lib/score-display";
+import { mapPool } from "@/lib/map-pool";
 
 const CENTER = { lat: 44.9778, lng: -93.265 };
 const RADIUS_MILES = 40;
@@ -547,20 +548,20 @@ export async function GET(req: Request) {
         if (error) console.error("[outages] Upsert error:", error.message);
       });
 
-    // Background: geocode any outages that still lack a street_address
-    const needsGeocode = enriched.filter((o) => !o.streetAddress && o.lat && o.lng);
+    // Background: geocode a capped batch with limited concurrency (avoids exhausting PostgREST pool)
+    const needsGeocode = enriched
+      .filter((o) => !o.streetAddress && o.lat && o.lng)
+      .slice(0, 25);
     if (needsGeocode.length > 0) {
-      Promise.all(
-        needsGeocode.map(async (o) => {
-          const geo = await reverseGeocode(o.lat!, o.lng!);
-          if (geo?.formattedAddress) {
-            await db
-              .from("outages")
-              .update({ street_address: geo.formattedAddress })
-              .eq("id", o.id);
-          }
-        })
-      ).catch((err) => console.warn("[outages] Background geocode error:", err));
+      mapPool(needsGeocode, 3, async (o) => {
+        const geo = await reverseGeocode(o.lat!, o.lng!);
+        if (geo?.formattedAddress) {
+          await db
+            .from("outages")
+            .update({ street_address: geo.formattedAddress })
+            .eq("id", o.id);
+        }
+      }).catch((err) => console.warn("[outages] Background geocode error:", err));
     }
   }
 
