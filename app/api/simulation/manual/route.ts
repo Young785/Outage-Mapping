@@ -7,6 +7,7 @@
 import { NextResponse } from "next/server";
 import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
 import { verifyJWT, extractBearerToken } from "@/lib/jwt";
+import { buildSimulationOutageRow, insertOutageRows } from "@/lib/simulation-outage";
 
 export async function POST(req: Request) {
   try {
@@ -14,7 +15,9 @@ export async function POST(req: Request) {
     if (!token) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     let payload;
-    try { payload = verifyJWT(token); } catch {
+    try {
+      payload = verifyJWT(token);
+    } catch {
       return NextResponse.json({ error: "Invalid token" }, { status: 401 });
     }
 
@@ -31,32 +34,21 @@ export async function POST(req: Request) {
     if (!isSupabaseConfigured) return NextResponse.json({ success: true, stored: false });
 
     const db = getAdmin();
-    const now = new Date().toISOString();
-
-    const { data, error } = await db
-      .from("outages")
-      .insert({
-        xcel_id: `MANUAL-${Date.now()}`,
+    const rows = [
+      buildSimulationOutageRow({
+        id: `sim-manual-${Date.now()}`,
         lat,
         lng,
-        city: "Manual Test",
-        county: "Test County",
-        customers: Math.max(1, Math.round(customers)),
-        status: "unvisited",
-        outage_type: outageType,
+        customers,
+        outageType,
         cause: notes || cause,
-        crew_status: "none",
-        etr: null,
-        raw_data: { manual: true },
-        fetched_at: now,
-        is_simulation: true,
-        is_active: true,
-      })
-      .select("id")
-      .single();
+        source: "xcel",
+      }),
+    ];
 
+    const { data, error } = await insertOutageRows(db, rows);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    return NextResponse.json({ success: true, id: data.id });
+    return NextResponse.json({ success: true, id: data?.[0]?.id ?? rows[0].id });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }

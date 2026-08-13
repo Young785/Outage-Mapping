@@ -28,14 +28,14 @@ const RADIUS_MILES = 40;
 
 // ── Synthetic storm scenario (used when simulation mode has no DB scenario) ──
 const SYNTHETIC_STORM = [
-  { id: "sim-001", source: "simulation", lat: 44.9778, lng: -93.265,  city: "Minneapolis",   county: "HENNEPIN",  state: "MN", customers: 312, outageType: "Unplanned Outage", cause: "Storm Damage",    crewStatus: "En Route",    outageImpact: "Large",  status: "unvisited", priorityScore: 0, isSimulation: true },
-  { id: "sim-002", source: "simulation", lat: 44.9537, lng: -93.2200, city: "Minneapolis",   county: "HENNEPIN",  state: "MN", customers: 87,  outageType: "Unplanned Outage", cause: "Tree Contact",    crewStatus: "No Crew",     outageImpact: "Medium", status: "unvisited", priorityScore: 0, isSimulation: true },
-  { id: "sim-003", source: "simulation", lat: 44.8848, lng: -93.2988, city: "Bloomington",   county: "HENNEPIN",  state: "MN", customers: 203, outageType: "Unplanned Outage", cause: "Equipment Fault", crewStatus: "No Crew",     outageImpact: "Large",  status: "unvisited", priorityScore: 0, isSimulation: true },
-  { id: "sim-004", source: "simulation", lat: 45.0458, lng: -93.3500, city: "Brooklyn Park", county: "HENNEPIN",  state: "MN", customers: 45,  outageType: "Unplanned Outage", cause: "Storm Damage",    crewStatus: "Crew Onsite", outageImpact: "Small",  status: "unvisited", priorityScore: 0, isSimulation: true },
-  { id: "sim-005", source: "simulation", lat: 44.8233, lng: -93.1600, city: "Eagan",         county: "DAKOTA",    state: "MN", customers: 156, outageType: "Unplanned Outage", cause: "Lightning",       crewStatus: "No Crew",     outageImpact: "Large",  status: "unvisited", priorityScore: 0, isSimulation: true },
-  { id: "sim-006", source: "simulation", lat: 45.1120, lng: -93.2100, city: "Fridley",       county: "ANOKA",     state: "MN", customers: 29,  outageType: "Planned Outage",   cause: "Maintenance",     crewStatus: "Crew Onsite", outageImpact: "Small",  status: "unvisited", priorityScore: 0, isSimulation: true },
-  { id: "sim-007", source: "simulation", lat: 44.7441, lng: -93.2000, city: "Burnsville",    county: "DAKOTA",    state: "MN", customers: 421, outageType: "Unplanned Outage", cause: "Wind Damage",     crewStatus: "No Crew",     outageImpact: "Large",  status: "unvisited", priorityScore: 0, isSimulation: true },
-  { id: "sim-008", source: "simulation", lat: 44.9726, lng: -93.4700, city: "St. Louis Park", county: "HENNEPIN", state: "MN", customers: 68,  outageType: "Unplanned Outage", cause: "Vehicle Damage",  crewStatus: "En Route",    outageImpact: "Medium", status: "unvisited", priorityScore: 0, isSimulation: true },
+  { id: "sim-001", source: "xcel", lat: 44.9778, lng: -93.265,  city: "Minneapolis",   county: "HENNEPIN",  state: "MN", streetAddress: "Minneapolis, MN",   customers: 8, outageType: "Unplanned Outage", cause: "Storm Damage",    crewStatus: "En Route",    outageImpact: "Large",  status: "unvisited", priorityScore: 0, isSimulation: true },
+  { id: "sim-002", source: "xcel", lat: 44.9537, lng: -93.2200, city: "Minneapolis",   county: "HENNEPIN",  state: "MN", streetAddress: "Minneapolis, MN",   customers: 4, outageType: "Unplanned Outage", cause: "Tree Contact",    crewStatus: "No Crew",     outageImpact: "Medium", status: "unvisited", priorityScore: 0, isSimulation: true },
+  { id: "sim-003", source: "xcel", lat: 44.8848, lng: -93.2988, city: "Bloomington",   county: "HENNEPIN",  state: "MN", streetAddress: "Bloomington, MN",   customers: 7, outageType: "Unplanned Outage", cause: "Equipment Fault", crewStatus: "No Crew",     outageImpact: "Large",  status: "unvisited", priorityScore: 0, isSimulation: true },
+  { id: "sim-004", source: "xcel", lat: 45.0458, lng: -93.3500, city: "Brooklyn Park", county: "HENNEPIN",  state: "MN", streetAddress: "Brooklyn Park, MN", customers: 3, outageType: "Unplanned Outage", cause: "Storm Damage",    crewStatus: "Crew Onsite", outageImpact: "Small",  status: "unvisited", priorityScore: 0, isSimulation: true },
+  { id: "sim-005", source: "xcel", lat: 44.8233, lng: -93.1600, city: "Eagan",         county: "DAKOTA",    state: "MN", streetAddress: "Eagan, MN",         customers: 6, outageType: "Unplanned Outage", cause: "Lightning",       crewStatus: "No Crew",     outageImpact: "Large",  status: "unvisited", priorityScore: 0, isSimulation: true },
+  { id: "sim-006", source: "xcel", lat: 45.1120, lng: -93.2100, city: "Fridley",       county: "ANOKA",     state: "MN", streetAddress: "Fridley, MN",       customers: 2, outageType: "Planned Outage",   cause: "Maintenance",     crewStatus: "Crew Onsite", outageImpact: "Small",  status: "unvisited", priorityScore: 0, isSimulation: true },
+  { id: "sim-007", source: "xcel", lat: 44.7441, lng: -93.2000, city: "Burnsville",    county: "DAKOTA",    state: "MN", streetAddress: "Burnsville, MN",    customers: 9, outageType: "Unplanned Outage", cause: "Wind Damage",     crewStatus: "No Crew",     outageImpact: "Large",  status: "unvisited", priorityScore: 0, isSimulation: true },
+  { id: "sim-008", source: "xcel", lat: 44.9726, lng: -93.4700, city: "St. Louis Park", county: "HENNEPIN", state: "MN", streetAddress: "St. Louis Park, MN", customers: 5, outageType: "Unplanned Outage", cause: "Vehicle Damage",  crewStatus: "En Route",    outageImpact: "Medium", status: "unvisited", priorityScore: 0, isSimulation: true },
 ];
 
 function haversineMiles(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -78,7 +78,51 @@ export async function GET(req: Request) {
       const db = getAdmin();
       const { data: simSetting } = await db.from("app_settings").select("value").eq("key", "simulation_mode").maybeSingle();
       if (simSetting?.value === true || simSetting?.value === "true") {
-        // Try DB scenario first
+        // Prefer rows written by Generate / Load Snapshot (is_simulation=true).
+        const { data: simRows } = await db
+          .from("outages")
+          .select(
+            "id, lat, lng, city, county, state, customers, outage_type, cause, crew_status, outage_impact, status, priority_score, street_address, source, first_seen_at, last_updated_at, zip_code"
+          )
+          .eq("is_simulation", true)
+          .or("is_active.is.null,is_active.eq.true")
+          .not("lat", "is", null)
+          .not("lng", "is", null)
+          .limit(500);
+
+        if (simRows && simRows.length > 0) {
+          const features = simRows.map((r) => ({
+            id: r.id,
+            source: r.source || "simulation",
+            lat: r.lat,
+            lng: r.lng,
+            city: r.city,
+            county: r.county ?? "Sim County",
+            state: r.state,
+            customers: Math.max(1, Number(r.customers) || 1),
+            outageType: r.outage_type ?? "Unplanned Outage",
+            cause: r.cause,
+            crewStatus: r.crew_status,
+            outageImpact: r.outage_impact,
+            status: r.status ?? "unvisited",
+            priorityScore: r.priority_score ?? 0,
+            streetAddress: r.street_address ?? (r.city ? `${r.city}, ${r.state ?? "MN"}` : null),
+            zipCode: r.zip_code ?? null,
+            isSimulation: true,
+            firstSeenAt: r.first_seen_at ?? null,
+            lastUpdatedAt: r.last_updated_at ?? null,
+          }));
+
+          return NextResponse.json({
+            count: features.length,
+            features,
+            source: "simulation",
+            isSimulation: true,
+            fetchedAt: new Date().toISOString(),
+          });
+        }
+
+        // Legacy fallback: test_scenarios JSON blob, then hardcoded synthetic set
         const { data: scenario } = await db
           .from("test_scenarios")
           .select("*")
@@ -87,7 +131,33 @@ export async function GET(req: Request) {
           .limit(1)
           .maybeSingle();
 
-        const simOutages = scenario?.outages ?? SYNTHETIC_STORM;
+        const rawSim = (scenario?.outages ?? SYNTHETIC_STORM) as any[];
+        const simOutages = rawSim
+          .map((o) => {
+            const lat = Number(o.lat);
+            const lng = Number(o.lng);
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+            const city = o.city ?? o.streetAddress ?? "Minneapolis";
+            return {
+              id: o.id,
+              source: o.source === "connexus" ? "connexus" : "xcel",
+              lat,
+              lng,
+              city,
+              county: o.county ?? "Hennepin",
+              state: o.state ?? "MN",
+              streetAddress: o.streetAddress ?? o.street_address ?? `${city}, MN`,
+              customers: Math.max(1, Number(o.customers) || 1),
+              outageType: o.outageType ?? o.outage_type ?? "Unplanned Outage",
+              cause: o.cause ?? "Storm damage",
+              crewStatus: o.crewStatus ?? o.crew_status ?? null,
+              outageImpact: o.outageImpact ?? o.outage_impact ?? null,
+              status: o.status ?? "unvisited",
+              priorityScore: o.priorityScore ?? o.priority_score ?? 0,
+              isSimulation: true,
+            };
+          })
+          .filter(Boolean);
 
         return NextResponse.json({
           count: simOutages.length,

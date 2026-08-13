@@ -100,6 +100,7 @@ type RoutableOutage = {
   isStaleMarker?: boolean;
   noContactMade?: boolean;
   needsReturnTrip?: boolean;
+  isSimulation?: boolean;
 };
 
 type ZoneRow = {
@@ -159,7 +160,7 @@ export default function TechPanel({
   const isOffice = role === "office" || role === "admin" || role === "owner";
 
   const routableOutages = useMemo(
-    () => outages.filter((o) => !exceedsMapCustomerCap(o.customers)),
+    () => outages.filter((o) => o.isSimulation || !exceedsMapCustomerCap(o.customers)),
     [outages]
   );
 

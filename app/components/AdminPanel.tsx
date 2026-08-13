@@ -128,6 +128,10 @@ export default function AdminPanel({ token, role, routingMode, onRoutingModeChan
   const [opsMetrics, setOpsMetrics] = useState<OpsMetrics | null>(null);
   const [opsLoading, setOpsLoading] = useState(false);
   const [phaseAlerts, setPhaseAlerts] = useState<{ hotZones: PhaseAlert[]; lowYieldZones: PhaseAlert[] } | null>(null);
+  type AdminUserRow = { id: string; email: string; name: string; role: string; phone?: string | null };
+  const [adminUsers, setAdminUsers] = useState<AdminUserRow[]>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [roleSavingId, setRoleSavingId] = useState<string | null>(null);
 
   // ── Load current settings ─────────────────────────────────────────────────
   async function loadAdmin() {
@@ -193,7 +197,52 @@ export default function AdminPanel({ token, role, routingMode, onRoutingModeChan
     } catch {}
   }, [token]);
 
-  useEffect(() => { loadAdmin(); loadStormEvents(); loadSnapshots(); loadOpsMetrics(); loadPhaseAlerts(); }, []);
+  useEffect(() => {
+    loadAdmin();
+    loadStormEvents();
+    loadSnapshots();
+    loadOpsMetrics();
+    loadPhaseAlerts();
+    if (role === "admin" || role === "owner") loadUsers();
+  }, []);
+
+  async function loadUsers() {
+    setUsersLoading(true);
+    try {
+      const res = await fetch("/api/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ type: "list_users", data: {} }),
+      });
+      const d = await res.json();
+      if (res.ok) setAdminUsers(d.users ?? []);
+    } catch {}
+    setUsersLoading(false);
+  }
+
+  async function setUserRole(userId: string, nextRole: string) {
+    setRoleSavingId(userId);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ type: "set_user_role", data: { userId, role: nextRole } }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      setAdminUsers((prev) =>
+        prev.map((u) => (u.id === userId ? { ...u, role: nextRole } : u))
+      );
+      setMessage({
+        type: "success",
+        text: `Updated ${d.user?.name ?? "user"} to ${nextRole}. Have them sign out and back in to refresh their token.`,
+      });
+    } catch (err: any) {
+      setMessage({ type: "error", text: err.message });
+    }
+    setRoleSavingId(null);
+  }
 
   async function downloadExport(kind: "outages" | "jobs" | "investigations", sinceDays = 30) {
     try {
@@ -343,13 +392,16 @@ export default function AdminPanel({ token, role, routingMode, onRoutingModeChan
       if (!res.ok) throw new Error(d.error);
       setMessage({
         type: "success",
-        text: enable ? "Simulation mode ON — synthetic storm data active." : "Simulation mode OFF — live data restored.",
+        text: enable
+          ? "Simulation mode ON — generated/snapshot outages are now on the map."
+          : "Simulation mode OFF — live data restored.",
       });
       onSettingsChanged?.(settings.active_sources, enable, {
         stormPhase: settings.storm_phase,
         tempOutMode: settings.temp_out_mode,
         fetchIntervalMinutes: settings.fetch_interval_minutes,
       });
+      onOutagesChanged?.();
     } catch (err: any) { setMessage({ type: "error", text: err.message }); }
     setSaving(false);
   }
@@ -513,7 +565,27 @@ export default function AdminPanel({ token, role, routingMode, onRoutingModeChan
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error);
-      setMessage({ type: "success", text: `Generated ${d.created} synthetic outages (${synthType}). Activate simulation to see them.` });
+
+      // Auto-enable simulation so generated dots appear without an extra click.
+      const simRes = await fetch("/api/simulation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ enable: true }),
+      });
+      const simData = await simRes.json();
+      if (!simRes.ok) throw new Error(simData.error || "Generated outages but failed to enable simulation");
+
+      setSettings((prev) => ({ ...prev, simulation_mode: true }));
+      setMessage({
+        type: "success",
+        text: `Generated ${d.created} synthetic outages (${synthType}) and turned Simulation ON. Open Live Map to see the dots.`,
+      });
+      onSettingsChanged?.(settings.active_sources, true, {
+        stormPhase: settings.storm_phase,
+        tempOutMode: settings.temp_out_mode,
+        fetchIntervalMinutes: settings.fetch_interval_minutes,
+      });
+      onOutagesChanged?.();
     } catch (err: any) { setMessage({ type: "error", text: err.message }); }
     setGenRunning(false);
   }
@@ -750,6 +822,60 @@ export default function AdminPanel({ token, role, routingMode, onRoutingModeChan
         </button>
       </div>
 
+      {/* ── User roles (admin/owner) ───────────────────────────────────── */}
+      {(role === "admin" || role === "owner") && (
+        <div style={sectionStyle}>
+          <SectionTitleWithTip
+            title="User Roles"
+            tip="Promote a tech to admin for tech/admin hybrid access (field routing + Admin panel). Users must sign out and back in after a role change."
+          />
+          <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#6b7280" }}>
+            <strong>admin</strong> / <strong>owner</strong> get Admin + field routing (tech/admin). <strong>tech</strong> is field-only. <strong>office</strong> is dispatch without the investigation lockout.
+          </p>
+          {usersLoading ? (
+            <div style={{ fontSize: "13px", color: "#6b7280" }}>Loading users…</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              {adminUsers.map((u) => (
+                <div
+                  key={u.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: "12px",
+                    flexWrap: "wrap",
+                    padding: "10px 12px",
+                    background: "#f9fafb",
+                    borderRadius: "8px",
+                    border: "1px solid #e5e7eb",
+                  }}
+                >
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: "13px", color: "#1f2937" }}>{u.name}</div>
+                    <div style={{ fontSize: "12px", color: "#6b7280" }}>{u.email}</div>
+                  </div>
+                  <select
+                    value={u.role}
+                    disabled={roleSavingId === u.id}
+                    onChange={(e) => setUserRole(u.id, e.target.value)}
+                    style={{ ...fieldStyle, width: "auto", minWidth: "140px", margin: 0 }}
+                  >
+                    <option value="tech">tech</option>
+                    <option value="office">office</option>
+                    <option value="admin">admin (tech/admin)</option>
+                    {role === "owner" && <option value="owner">owner</option>}
+                  </select>
+                </div>
+              ))}
+              {adminUsers.length === 0 && (
+                <div style={{ fontSize: "13px", color: "#6b7280" }}>No users found.</div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Storm Simulation Mode ─────────────────────────────────────── */}
       <div style={sectionStyle}>
         <SectionTitleWithTip title="Storm Simulation Mode" tip={ADMIN_SECTION_HELP.simulation} />
@@ -792,7 +918,7 @@ export default function AdminPanel({ token, role, routingMode, onRoutingModeChan
       <div style={sectionStyle}>
         <SectionTitleWithTip title="Synthetic Outage Generator" tip={ADMIN_SECTION_HELP.syntheticGenerator} />
         <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#6b7280" }}>
-          Generate a synthetic storm dataset for simulation. This does <strong>not</strong> affect live data.
+          Generate a synthetic storm dataset for simulation. Dots are placed across the Twin Cities metro (1–10 customers each so they appear on Live Map). This does <strong>not</strong> affect live data.
         </p>
 
         <div style={{ display: "flex", gap: "16px", flexWrap: "wrap", marginBottom: "14px" }}>
