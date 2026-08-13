@@ -110,8 +110,75 @@ export async function POST(req: Request) {
           { onConflict: "key" }
         );
       }
+    } else if (type === "list_users") {
+      if (payload.role !== "admin" && payload.role !== "owner") {
+        return NextResponse.json({ error: "Admin or owner role required to list users" }, { status: 403 });
+      }
+      const { data: users, error } = await db
+        .from("users")
+        .select("id, email, name, role, phone")
+        .order("name", { ascending: true });
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ users: users ?? [] });
+    } else if (type === "set_user_role") {
+      if (payload.role !== "admin" && payload.role !== "owner") {
+        return NextResponse.json({ error: "Admin or owner role required to change roles" }, { status: 403 });
+      }
+      const userId = typeof data?.userId === "string" ? data.userId : "";
+      const nextRole = typeof data?.role === "string" ? data.role : "";
+      const allowed = payload.role === "owner"
+        ? ["tech", "office", "admin", "owner"]
+        : ["tech", "office", "admin"];
+      if (!userId) return NextResponse.json({ error: "userId is required" }, { status: 400 });
+      if (!allowed.includes(nextRole)) {
+        return NextResponse.json({ error: "Invalid role" }, { status: 400 });
+      }
+
+      const { data: target, error: loadErr } = await db
+        .from("users")
+        .select("id, email, name, role")
+        .eq("id", userId)
+        .maybeSingle();
+      if (loadErr) return NextResponse.json({ error: loadErr.message }, { status: 500 });
+      if (!target) return NextResponse.json({ error: "User not found" }, { status: 404 });
+      if (payload.role !== "owner" && target.role === "owner") {
+        return NextResponse.json({ error: "Only an owner can change another owner" }, { status: 403 });
+      }
+      if (target.role === "owner" && nextRole !== "owner") {
+        const { count, error: countErr } = await db
+          .from("users")
+          .select("id", { count: "exact", head: true })
+          .eq("role", "owner");
+        if (countErr) return NextResponse.json({ error: countErr.message }, { status: 500 });
+        if ((count ?? 0) <= 1) {
+          return NextResponse.json({ error: "Cannot demote the last owner" }, { status: 400 });
+        }
+      }
+
+      const { data: updated, error: updateErr } = await db
+        .from("users")
+        .update({ role: nextRole })
+        .eq("id", userId)
+        .select("id, email, name, role, phone")
+        .single();
+      if (updateErr || !updated) {
+        return NextResponse.json({ error: updateErr?.message ?? "Role update failed" }, { status: 500 });
+      }
+
+      if (nextRole === "tech") {
+        const { data: existingTech } = await db
+          .from("technicians")
+          .select("id")
+          .eq("user_id", userId)
+          .maybeSingle();
+        if (!existingTech) {
+          await db.from("technicians").insert({ user_id: userId, status: "available" });
+        }
+      }
+
+      return NextResponse.json({ success: true, user: updated });
     } else {
-      return NextResponse.json({ error: "type must be 'weights', 'settings', or 'routing'" }, { status: 400 });
+      return NextResponse.json({ error: "type must be 'weights', 'settings', 'routing', 'list_users', or 'set_user_role'" }, { status: 400 });
     }
 
     return NextResponse.json({ success: true });

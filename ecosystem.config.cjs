@@ -2,7 +2,7 @@
 module.exports = {
   apps: [
     {
-      name: "stormtracker",
+      name: "stormtrackertool",
       cwd: __dirname,
       script: "node_modules/next/dist/bin/next",
       args: "start",
