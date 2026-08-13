@@ -2269,11 +2269,15 @@ export default function Page() {
   if (!user) {
     if (preAuthScreen === "landing") {
       return (
-        <div style={{ minHeight: "100vh", padding: "32px 20px", background: "linear-gradient(135deg, #0f172a 0%, #0d9488 55%, #0891b2 100%)", fontFamily: "system-ui", color: "#fff" }}>
+        <main style={{ minHeight: "100vh", padding: "32px 20px", background: "linear-gradient(135deg, #0f172a 0%, #0d9488 55%, #0891b2 100%)", fontFamily: "system-ui", color: "#fff" }}>
           <div style={{ maxWidth: "980px", margin: "0 auto" }}>
-            <h1 style={{ margin: 0, fontSize: "36px", fontWeight: 800 }}>Storm Response Platform</h1>
+            <p style={{ margin: "0 0 10px", fontSize: "13px", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", opacity: 0.85 }}>
+              stormtrackertool.com
+            </p>
+            <h1 style={{ margin: 0, fontSize: "36px", fontWeight: 800 }}>StormTracker — Power Outage Map & Storm Response Platform</h1>
             <p style={{ margin: "10px 0 24px", maxWidth: "760px", fontSize: "16px", opacity: 0.95 }}>
               Fast field investigations, clear dispatch lists, routing optimization, and office controls for high-volume storm operations.
+              Map outages, assign technicians, and keep crews moving with live GPS and ETA updates.
             </p>
             <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginBottom: "22px" }}>
               <Link href="/docs" style={{ padding: "11px 16px", background: "#fff", color: "#0f766e", border: "none", borderRadius: "8px", fontWeight: 700, cursor: "pointer", textDecoration: "none", display: "inline-block" }}>
@@ -2286,17 +2290,38 @@ export default function Page() {
                 Continue to Login
               </button>
             </div>
-            <div style={{ background: "rgba(255,255,255,0.14)", border: "1px solid rgba(255,255,255,0.3)", borderRadius: "12px", padding: "16px" }}>
-              <div style={{ fontSize: "12px", fontWeight: 700, letterSpacing: "0.7px", textTransform: "uppercase", marginBottom: "8px" }}>What this platform does</div>
+            <section style={{ background: "rgba(255,255,255,0.14)", border: "1px solid rgba(255,255,255,0.3)", borderRadius: "12px", padding: "16px", marginBottom: "16px" }}>
+              <h2 style={{ margin: "0 0 8px", fontSize: "14px", fontWeight: 700, letterSpacing: "0.7px", textTransform: "uppercase" }}>What this platform does</h2>
               <ul style={{ margin: 0, paddingLeft: "18px", lineHeight: 1.7 }}>
-                <li>Separates Outages, Opportunities, and Job Queue</li>
+                <li>Live power outage map for field teams and office dispatchers</li>
+                <li>Separates Outages, Opportunities, and Job Queue for clear storm workflows</li>
                 <li>Supports multi-stop routing, smart dispatch, and cluster targeting</li>
                 <li>Tracks tech GPS in near real-time with ETA and auto-arrival updates</li>
                 <li>Includes storm phase, temp-out mode, cleanup, exports, and admin controls</li>
               </ul>
-            </div>
+            </section>
+            <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "12px" }}>
+              <article style={{ background: "rgba(15,23,42,0.28)", border: "1px solid rgba(255,255,255,0.22)", borderRadius: "12px", padding: "14px" }}>
+                <h3 style={{ margin: "0 0 6px", fontSize: "16px" }}>Outage mapping</h3>
+                <p style={{ margin: 0, fontSize: "14px", lineHeight: 1.55, opacity: 0.92 }}>
+                  Visualize outage dots, filter status, and keep investigations tied to the right addresses during storms.
+                </p>
+              </article>
+              <article style={{ background: "rgba(15,23,42,0.28)", border: "1px solid rgba(255,255,255,0.22)", borderRadius: "12px", padding: "14px" }}>
+                <h3 style={{ margin: "0 0 6px", fontSize: "16px" }}>Smart dispatch</h3>
+                <p style={{ margin: 0, fontSize: "14px", lineHeight: 1.55, opacity: 0.92 }}>
+                  Build prioritized job lists, assign techs, and push work without losing track of opportunities.
+                </p>
+              </article>
+              <article style={{ background: "rgba(15,23,42,0.28)", border: "1px solid rgba(255,255,255,0.22)", borderRadius: "12px", padding: "14px" }}>
+                <h3 style={{ margin: "0 0 6px", fontSize: "16px" }}>Route optimization</h3>
+                <p style={{ margin: 0, fontSize: "14px", lineHeight: 1.55, opacity: 0.92 }}>
+                  Plan multi-stop routes and cluster nearby stops so crews cover more ground per drive.
+                </p>
+              </article>
+            </section>
           </div>
-        </div>
+        </main>
       );
     }
 

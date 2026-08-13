@@ -9,7 +9,6 @@ import { NextResponse } from "next/server";
 import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
 import { verifyJWT, extractBearerToken, jwtErrorMessage } from "@/lib/jwt";
 import {
-  classifyParcelLandUse,
   lookupParcelAtLive,
   parcelCacheKey,
   type ParcelAttrs,
@@ -126,6 +125,3 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
-
-// Re-export helper for classify route typing
-export { classifyParcelLandUse };

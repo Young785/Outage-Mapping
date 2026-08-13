@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="StormTracker">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#14b8a6"/>
+      <stop offset="100%" stop-color="#0891b2"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#0f172a"/>
+  <polygon points="12,20 12,52 24,46 40,54 52,46 52,14 40,22 24,14" fill="none" stroke="url(#g)" stroke-width="3.5" stroke-linejoin="round"/>
+  <circle cx="28" cy="30" r="3.5" fill="#fff"/>
+  <circle cx="40" cy="38" r="3.5" fill="#5eead4"/>
+</svg>
