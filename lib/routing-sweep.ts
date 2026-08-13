@@ -42,6 +42,7 @@ export type SweepMarker = {
   needsReturnTrip?: boolean;
   firstSeenAt?: string | null;
   assignedTechName?: string | null;
+  isSimulation?: boolean;
 };
 
 export type SweepContext = {
@@ -64,7 +65,7 @@ function passesExclusions<T extends SweepMarker>(
   visits: Record<string, FieldVisitCache>,
   ctx: SweepContext
 ): boolean {
-  if (exceedsMapCustomerCap(item.customers)) return false;
+  if (!item.isSimulation && exceedsMapCustomerCap(item.customers)) return false;
   if (isRoutingExcluded(item, visits)) return false;
   if (item.inExclusionZone) return false;
   if (ctx.hideStaleMarkers && item.isStaleMarker) return false;

@@ -8,9 +8,11 @@
 import { NextResponse } from "next/server";
 import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
 import { verifyJWT, extractBearerToken } from "@/lib/jwt";
+import { MAX_MAP_CUSTOMERS } from "@/lib/routing-sweep";
+import { buildSimulationOutageRow, insertOutageRows } from "@/lib/simulation-outage";
 
-// Bounding box roughly covering Xcel Energy's Colorado/Minnesota service area
-const BOUNDS = { minLat: 44.4, maxLat: 45.2, minLng: -94.0, maxLng: -93.0 };
+// Bounding box roughly covering the Twin Cities metro (Xcel service area)
+const BOUNDS = { minLat: 44.7, maxLat: 45.15, minLng: -93.55, maxLng: -93.05 };
 
 function rand(min: number, max: number) {
   return min + Math.random() * (max - min);
@@ -19,11 +21,10 @@ function rand(min: number, max: number) {
 type ScenarioType = "mixed" | "clustered" | "sparse" | "honey_hole";
 
 function buildOutages(count: number, type: ScenarioType) {
-  const now = new Date().toISOString();
   const outages: Record<string, unknown>[] = [];
+  const stamp = Date.now();
 
-  // Cluster centers for clustered/honey_hole scenarios
-  const centers = Array.from({ length: Math.ceil(count / 8) }, () => ({
+  const centers = Array.from({ length: Math.max(1, Math.ceil(count / 8)) }, () => ({
     lat: rand(BOUNDS.minLat, BOUNDS.maxLat),
     lng: rand(BOUNDS.minLng, BOUNDS.maxLng),
   }));
@@ -40,9 +41,11 @@ function buildOutages(count: number, type: ScenarioType) {
       const spread = type === "clustered" ? 0.05 : 0.02;
       lat = center.lat + rand(-spread, spread);
       lng = center.lng + rand(-spread, spread);
-      customers = type === "honey_hole" ? Math.ceil(rand(3, 15)) : Math.ceil(rand(1, 8));
+      customers =
+        type === "honey_hole"
+          ? Math.ceil(rand(3, MAX_MAP_CUSTOMERS + 0.99))
+          : Math.ceil(rand(1, 8));
     } else {
-      // mixed
       const useCluster = Math.random() < 0.5;
       if (useCluster) {
         const center = centers[i % centers.length];
@@ -52,25 +55,20 @@ function buildOutages(count: number, type: ScenarioType) {
         lat = rand(BOUNDS.minLat, BOUNDS.maxLat);
         lng = rand(BOUNDS.minLng, BOUNDS.maxLng);
       }
-      customers = Math.ceil(rand(1, 10));
+      customers = Math.ceil(rand(1, MAX_MAP_CUSTOMERS + 0.99));
     }
 
-    outages.push({
-      xcel_id: `SIM-${Date.now()}-${i}`,
-      lat,
-      lng,
-      city: "Simulation City",
-      county: "Sim County",
-      customers,
-      status: "unvisited",
-      outage_type: "storm",
-      cause: "storm damage",
-      crew_status: "none",
-      etr: null,
-      raw_data: { synthetic: true, scenario_type: type },
-      fetched_at: now,
-      is_simulation: true,
-    });
+    outages.push(
+      buildSimulationOutageRow({
+        id: `sim-gen-${stamp}-${i}`,
+        lat,
+        lng,
+        customers,
+        cause: type === "honey_hole" ? "clustered storm damage" : "storm damage",
+        outageType: "Unplanned Outage",
+        source: "xcel",
+      })
+    );
   }
 
   return outages;
@@ -82,11 +80,13 @@ export async function POST(req: Request) {
     if (!token) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     let payload;
-    try { payload = verifyJWT(token); } catch {
+    try {
+      payload = verifyJWT(token);
+    } catch {
       return NextResponse.json({ error: "Invalid token" }, { status: 401 });
     }
 
-    if (payload.role !== "admin" && payload.role !== "office") {
+    if (payload.role !== "admin" && payload.role !== "office" && payload.role !== "owner") {
       return NextResponse.json({ error: "Admin/office role required" }, { status: 403 });
     }
 
@@ -101,11 +101,10 @@ export async function POST(req: Request) {
     }
 
     const db = getAdmin();
-    // Clear previous synthetic outages before inserting fresh ones
     await db.from("outages").delete().eq("is_simulation", true);
 
     const outages = buildOutages(count, type);
-    const { data, error } = await db.from("outages").insert(outages).select("id");
+    const { data, error } = await insertOutageRows(db, outages);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
     return NextResponse.json({ created: data?.length ?? count, type, count });

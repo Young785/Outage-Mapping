@@ -8,7 +8,7 @@ export const ADMIN_SECTION_HELP: Record<string, string> = {
   simulation:
     "Replaces live utility data with fake storm dots for training. Does not change real customer outages until you turn it off.",
   syntheticGenerator:
-    "Creates fake outage patterns (clusters, honey holes, etc.) into the simulation dataset. Safe to run — never touches live feeds.",
+    "Creates fake Twin Cities outage dots (1–10 customers each) and turns Simulation ON. Open Live Map to see them. Safe to run — never touches live feeds.",
   snapshots:
     "Replay a real outage fetch from history as simulation data — useful for testing dispatch on an actual storm shape.",
   stormEvents:

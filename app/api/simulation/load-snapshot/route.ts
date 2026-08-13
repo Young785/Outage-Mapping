@@ -7,6 +7,7 @@
 import { NextResponse } from "next/server";
 import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
 import { verifyJWT, extractBearerToken } from "@/lib/jwt";
+import { buildSimulationOutageRow, insertOutageRows } from "@/lib/simulation-outage";
 
 export async function POST(req: Request) {
   try {
@@ -32,7 +33,7 @@ export async function POST(req: Request) {
     // Fetch the snapshot
     const { data: snapshot, error: snErr } = await db
       .from("outage_snapshots")
-      .select("raw_response, normalized_count, fetched_at, source")
+      .select("raw_data, normalized_count, fetched_at, source")
       .eq("id", snapshotId)
       .single();
 
@@ -40,11 +41,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Snapshot not found" }, { status: 404 });
     }
 
-    // Parse normalized outage rows out of raw_response
-    // raw_response is the ArcGIS FeatureCollection or our normalized array
+    // Parse normalized outage rows out of raw_data (ArcGIS FeatureCollection or array)
     let features: any[] = [];
     try {
-      const raw = snapshot.raw_response;
+      const raw = snapshot.raw_data;
       if (Array.isArray(raw)) {
         features = raw;
       } else if (raw?.features) {
@@ -63,41 +63,37 @@ export async function POST(req: Request) {
     // Clear previous simulation outages
     await db.from("outages").delete().eq("is_simulation", true);
 
-    // Map features to outage records
-    const now = new Date().toISOString();
-    const outages = features.slice(0, 500).map((f: any) => {
+    const outages = features.slice(0, 500).map((f: any, i: number) => {
       const attrs = f.attributes ?? f;
       const geo = f.geometry ?? {};
-      const lat = geo.y ?? attrs.lat ?? attrs.latitude ?? null;
-      const lng = geo.x ?? attrs.lng ?? attrs.longitude ?? null;
-      if (!lat || !lng) return null;
-      return {
-        xcel_id: `SNAP-${snapshotId}-${attrs.id ?? attrs.xcel_id ?? Math.random()}`,
-        lat: parseFloat(lat),
-        lng: parseFloat(lng),
+      const lat = parseFloat(String(geo.y ?? attrs.lat ?? attrs.latitude ?? ""));
+      const lng = parseFloat(String(geo.x ?? attrs.lng ?? attrs.longitude ?? ""));
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+      const originalId = attrs.id ?? attrs.xcel_id ?? i;
+      return buildSimulationOutageRow({
+        id: `sim-snap-${snapshotId}-${originalId}`,
+        lat,
+        lng,
         city: attrs.city ?? attrs.CITY ?? null,
         county: attrs.county ?? attrs.COUNTY ?? null,
-        customers: parseInt(attrs.customers ?? attrs.CUSTOMERS ?? attrs.customersAffected ?? 1) || 1,
-        status: "unvisited",
-        outage_type: attrs.outageType ?? attrs.outage_type ?? "storm",
+        state: attrs.state ?? attrs.STATE ?? null,
+        streetAddress: attrs.streetAddress ?? attrs.street_address ?? attrs.address ?? null,
+        zipCode: attrs.zipCode ?? attrs.zip_code ?? attrs.ZIP ?? null,
+        customers: parseInt(String(attrs.customers ?? attrs.CUSTOMERS ?? attrs.customersAffected ?? 1), 10) || 1,
+        capCustomers: false,
+        outageType: attrs.outageType ?? attrs.outage_type ?? "Unplanned Outage",
         cause: attrs.cause ?? null,
-        crew_status: attrs.crewStatus ?? attrs.crew_status ?? "none",
+        crewStatus: attrs.crewStatus ?? attrs.crew_status ?? "none",
         etr: attrs.etr ?? null,
-        raw_data: { from_snapshot: snapshotId, original: attrs },
-        fetched_at: snapshot.fetched_at ?? now,
-        is_simulation: true,
-        is_active: true,
-      };
+        source: snapshot.source === "connexus" ? "connexus" : "xcel",
+      });
     }).filter((o): o is NonNullable<typeof o> => o !== null);
 
     if (outages.length === 0) {
       return NextResponse.json({ error: "No valid outage coordinates in snapshot" }, { status: 422 });
     }
 
-    const { data: inserted, error: insErr } = await db
-      .from("outages")
-      .insert(outages)
-      .select("id");
+    const { data: inserted, error: insErr } = await insertOutageRows(db, outages);
 
     if (insErr) return NextResponse.json({ error: insErr.message }, { status: 500 });
 

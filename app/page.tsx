@@ -356,7 +356,7 @@ export default function Page() {
           id: attrs.id ?? f.id,
           lat,
           lng,
-          customers: attrs.customers ?? f.customers ?? 0,
+          customers: Math.max(1, Number(attrs.customers ?? f.customers) || 1),
           county: attrs.county ?? f.county ?? "Unknown",
           city: attrs.city ?? f.city,
           state: attrs.state ?? f.state,
@@ -1076,7 +1076,11 @@ export default function Page() {
       return true;
     }
     openInvestigation(pending);
-    alert("Submit an investigation for your current stop before routing to the next one.");
+    const where =
+      pending.streetAddress || pending.city || pending.county || `stop #${pending.id}`;
+    alert(
+      `Submit an investigation for your current stop before routing to the next one.\n\nPending stop: ${where}\n\nYou can also tap “Clear lockout” on the map banner to unblock testing.`
+    );
     return false;
   }
 
@@ -1325,7 +1329,7 @@ export default function Page() {
     markersByIdRef.current = new Map();
 
     const visible = data.filter((o) => {
-      if (exceedsMapCustomerCap(o.customers)) return false;
+      if (!o.isSimulation && exceedsMapCustomerCap(o.customers)) return false;
       if (o.investigationResult === "not_target" || o.investigationResult === "underground_service") return false;
       if (stormVisibilityMode === "active_only" && o.isPreviousStormMarker) return false;
       if (!showStaleOnMap && o.isStaleMarker && stormVisibilityMode !== "all") return false;
@@ -1350,7 +1354,7 @@ export default function Page() {
 
       // Customer count shown inside every outage dot (replaces honey-hole-only numbering).
       const inPriorityZone = zones.some((z) => zoneTypeOf(z) === "priority" && isInZone(outage, z));
-      const customerCount = Math.max(0, Number(outage.customers) || 0);
+      const customerCount = Math.max(1, Number(outage.customers) || 1);
       const baseSizeRaw =
         customerCount > 1
           ? Math.min(20, Math.max(12, 11 + Math.sqrt(customerCount)))
@@ -1377,8 +1381,7 @@ export default function Page() {
             : cfg.strokeColor;
       const strokeWeight = isDelayedConfirmed ? 4 : customerCount > 1 ? 3.5 : 3;
 
-      const customerLabel =
-        customerCount > 0 ? (customerCount > 99 ? "99+" : String(customerCount)) : "";
+      const customerLabel = customerCount > 99 ? "99+" : String(customerCount);
 
       const marker = new google.maps.Marker({
         map: mapObj.current!,
@@ -1837,7 +1840,7 @@ export default function Page() {
 
   function buildRoutableOutages(): Outage[] {
     return outages
-      .filter((o) => !exceedsMapCustomerCap(o.customers))
+      .filter((o) => o.isSimulation || !exceedsMapCustomerCap(o.customers))
       .map((o) => ({
         ...o,
         inPriorityZone: zones.some((z) => zoneTypeOf(z) === "priority" && isInZone(o, z)),
@@ -2642,7 +2645,7 @@ export default function Page() {
                 {isMobile ? "+" : "+ New Job"}
               </button>
             )}
-            {user.role === "tech" && (
+            {(user.role === "tech" || user.role === "admin" || user.role === "owner") && (
               <button onClick={() => setShowReportModal(true)} style={btnCss("#ef4444")}>
                 {isMobile ? "◇" : "Add Opportunity"}
               </button>
@@ -2714,7 +2717,13 @@ export default function Page() {
         {pendingVisitId && user?.role === "tech" && activeTab === "map" && routeBlockedByPending && (
           <div style={{ padding: "8px 16px", background: "#fef3c7", borderBottom: "1px solid #fcd34d", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
             <span style={{ fontSize: "12px", fontWeight: 600, color: "#92400e" }}>
-              Investigation reminder — tap to open Quick Investigate when ready
+              Finish investigation at{" "}
+              {(() => {
+                const pending = outages.find((o) => String(o.id) === pendingVisitId);
+                if (!pending) return "your current stop";
+                return pending.streetAddress || pending.city || pending.county || `stop #${pending.id}`;
+              })()}{" "}
+              before routing to the next one
             </span>
             <div style={{ display: "flex", gap: "6px" }}>
               <button
@@ -2725,14 +2734,15 @@ export default function Page() {
                 }}
                 style={{ padding: "6px 12px", background: "#d97706", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}
               >
-                Open
+                Open stop
               </button>
               <button
                 type="button"
                 onClick={() => { clearPendingVisit(); setPendingVisitId(null); }}
                 style={{ padding: "6px 12px", background: "#fff", color: "#92400e", border: "1px solid #fcd34d", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}
+                title="Clear the pending-stop lock so you can keep testing routes"
               >
-                Dismiss
+                Clear lockout
               </button>
             </div>
           </div>
