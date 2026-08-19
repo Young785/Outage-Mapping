@@ -22,6 +22,7 @@ import { syncLinkedJobLocation } from "@/lib/marker-location";
 import { MAX_MAP_CUSTOMERS } from "@/lib/routing-sweep";
 import { toPriority100 } from "@/lib/score-display";
 import { mapPool } from "@/lib/map-pool";
+import { isPlannedUtilityEvent, isValidMapCoordinate } from "@/lib/storm-outage";
 
 const CENTER = { lat: 44.9778, lng: -93.265 };
 const RADIUS_MILES = 40;
@@ -88,10 +89,16 @@ export async function GET(req: Request) {
           .or("is_active.is.null,is_active.eq.true")
           .not("lat", "is", null)
           .not("lng", "is", null)
-          .limit(500);
+          .limit(2500);
 
         if (simRows && simRows.length > 0) {
-          const features = simRows.map((r) => ({
+          const features = simRows
+            .filter((r) => isValidMapCoordinate(r.lat, r.lng) && !isPlannedUtilityEvent({
+              cause: r.cause,
+              outageType: r.outage_type,
+              source: r.source,
+            }))
+            .map((r) => ({
             id: r.id,
             source: r.source || "simulation",
             lat: r.lat,
@@ -202,7 +209,12 @@ export async function GET(req: Request) {
           o.lng != null &&
           haversineMiles(CENTER.lat, CENTER.lng, o.lat!, o.lng!) <= RADIUS_MILES
       )
-  ).filter((o) => (o.customers ?? 0) <= MAX_MAP_CUSTOMERS);
+  ).filter(
+    (o) =>
+      isValidMapCoordinate(o.lat, o.lng) &&
+      (o.customers ?? 0) <= MAX_MAP_CUSTOMERS &&
+      !isPlannedUtilityEvent(o)
+  );
 
   // Enrich with V1 priority scores + DB status + cached addresses (if configured)
   // Pull saved status AND street_address from DB so we return cached values

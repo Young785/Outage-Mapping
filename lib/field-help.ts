@@ -18,7 +18,7 @@ export const ADMIN_SECTION_HELP: Record<string, string> = {
 };
 
 export const ADMIN_FIELD_HELP: Record<string, string> = {
-  xcel: "Pulls outage polygons from Xcel Energy's public ArcGIS layer. Primary feed for most Minnesota storms.",
+  xcel: "Pulls live outage points from Xcel Energy's public ArcGIS REST layer (not the customer website HTML). Planned (wrench) events are omitted from the storm map; unplanned (lightning) stay.",
   connexus: "Pulls outage polygons from Connexus Energy's public ArcGIS layer. Secondary feed for north/east metro MN.",
   fetchInterval:
     "How often the cron job re-fetches utility data (minutes). Lower = fresher map, more API calls.",
@@ -47,7 +47,7 @@ export const ADMIN_FIELD_HELP: Record<string, string> = {
   lineDropBonus: "Boost when investigation confirms a line down (no power context).",
   lineDropPowerBonus: "Extra boost when line down still has partial/neighbor power — higher close rate.",
   simulationToggle: "Switch between live utility feeds and synthetic test data on the map.",
-  synthCount: "How many fake outage dots to generate in one batch.",
+  synthCount: "How many fake outage dots to generate in one batch. 2,000 is a large-storm stress test.",
   synthType:
     "Mixed = random spread; Clustered = tight groups; Sparse = wide area; Honey Hole = dense high-value pocket.",
   stormEventName: "Label for this storm (e.g. June 2026 Derecho) — appears in session history.",

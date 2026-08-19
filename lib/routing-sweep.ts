@@ -13,6 +13,7 @@ import { isInTerritory, type TerritoryDefinition } from "./territory-match";
 import { isDelayedUtilityConfirmed } from "./utility-outage";
 import { haversineMiles } from "./priority";
 import type { StormPhase } from "./routing-v1";
+import { isPlannedUtilityEvent, isValidMapCoordinate } from "./storm-outage";
 
 /** Outages above this count are omitted from the map and routing. */
 export const MAX_MAP_CUSTOMERS = 10;
@@ -35,6 +36,8 @@ export type SweepMarker = {
   status: string;
   customers: number;
   source?: string;
+  cause?: string | null;
+  outageType?: string | null;
   investigationResult?: string;
   inExclusionZone?: boolean;
   isStaleMarker?: boolean;
@@ -65,7 +68,9 @@ function passesExclusions<T extends SweepMarker>(
   visits: Record<string, FieldVisitCache>,
   ctx: SweepContext
 ): boolean {
+  if (!isValidMapCoordinate(item.lat, item.lng)) return false;
   if (!item.isSimulation && exceedsMapCustomerCap(item.customers)) return false;
+  if (isPlannedUtilityEvent(item)) return false;
   if (isRoutingExcluded(item, visits)) return false;
   if (item.inExclusionZone) return false;
   if (ctx.hideStaleMarkers && item.isStaleMarker) return false;

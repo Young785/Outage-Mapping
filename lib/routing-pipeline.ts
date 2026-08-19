@@ -22,6 +22,7 @@ import { isInTerritory, type TerritoryDefinition } from "./territory-match";
 import { isEligibleForRole, roleFallbackChain } from "./routing-eligibility";
 import { haversineMiles } from "./priority";
 import { isDelayedUtilityConfirmed } from "./utility-outage";
+import { isPlannedUtilityEvent, isValidMapCoordinate } from "./storm-outage";
 
 export type PipelineMarker = {
   id: number | string;
@@ -31,6 +32,8 @@ export type PipelineMarker = {
   customers: number;
   priorityScore?: number;
   source?: string;
+  cause?: string | null;
+  outageType?: string | null;
   isNew?: boolean;
   investigationResult?: string;
   powerOnLineDrop?: boolean;
@@ -66,6 +69,8 @@ function passesBaseExclusions<T extends PipelineMarker>(
   hideStaleMarkers: boolean,
   currentTechName?: string | null
 ): boolean {
+  if (!isValidMapCoordinate(item.lat, item.lng)) return false;
+  if (isPlannedUtilityEvent(item)) return false;
   if (isRoutingExcluded(item, visits)) return false;
   if (item.inExclusionZone) return false;
   if (hideStaleMarkers && item.isStaleMarker) return false;
