@@ -26,6 +26,7 @@ import type { RoutingMode } from "@/lib/routing-mode";
 import { territoryFromRow, zoneTypeOf, isInBoundaryZone } from "@/lib/territory-match";
 import { isPermanentlyExcluded, type ExcludedProperty } from "@/lib/excluded-properties";
 import { isDelayedUtilityConfirmed } from "@/lib/utility-outage";
+import { isPlannedUtilityEvent } from "@/lib/storm-outage";
 import type { FieldDispatchRole, InstallerFallback } from "@/lib/field-dispatch-role";
 import type { TechRouteBundle } from "@/lib/tech-routes";
 
@@ -1346,6 +1347,7 @@ export default function Page() {
         excludedProperties
       );
       if (inPolyExclusion || inPropExclusion) return false;
+      if (isPlannedUtilityEvent(o)) return false;
       return true;
     });
 
@@ -1841,6 +1843,7 @@ export default function Page() {
   function buildRoutableOutages(): Outage[] {
     return outages
       .filter((o) => o.isSimulation || !exceedsMapCustomerCap(o.customers))
+      .filter((o) => !isPlannedUtilityEvent(o))
       .map((o) => ({
         ...o,
         inPriorityZone: zones.some((z) => zoneTypeOf(z) === "priority" && isInZone(o, z)),
@@ -3088,15 +3091,16 @@ export default function Page() {
                 </div>
               )}
 
-              {/* Legend — collapsible; hidden on mobile to save space */}
+              {/* Legend — bottom-left so it never covers search */}
               {!isMobile && (
                 <div style={{
-                  position: "absolute", top: "20px", left: "20px",
+                  position: "absolute", bottom: "20px", left: "20px", zIndex: 8,
                   background: "rgba(255,255,255,0.97)", borderRadius: "10px",
                   padding: legendCollapsed ? "6px 10px" : "10px 14px",
                   boxShadow: "0 2px 8px rgba(0,0,0,0.12)", fontSize: "11px",
-                  maxHeight: legendCollapsed ? undefined : "calc(100vh - 180px)",
+                  maxHeight: legendCollapsed ? undefined : "min(42vh, 360px)",
                   overflowY: legendCollapsed ? "visible" : "auto",
+                  maxWidth: legendCollapsed ? "auto" : "220px",
                 }}>
                   <button
                     type="button"

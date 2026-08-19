@@ -114,7 +114,7 @@ export const PAGE_HELP: Record<PageHelpId, PageHelpContent> = {
       "Route to Next uses V1 scoring: small clustered outages rank above large utility main-line events in Phase 1.",
       "Customer count: 1–4 = high, 5–10 = medium, 11–50 = low, 50+ = very low — clusters of small outages beat one big outage.",
       "Hide non-critical markers toggle lives in sidebar Map Layers.",
-      "Collapsible legend — click Legend to shrink and free map space.",
+      "Collapsible legend — click Legend (bottom-left) to shrink and free map space. It no longer overlaps search.",
     ],
     layman: {
       headline: "The map everyone works from",

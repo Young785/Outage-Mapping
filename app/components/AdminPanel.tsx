@@ -95,7 +95,7 @@ export default function AdminPanel({ token, role, routingMode, onRoutingModeChan
     honey_hole_bonus: 50,
   });
   // Synthetic outage generation state
-  const [synthCount, setSynthCount] = useState<10 | 25 | 50 | 100>(25);
+  const [synthCount, setSynthCount] = useState<10 | 25 | 50 | 100 | 500 | 2000>(25);
   const [synthType, setSynthType]   = useState<"mixed" | "clustered" | "sparse" | "honey_hole">("mixed");
   const [genRunning, setGenRunning] = useState(false);
 
@@ -918,15 +918,15 @@ export default function AdminPanel({ token, role, routingMode, onRoutingModeChan
       <div style={sectionStyle}>
         <SectionTitleWithTip title="Synthetic Outage Generator" tip={ADMIN_SECTION_HELP.syntheticGenerator} />
         <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#6b7280" }}>
-          Generate a synthetic storm dataset for simulation. Dots are placed across the Twin Cities metro (1–10 customers each so they appear on Live Map). This does <strong>not</strong> affect live data.
+          Generate a synthetic storm dataset for simulation. Dots are placed across the Twin Cities metro (1–10 customers each so they appear on Live Map). Use 2,000 to stress-test map rendering, routing, and exclusion logic. This does <strong>not</strong> affect live data.
         </p>
 
         <div style={{ display: "flex", gap: "16px", flexWrap: "wrap", marginBottom: "14px" }}>
           {/* Count buttons */}
           <div>
             <label style={labelStyle}><LabelWithTip label="Outage Count" tip={ADMIN_FIELD_HELP.synthCount} /></label>
-            <div style={{ display: "flex", gap: "6px" }}>
-              {([10, 25, 50, 100] as const).map((n) => (
+            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+              {([10, 25, 50, 100, 500, 2000] as const).map((n) => (
                 <button
                   key={n}
                   onClick={() => setSynthCount(n)}

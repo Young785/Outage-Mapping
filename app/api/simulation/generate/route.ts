@@ -1,7 +1,10 @@
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
 /**
  * POST /api/simulation/generate
  * Creates synthetic outage records tagged as is_simulation=true.
- * count: 10 | 25 | 50 | 100
+ * count: 10 | 25 | 50 | 100 | 500 | 2000
  * type: "mixed" | "clustered" | "sparse" | "honey_hole"
  */
 
@@ -91,7 +94,8 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
-    const count: number = [10, 25, 50, 100].includes(body.count) ? body.count : 25;
+    const allowed = [10, 25, 50, 100, 500, 2000];
+    const count: number = allowed.includes(Number(body.count)) ? Number(body.count) : 25;
     const type: ScenarioType = ["mixed", "clustered", "sparse", "honey_hole"].includes(body.type)
       ? body.type
       : "mixed";
@@ -104,10 +108,15 @@ export async function POST(req: Request) {
     await db.from("outages").delete().eq("is_simulation", true);
 
     const outages = buildOutages(count, type);
-    const { data, error } = await insertOutageRows(db, outages);
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    const BATCH = 250;
+    let inserted = 0;
+    for (let i = 0; i < outages.length; i += BATCH) {
+      const { data, error } = await insertOutageRows(db, outages.slice(i, i + BATCH));
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      inserted += data?.length ?? Math.min(BATCH, outages.length - i);
+    }
 
-    return NextResponse.json({ created: data?.length ?? count, type, count });
+    return NextResponse.json({ created: inserted, type, count });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
