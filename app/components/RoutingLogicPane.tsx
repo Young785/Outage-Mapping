@@ -162,7 +162,7 @@ export default function RoutingLogicPane({
         <div>
           <div style={{ fontSize: 14, fontWeight: 800, color: "#134e4a" }}>Routing Logic</div>
           <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
-            Next 10 stops · drag to reorder
+            Independent AUTO / MANUAL per tech
           </div>
         </div>
         <button
@@ -202,7 +202,7 @@ export default function RoutingLogicPane({
               cursor: busy ? "wait" : "pointer",
             }}
           >
-            {busy ? "Updating…" : "Auto-populate routes"}
+            {busy ? "Updating…" : "Auto-populate AUTO techs"}
           </button>
           <button
             type="button"
@@ -232,7 +232,7 @@ export default function RoutingLogicPane({
       <div style={{ flex: 1, overflow: "auto", padding: "8px 10px 16px" }}>
         {visibleRoutes.length === 0 && (
           <div style={{ padding: 16, fontSize: 13, color: "#6b7280", textAlign: "center" }}>
-            No technicians found. Run Auto-populate after techs are Available with GPS.
+            No technicians found. Techs need a GPS ping or assigned territory polygon. AUTO techs get stops; MANUAL techs are left alone.
           </div>
         )}
 
@@ -278,9 +278,44 @@ export default function RoutingLogicPane({
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>{route.techName}</div>
                   <div style={{ fontSize: 11, color: "#6b7280" }}>
-                    {route.status} · {stops.length} stop{stops.length === 1 ? "" : "s"}
+                    {route.status} · {stops.length} stop{stops.length === 1 ? "" : "s"} · {(route.routeControl ?? "auto").toUpperCase()}
                   </div>
+                  {route.assignmentNote && stops.length === 0 && (
+                    <div style={{ fontSize: 10, color: "#b45309", marginTop: 2, lineHeight: 1.35 }}>
+                      {route.assignmentNote}
+                    </div>
+                  )}
                 </div>
+                {isOffice && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const next = (route.routeControl ?? "auto") === "manual" ? "auto" : "manual";
+                      void mutate({
+                        action: "set_route_control",
+                        techUserId: route.techUserId,
+                        routeControl: next,
+                      });
+                    }}
+                    style={{
+                      background: (route.routeControl ?? "auto") === "manual" ? "#134e4a" : "#e5e7eb",
+                      color: (route.routeControl ?? "auto") === "manual" ? "#fff" : "#374151",
+                      border: "none",
+                      borderRadius: 999,
+                      padding: "4px 8px",
+                      fontSize: 10,
+                      fontWeight: 800,
+                      cursor: "pointer",
+                      letterSpacing: 0.3,
+                    }}
+                    title="AUTO follows automatic routing. MANUAL keeps this tech's string route while others stay automatic."
+                  >
+                    {(route.routeControl ?? "auto") === "manual" ? "MANUAL" : "AUTO"}
+                  </button>
+                )}
                 {isOffice && stops.length > 0 && (
                   <button
                     type="button"
@@ -391,8 +426,8 @@ export default function RoutingLogicPane({
 
       <div style={{ padding: "10px 14px", borderTop: "1px solid #e5e7eb", fontSize: 11, color: "#6b7280" }}>
         {isOffice
-          ? "Right-click a map marker to add/remove from a tech route or mark Not a target."
-          : "Tap your truck, then tap up to 5 map dots to build your next stops."}
+          ? "AUTO techs are rebuilt by Auto-populate. Switch one tech to MANUAL to own their string route — everyone else stays automatic. Right-click a marker to add a stop."
+          : "Tap Manual routing, then tap up to 5 map dots. Switching you to MANUAL does not change anyone else."}
       </div>
     </aside>
   );

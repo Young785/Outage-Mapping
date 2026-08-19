@@ -24,6 +24,8 @@ export type RouteStopDetail = {
   priorityScore: number;
 };
 
+export type RouteControl = "auto" | "manual";
+
 export type TechRouteBundle = {
   techUserId: string;
   techName: string;
@@ -31,12 +33,17 @@ export type TechRouteBundle = {
   status: string;
   lat: number | null;
   lng: number | null;
+  routeControl: RouteControl;
+  assignmentNote: string | null;
   stops: RouteStopDetail[];
 };
 
 const OFFICE_SOURCES = new Set(["office", "manual", "user", "self_generated", "crm", "housecall"]);
 
-/** Prefer call-ins, then score, then distance from tech — then nearest-neighbor order for driving. */
+/**
+ * Prefer a local geographic pocket around the tech, then score within it.
+ * Strong distance weight + nearest-neighbor tour keeps routes from pinging across the metro.
+ */
 export function rankCandidatesForTech<
   T extends {
     id: string | number;
@@ -52,11 +59,27 @@ export function rankCandidatesForTech<
   candidates: T[],
   maxStops: number
 ): T[] {
-  const scored = candidates.map((c) => {
-    const miles = haversineMiles(techLoc.lat, techLoc.lng, c.lat, c.lng);
+  if (candidates.length === 0) return [];
+
+  const withMiles = candidates.map((c) => ({
+    c,
+    miles: haversineMiles(techLoc.lat, techLoc.lng, c.lat, c.lng),
+  }));
+
+  // Grow a local working radius until we have enough stops (or hit metro-wide fallback).
+  let radius = 6;
+  let local = withMiles.filter((x) => x.miles <= radius);
+  while (local.length < Math.max(maxStops, 3) && radius < 35) {
+    radius += 5;
+    local = withMiles.filter((x) => x.miles <= radius);
+  }
+  if (local.length === 0) local = withMiles;
+
+  const scored = local.map(({ c, miles }) => {
     const isOffice = !!(c.source && OFFICE_SOURCES.has(c.source));
-    const base = (c.priorityScore ?? 0) + (isOffice ? 80 : 0);
-    const distPenalty = miles * 6;
+    const base = (c.priorityScore ?? 0) + (isOffice ? 50 : 0);
+    // Distance dominates so far-away high scores don't leapfrog nearby work.
+    const distPenalty = miles * 18;
     return { c, score: base - distPenalty, miles, isOffice };
   });
 
@@ -66,8 +89,8 @@ export function rankCandidatesForTech<
     return a.miles - b.miles;
   });
 
-  const picked = scored.slice(0, Math.max(maxStops * 2, maxStops)).map((s) => s.c);
-  // Nearest-neighbor tour from tech location reduces zig-zag across town.
+  const poolSize = Math.min(local.length, Math.max(maxStops * 2, maxStops));
+  const picked = scored.slice(0, poolSize).map((s) => s.c);
   return orderNearestNeighbor(techLoc, picked).slice(0, maxStops);
 }
 

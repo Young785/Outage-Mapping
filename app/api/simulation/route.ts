@@ -38,7 +38,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid token" }, { status: 401 });
     }
 
-    if (payload.role !== "admin" && payload.role !== "office") {
+    if (payload.role !== "admin" && payload.role !== "office" && payload.role !== "owner") {
       return NextResponse.json({ error: "Admin/office role required" }, { status: 403 });
     }
 

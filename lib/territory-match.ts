@@ -112,6 +112,26 @@ export function isInBoundaryZone(item: Locatable, zone: BoundaryZoneLike): boole
   return pointInPolygon(item.lat, item.lng, ring);
 }
 
+/** Geographic center of a territory polygon (fallback origin when a tech has no GPS). */
+export function territoryCentroid(territory?: TerritoryDefinition | null): { lat: number; lng: number } | null {
+  const ring = territory?.polygonRings?.[0];
+  if (!ring || ring.length < 3) return null;
+  let lat = 0;
+  let lng = 0;
+  let n = 0;
+  for (const pt of ring) {
+    if (!Array.isArray(pt) || pt.length < 2) continue;
+    const x = Number(pt[0]);
+    const y = Number(pt[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    lng += x;
+    lat += y;
+    n++;
+  }
+  if (n === 0) return null;
+  return { lat: lat / n, lng: lng / n };
+}
+
 /** Build territory definition from a territories table row. */
 export function territoryFromRow(row: {
   zip_codes?: string[] | null;

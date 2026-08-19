@@ -6,26 +6,147 @@
 import { NextResponse } from "next/server";
 import { getAdmin, isSupabaseConfigured } from "@/lib/supabase";
 import { extractBearerToken, verifyJWT } from "@/lib/jwt";
-import { defaultTruckColor, rankCandidatesForTech, type TechRouteBundle } from "@/lib/tech-routes";
+import { defaultTruckColor, rankCandidatesForTech, type RouteControl, type TechRouteBundle } from "@/lib/tech-routes";
+import { haversineMiles } from "@/lib/priority";
+import { exceedsMapCustomerCap } from "@/lib/routing-sweep";
+import { isPlannedUtilityEvent, isValidMapCoordinate, parseRouteControl } from "@/lib/storm-outage";
+import { territoryCentroid, territoryFromRow } from "@/lib/territory-match";
 
 function canManage(role: string) {
   return role === "office" || role === "admin" || role === "owner";
 }
 
+type Db = ReturnType<typeof getAdmin>;
+
+async function loadRouteControlFallback(db: Db): Promise<Record<string, RouteControl>> {
+  try {
+    const { data } = await db
+      .from("app_settings")
+      .select("value")
+      .eq("key", "tech_route_control")
+      .maybeSingle();
+    const value = data?.value;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const map: Record<string, RouteControl> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        map[k] = parseRouteControl(v);
+      }
+      return map;
+    }
+  } catch {
+    /* ignore */
+  }
+  return {};
+}
+
+async function saveRouteControl(db: Db, techUserId: string, control: RouteControl) {
+  const { error } = await db
+    .from("technicians")
+    .update({ route_control: control, updated_at: new Date().toISOString() })
+    .eq("user_id", techUserId);
+  if (error && /route_control|schema cache|does not exist/i.test(error.message)) {
+    const map = await loadRouteControlFallback(db);
+    map[techUserId] = control;
+    await db.from("app_settings").upsert(
+      { key: "tech_route_control", value: map, updated_at: new Date().toISOString() },
+      { onConflict: "key" }
+    );
+  } else if (error) {
+    throw new Error(error.message);
+  }
+}
+
+function assignmentNoteFor(args: {
+  status: string;
+  routeControl: RouteControl;
+  hasGps: boolean;
+  stopCount: number;
+}): string | null {
+  if (args.stopCount > 0) {
+    return args.routeControl === "manual" ? "MANUAL — office/tech owns this string route" : null;
+  }
+  if (args.status === "offline") return "Offline — automatic routing skips this technician";
+  if (args.routeControl === "manual") {
+    return "MANUAL mode with no stops — tap map dots or right-click a marker to add";
+  }
+  if (!args.hasGps) {
+    return "No GPS location — automatic routing needs a live location or a territory polygon";
+  }
+  return "No eligible visible markers near this technician (planned/hidden/excluded/already claimed)";
+}
+
+function isMapVisibleOutage(o: {
+  lat?: number | null;
+  lng?: number | null;
+  customers?: number | null;
+  source?: string | null;
+  cause?: string | null;
+  outage_type?: string | null;
+  status?: string | null;
+  is_active?: boolean | null;
+  is_simulation?: boolean | null;
+}): boolean {
+  if (o.is_active === false) return false;
+  if (!isValidMapCoordinate(o.lat, o.lng)) return false;
+  if (o.status === "no_opportunity" || o.status === "completed") return false;
+  if (isPlannedUtilityEvent({ cause: o.cause, outageType: o.outage_type, source: o.source })) {
+    return false;
+  }
+  if (!o.is_simulation && exceedsMapCustomerCap(o.customers)) return false;
+  return true;
+}
+
+function techsWithOrigin<
+  T extends {
+    user_id: string;
+    status: string;
+    current_lat: number | null;
+    current_lng: number | null;
+    territory_id?: string | null;
+    route_control?: unknown;
+    users?: unknown;
+  }
+>(
+  techs: T[],
+  territoryById: Map<string, { zip_codes?: string[] | null; geometry?: { coordinates?: number[][][] } | null }>
+): Array<T & { routeControl: RouteControl; origin: { lat: number; lng: number } | null }> {
+  return techs.map((t) => {
+    const routeControl = parseRouteControl(t.route_control);
+    let origin: { lat: number; lng: number } | null = null;
+    if (isValidMapCoordinate(t.current_lat, t.current_lng)) {
+      origin = { lat: Number(t.current_lat), lng: Number(t.current_lng) };
+    } else if (t.territory_id) {
+      const row = territoryById.get(t.territory_id);
+      if (row) origin = territoryCentroid(territoryFromRow(row));
+    }
+    return { ...t, routeControl, origin };
+  });
+}
+
 async function loadRouteBundles(
-  db: ReturnType<typeof getAdmin>,
+  db: Db,
   filterTechUserId?: string | null
 ): Promise<TechRouteBundle[]> {
+  const fallbackControl = await loadRouteControlFallback(db);
   let techQuery = db
     .from("technicians")
-    .select("user_id, status, current_lat, current_lng, map_color, users(id, name)")
+    .select("user_id, status, current_lat, current_lng, map_color, route_control, territory_id, users(id, name)")
     .order("updated_at", { ascending: false });
 
   if (filterTechUserId) {
     techQuery = techQuery.eq("user_id", filterTechUserId);
   }
 
-  const { data: techs, error: techErr } = await techQuery;
+  let { data: techs, error: techErr } = await techQuery;
+  if (techErr && /route_control|schema cache|does not exist/i.test(techErr.message)) {
+    const retry = db
+      .from("technicians")
+      .select("user_id, status, current_lat, current_lng, map_color, territory_id, users(id, name)")
+      .order("updated_at", { ascending: false });
+    const second = filterTechUserId ? await retry.eq("user_id", filterTechUserId) : await retry;
+    techs = second.data as typeof techs;
+    techErr = second.error;
+  }
   if (techErr) throw new Error(techErr.message);
 
   let stopQuery = db
@@ -41,15 +162,28 @@ async function loadRouteBundles(
   if (stopErr) {
     // Table may not exist yet
     if (/tech_route_stops|does not exist|schema cache/i.test(stopErr.message)) {
-      return (techs ?? []).map((t, i) => ({
-        techUserId: t.user_id,
-        techName: (t.users as { name?: string } | null)?.name ?? "Technician",
-        mapColor: t.map_color ?? defaultTruckColor(i),
-        status: t.status,
-        lat: t.current_lat,
-        lng: t.current_lng,
-        stops: [],
-      }));
+      return (techs ?? []).map((t, i) => {
+        const routeControl = parseRouteControl(
+          (t as { route_control?: unknown }).route_control ?? fallbackControl[t.user_id]
+        );
+        const hasGps = isValidMapCoordinate(t.current_lat, t.current_lng);
+        return {
+          techUserId: t.user_id,
+          techName: (t.users as { name?: string } | null)?.name ?? "Technician",
+          mapColor: t.map_color ?? defaultTruckColor(i),
+          status: t.status,
+          lat: t.current_lat,
+          lng: t.current_lng,
+          routeControl,
+          assignmentNote: assignmentNoteFor({
+            status: t.status,
+            routeControl,
+            hasGps,
+            stopCount: 0,
+          }),
+          stops: [],
+        };
+      });
     }
     throw new Error(stopErr.message);
   }
@@ -75,11 +209,11 @@ async function loadRouteBundles(
     const { data: outages } = await db
       .from("outages")
       .select(
-        "id, lat, lng, street_address, customers, source, status, customer_name, customer_phone, priority_score, is_active"
+        "id, lat, lng, street_address, customers, source, status, cause, outage_type, customer_name, customer_phone, priority_score, is_active, is_simulation"
       )
       .in("id", outageIds);
     for (const o of outages ?? []) {
-      if (o.is_active === false) continue;
+      if (!isMapVisibleOutage(o)) continue;
       outageMap.set(String(o.id), o);
     }
   }
@@ -92,6 +226,9 @@ async function loadRouteBundles(
   }
 
   return (techs ?? []).map((t, i) => {
+    const routeControl = parseRouteControl(
+      (t as { route_control?: unknown }).route_control ?? fallbackControl[t.user_id]
+    );
     const techStops = (stopsByTech.get(t.user_id) ?? [])
       .map((s) => {
         const o = outageMap.get(String(s.outage_id));
@@ -119,6 +256,13 @@ async function loadRouteBundles(
       status: t.status,
       lat: t.current_lat,
       lng: t.current_lng,
+      routeControl,
+      assignmentNote: assignmentNoteFor({
+        status: t.status,
+        routeControl,
+        hasGps: isValidMapCoordinate(t.current_lat, t.current_lng),
+        stopCount: techStops.length,
+      }),
       stops: techStops,
     };
   });
@@ -243,48 +387,113 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true });
     }
 
+    if (action === "set_route_control") {
+      const techUserId = String(body.techUserId || "");
+      if (!techUserId) return NextResponse.json({ error: "techUserId required" }, { status: 400 });
+      if (!office && techUserId !== payload.sub) {
+        return NextResponse.json({ error: "Can only change your own routing mode" }, { status: 403 });
+      }
+      const control = parseRouteControl(body.routeControl ?? body.mode);
+      await saveRouteControl(db, techUserId, control);
+      const routes = await loadRouteBundles(db, office ? null : techUserId);
+      return NextResponse.json({ success: true, routes, routeControl: control });
+    }
+
     if (action === "auto_populate") {
       if (!office) return NextResponse.json({ error: "Office role required" }, { status: 403 });
       const maxStops = Math.max(1, Math.min(Number(body.maxStopsPerTech ?? 10), 15));
+      const fallbackControl = await loadRouteControlFallback(db);
 
-      const { data: techs } = await db
+      let techSel = await db
         .from("technicians")
-        .select("user_id, status, current_lat, current_lng, map_color, users(name)")
-        .eq("status", "available")
-        .not("current_lat", "is", null)
-        .not("current_lng", "is", null);
+        .select("user_id, status, current_lat, current_lng, map_color, route_control, territory_id, users(name)");
+      if (techSel.error && /route_control|schema cache|does not exist/i.test(techSel.error.message)) {
+        techSel = await db
+          .from("technicians")
+          .select("user_id, status, current_lat, current_lng, map_color, territory_id, users(name)");
+      }
+      if (techSel.error) return NextResponse.json({ error: techSel.error.message }, { status: 500 });
 
-      const { data: outages } = await db
+      const { data: territories } = await db
+        .from("territories")
+        .select("id, zip_codes, geometry");
+      const territoryById = new Map((territories ?? []).map((t) => [t.id, t]));
+
+      const allTechs = techsWithOrigin(
+        (techSel.data ?? []).map((t) => ({
+          ...t,
+          route_control: parseRouteControl(
+            (t as { route_control?: unknown }).route_control ?? fallbackControl[t.user_id]
+          ),
+        })),
+        territoryById
+      );
+
+      // Only AUTO techs are rebuilt. MANUAL techs keep their string route.
+      const autoTechs = allTechs.filter((t) => t.routeControl === "auto" && t.status !== "offline");
+      for (const tech of autoTechs) {
+        await db.from("tech_route_stops").delete().eq("tech_user_id", tech.user_id);
+      }
+
+      const { data: simSetting } = await db
+        .from("app_settings")
+        .select("value")
+        .eq("key", "simulation_mode")
+        .maybeSingle();
+      const isSim = simSetting?.value === true || simSetting?.value === "true";
+
+      let outageQuery = db
         .from("outages")
-        .select("id, lat, lng, street_address, customers, source, status, priority_score, assigned_tech_name")
+        .select(
+          "id, lat, lng, street_address, customers, source, status, cause, outage_type, priority_score, assigned_tech_name, is_simulation, is_active"
+        )
         .eq("is_active", true)
-        .in("status", ["unvisited", "investigating", "sold", "wants_to_proceed", "temp_power", "grounding", "opportunity"]);
+        .in("status", [
+          "unvisited",
+          "investigating",
+          "sold",
+          "wants_to_proceed",
+          "temp_power",
+          "grounding",
+          "opportunity",
+        ]);
+
+      outageQuery = isSim
+        ? outageQuery.eq("is_simulation", true)
+        : outageQuery.or("is_simulation.is.null,is_simulation.eq.false");
+
+      const { data: outages } = await outageQuery;
 
       const { data: existing } = await db.from("tech_route_stops").select("outage_id, tech_user_id");
       const claimed = new Set((existing ?? []).map((e) => String(e.outage_id)));
 
       const pool = (outages ?? []).filter(
-        (o) =>
-          o.lat != null &&
-          o.lng != null &&
-          !claimed.has(String(o.id)) &&
-          o.status !== "no_opportunity" &&
-          o.status !== "completed"
+        (o) => isMapVisibleOutage(o) && !claimed.has(String(o.id))
       );
+
+      const sortedTechs = [...autoTechs].filter((t) => t.origin).sort((a, b) => {
+        const nearA = pool.filter(
+          (o) => haversineMiles(a.origin!.lat, a.origin!.lng, o.lat!, o.lng!) <= 10
+        ).length;
+        const nearB = pool.filter(
+          (o) => haversineMiles(b.origin!.lat, b.origin!.lng, o.lat!, o.lng!) <= 10
+        ).length;
+        return nearB - nearA;
+      });
 
       const stillAvailable = [...pool];
       const now = new Date().toISOString();
 
-      for (const tech of techs ?? []) {
+      for (const tech of sortedTechs) {
         if (stillAvailable.length === 0) break;
         const picks = rankCandidatesForTech(
-          { lat: tech.current_lat!, lng: tech.current_lng! },
+          tech.origin!,
           stillAvailable.map((o) => ({
             id: o.id,
             lat: o.lat!,
             lng: o.lng!,
             status: o.status,
-            customers: o.customers ?? 1,
+            customers: Math.max(1, o.customers ?? 1),
             priorityScore: o.priority_score ?? 0,
             source: o.source,
           })),
@@ -295,9 +504,6 @@ export async function POST(req: Request) {
         for (let i = stillAvailable.length - 1; i >= 0; i--) {
           if (pickIds.has(String(stillAvailable[i].id))) stillAvailable.splice(i, 1);
         }
-
-        // Clear prior auto route for this tech then rewrite
-        await db.from("tech_route_stops").delete().eq("tech_user_id", tech.user_id);
 
         const techName = (tech.users as { name?: string } | null)?.name ?? "Technician";
         for (let i = 0; i < picks.length; i++) {
@@ -332,6 +538,21 @@ export async function POST(req: Request) {
     if (action === "add") {
       const outageId = String(body.outageId || "");
       if (!outageId) return NextResponse.json({ error: "outageId required" }, { status: 400 });
+
+      const { data: target } = await db
+        .from("outages")
+        .select("id, lat, lng, customers, source, status, cause, outage_type, is_active, is_simulation")
+        .eq("id", outageId)
+        .maybeSingle();
+      if (target && !isMapVisibleOutage(target)) {
+        return NextResponse.json(
+          { error: "That location is not an eligible map marker (planned, hidden, or excluded)" },
+          { status: 400 }
+        );
+      }
+
+      // Manual add takes this technician off automatic routing without touching anyone else.
+      await saveRouteControl(db, techUserId, "manual");
 
       // Remove from any other tech route first (no duplicates)
       await db.from("tech_route_stops").delete().eq("outage_id", outageId);
