@@ -17,8 +17,21 @@ type ExcludedProperty = {
   reason?: string | null;
   source?: string | null;
   notes?: string | null;
+  duration?: string | null;
   is_active?: boolean | null;
   created_at?: string;
+};
+
+type ScanRow = {
+  outageId?: string;
+  address?: string | null;
+  status?: string;
+  useClass?: string;
+  gisClassification?: string;
+  reason?: string | null;
+  duration?: string | null;
+  countyPin?: string | null;
+  numUnits?: number | null;
 };
 
 type Props = {
@@ -42,6 +55,7 @@ export default function ExcludedPropertiesPanel({ token, onSessionExpired, onCha
   const [address, setAddress] = useState("");
   const [reason, setReason] = useState("Permanent exclusion");
   const [scanSummary, setScanSummary] = useState<string | null>(null);
+  const [scanRows, setScanRows] = useState<ScanRow[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -143,6 +157,31 @@ export default function ExcludedPropertiesPanel({ token, onSessionExpired, onCha
     }
   }
 
+  async function overrideRow(id: string) {
+    if (!confirm("Restore this property to the storm map? This overrides the automatic GIS exclusion.")) return;
+    setError(null);
+    try {
+      const res = await fetch("/api/excluded-properties", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ id, is_active: false, notes: "Office override of automatic GIS exclusion" }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (res.status === 401) onSessionExpired?.(apiErrorMessage(res, data, "Session expired"));
+        throw new Error(apiErrorMessage(res, data, "Failed to override"));
+      }
+      setSuccess("Exclusion overridden — property can appear on the map again");
+      await load();
+      onChanged?.();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }
+
   async function removeRow(id: string) {
     if (!confirm("Remove this permanent exclusion?")) return;
     setError(null);
@@ -175,7 +214,7 @@ export default function ExcludedPropertiesPanel({ token, onSessionExpired, onCha
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ limit: 25, dryRun }),
+        body: JSON.stringify({ limit: 80, dryRun }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -183,6 +222,7 @@ export default function ExcludedPropertiesPanel({ token, onSessionExpired, onCha
         throw new Error(apiErrorMessage(res, data, "Parcel scan failed"));
       }
       const s = data.summary;
+      setScanRows(s.results ?? s.samples ?? []);
       setScanSummary(
         `${dryRun ? "Dry run" : "Scan"}: ${s.scanned} checked · ${s.targetResidential} R1–R3 target · ` +
           `${s.autoExcluded} ${dryRun ? "would exclude" : "excluded"} · ${s.notFound} no parcel · ` +
@@ -215,8 +255,9 @@ export default function ExcludedPropertiesPanel({ token, onSessionExpired, onCha
           Permanent excluded properties
         </h3>
         <p style={{ margin: "6px 0 0", fontSize: "13px", color: "#6b7280", lineHeight: 1.45 }}>
-          Address-level blocklist (separate from exclusion polygons). MetroGIS parcel land use targets
-          residential R1/R2/R3-style (1–3 units); commercial / multifamily can be auto-excluded.
+          Verify GIS exclusions here: which property, why, which land-use class, and whether it is
+          permanent. Office can override an incorrect automatic exclusion with Restore to map.
+          Red <strong>E</strong> markers on the Live Map are the same list.
         </p>
       </div>
 
@@ -263,6 +304,44 @@ export default function ExcludedPropertiesPanel({ token, onSessionExpired, onCha
           }}
         >
           {scanSummary}
+        </div>
+      )}
+      {scanRows.length > 0 && (
+        <div
+          style={{
+            marginBottom: "14px",
+            maxHeight: 240,
+            overflowY: "auto",
+            border: "1px solid #e5e7eb",
+            borderRadius: 8,
+          }}
+        >
+          {scanRows.map((row, i) => (
+            <div
+              key={`${row.outageId ?? i}-${row.status}`}
+              style={{
+                padding: "8px 10px",
+                borderBottom: "1px solid #f3f4f6",
+                fontSize: 12,
+              }}
+            >
+              <div style={{ fontWeight: 600, color: "#111827" }}>
+                {row.address || `Outage ${row.outageId ?? i + 1}`}
+              </div>
+              <div style={{ color: "#6b7280", marginTop: 2 }}>
+                {[
+                  row.status,
+                  row.reason,
+                  row.gisClassification || row.useClass,
+                  row.duration ? `${row.duration} exclusion` : null,
+                  row.countyPin ? `PIN ${row.countyPin}` : null,
+                  row.numUnits != null ? `${row.numUnits} units` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
@@ -400,11 +479,38 @@ export default function ExcludedPropertiesPanel({ token, onSessionExpired, onCha
                   {r.address || `${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}`}
                 </div>
                 <div style={{ fontSize: "11px", color: "#6b7280", marginTop: 2 }}>
-                  {[r.reason, r.use_class, r.source, r.county_pin ? `PIN ${r.county_pin}` : null]
+                  {[
+                    r.reason,
+                    r.use_class ? `GIS: ${r.use_class}` : null,
+                    r.duration === "temporary" ? "Temporary" : "Permanent",
+                    r.source,
+                    r.county_pin ? `PIN ${r.county_pin}` : null,
+                    r.is_active === false ? "Overridden" : null,
+                  ]
                     .filter(Boolean)
                     .join(" · ")}
                 </div>
               </div>
+              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                {r.is_active !== false && (
+                  <button
+                    type="button"
+                    onClick={() => overrideRow(r.id)}
+                    style={{
+                      padding: "6px 10px",
+                      background: "#fff",
+                      border: "1px solid #99f6e4",
+                      borderRadius: "6px",
+                      color: "#0f766e",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      height: "fit-content",
+                    }}
+                  >
+                    Restore to map
+                  </button>
+                )}
               <button
                 type="button"
                 onClick={() => removeRow(r.id)}
@@ -423,6 +529,7 @@ export default function ExcludedPropertiesPanel({ token, onSessionExpired, onCha
               >
                 Remove
               </button>
+              </div>
             </div>
           ))}
         </div>

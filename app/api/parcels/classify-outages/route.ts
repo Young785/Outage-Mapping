@@ -33,7 +33,7 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json().catch(() => ({}));
-    const limit = Math.min(Math.max(Number(body.limit) || 25, 1), 60);
+    const limit = Math.min(Math.max(Number(body.limit) || 40, 1), 120);
     const dryRun = body.dryRun === true;
 
     const db = getAdmin();
@@ -73,7 +73,7 @@ export async function POST(req: Request) {
       unavailable: 0,
       dryRun,
       autoExcludeEnabled,
-      samples: [] as Array<Record<string, unknown>>,
+      results: [] as Array<Record<string, unknown>>,
     };
 
     for (const o of outages ?? []) {
@@ -96,10 +96,14 @@ export async function POST(req: Request) {
 
       if (live.source === "unavailable") {
         summary.unavailable++;
-        if (summary.samples.length < 8) {
-          summary.samples.push({
+        if (summary.results.length < 80) {
+          summary.results.push({
             outageId: o.id,
+            lat,
+            lng,
+            address: o.street_address,
             status: "unavailable",
+            duration: null,
             error: live.error,
           });
         }
@@ -112,6 +116,16 @@ export async function POST(req: Request) {
 
       if (!live.found || !live.classification) {
         summary.notFound++;
+        if (summary.results.length < 80) {
+          summary.results.push({
+            outageId: o.id,
+            lat,
+            lng,
+            address: o.street_address,
+            status: "not_found",
+            duration: null,
+          });
+        }
         continue;
       }
 
@@ -139,24 +153,35 @@ export async function POST(req: Request) {
 
       if (c.isTargetResidential) {
         summary.targetResidential++;
-        if (summary.samples.length < 8) {
-          summary.samples.push({
+        if (summary.results.length < 80) {
+          summary.results.push({
             outageId: o.id,
+            lat,
+            lng,
+            address: c.streetAddress || o.street_address,
             status: "target",
             useClass: c.useClassLabel,
+            gisClassification: c.useClassLabel,
             numUnits: c.numUnits,
+            countyPin: c.countyPin,
+            duration: null,
           });
         }
         continue;
       }
 
       if (!autoExcludeEnabled) {
-        if (summary.samples.length < 8) {
-          summary.samples.push({
+        if (summary.results.length < 80) {
+          summary.results.push({
             outageId: o.id,
+            lat,
+            lng,
+            address: c.streetAddress || o.street_address,
             status: "would_exclude_disabled",
             useClass: c.useClassLabel,
+            gisClassification: c.useClassLabel,
             reason: c.excludeReason,
+            duration: "permanent",
           });
         }
         continue;
@@ -164,41 +189,54 @@ export async function POST(req: Request) {
 
       const address = c.streetAddress || o.street_address || null;
       if (!dryRun) {
-        const { data: inserted } = await db
-          .from("excluded_properties")
-          .insert({
-            address,
-            address_key: address ? normalizeAddressKey(address) : null,
-            lat,
-            lng,
-            radius_meters: 35,
-            county_pin: c.countyPin,
-            use_class: c.useClassLabel,
-            reason: c.excludeReason || "Non-target land use (MetroGIS)",
-            source: "parcel_landuse",
-            notes: `Auto from outage ${o.id}`,
-            created_by: payload.email || payload.sub || null,
-            is_active: true,
-            updated_at: new Date().toISOString(),
-          })
-          .select("*")
-          .single();
+        const row = {
+          address,
+          address_key: address ? normalizeAddressKey(address) : null,
+          lat,
+          lng,
+          radius_meters: 35,
+          county_pin: c.countyPin,
+          use_class: c.useClassLabel,
+          reason: c.excludeReason || "Non-target land use (MetroGIS)",
+          source: "parcel_landuse",
+          notes: `Auto from outage ${o.id}`,
+          created_by: payload.email || payload.sub || null,
+          is_active: true,
+          duration: "permanent",
+          updated_at: new Date().toISOString(),
+        };
+        let inserted = (
+          await db.from("excluded_properties").insert(row).select("*").single()
+        ).data;
+        if (!inserted) {
+          const { duration: _d, ...withoutDuration } = row;
+          inserted = (
+            await db.from("excluded_properties").insert(withoutDuration).select("*").single()
+          ).data;
+        }
         if (inserted) exclusions.push(inserted as ExcludedProperty);
       }
 
       summary.autoExcluded++;
-      if (summary.samples.length < 8) {
-        summary.samples.push({
+      if (summary.results.length < 80) {
+        summary.results.push({
           outageId: o.id,
+          lat,
+          lng,
+          address,
           status: dryRun ? "would_exclude" : "excluded",
           useClass: c.useClassLabel,
+          gisClassification: c.useClassLabel,
           reason: c.excludeReason,
-          address,
+          countyPin: c.countyPin,
+          numUnits: c.numUnits,
+          duration: "permanent",
+          override: "Office can Restore to map to override this automatic exclusion",
         });
       }
     }
 
-    return NextResponse.json({ success: true, summary });
+    return NextResponse.json({ success: true, summary: { ...summary, samples: summary.results.slice(0, 8) } });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }

@@ -78,25 +78,46 @@ export async function POST(req: Request) {
     }
 
     const db = getAdmin();
-    const { data, error } = await db
-      .from("excluded_properties")
-      .insert({
-        address,
-        address_key: address_key || null,
-        lat,
-        lng,
-        radius_meters,
-        county_pin: body.countyPin || null,
-        use_class: body.useClass || null,
-        reason: body.reason || "manual",
-        source: body.source || "manual",
-        notes: body.notes || null,
-        created_by: auth.payload?.email || auth.payload?.sub || null,
-        is_active: true,
-        updated_at: new Date().toISOString(),
-      })
-      .select("*")
-      .single();
+    let query = db.from("excluded_properties").insert({
+      address,
+      address_key: address_key || null,
+      lat,
+      lng,
+      radius_meters,
+      county_pin: body.countyPin || null,
+      use_class: body.useClass || null,
+      reason: body.reason || "manual",
+      source: body.source || "manual",
+      notes: body.notes || null,
+      created_by: auth.payload?.email || auth.payload?.sub || null,
+      is_active: true,
+      duration: body.duration === "temporary" ? "temporary" : "permanent",
+      updated_at: new Date().toISOString(),
+    });
+    let { data, error } = await query.select("*").single();
+    if (error && /duration|schema cache|does not exist/i.test(error.message)) {
+      const retry = await db
+        .from("excluded_properties")
+        .insert({
+          address,
+          address_key: address_key || null,
+          lat,
+          lng,
+          radius_meters,
+          county_pin: body.countyPin || null,
+          use_class: body.useClass || null,
+          reason: body.reason || "manual",
+          source: body.source || "manual",
+          notes: body.notes || null,
+          created_by: auth.payload?.email || auth.payload?.sub || null,
+          is_active: true,
+          updated_at: new Date().toISOString(),
+        })
+        .select("*")
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json({ success: true, excludedProperty: data });
@@ -125,17 +146,31 @@ export async function PATCH(req: Request) {
     if (body.radiusMeters !== undefined) update.radius_meters = Number(body.radiusMeters);
     if (body.reason !== undefined) update.reason = body.reason;
     if (body.notes !== undefined) update.notes = body.notes;
-    if (body.isActive !== undefined) update.is_active = !!body.isActive;
+    if (body.isActive !== undefined || body.is_active !== undefined) {
+      update.is_active = !!(body.isActive ?? body.is_active);
+    }
+    if (body.duration !== undefined) update.duration = body.duration === "temporary" ? "temporary" : "permanent";
     if (body.countyPin !== undefined) update.county_pin = body.countyPin;
     if (body.useClass !== undefined) update.use_class = body.useClass;
 
     const db = getAdmin();
-    const { data, error } = await db
+    let { data, error } = await db
       .from("excluded_properties")
       .update(update)
       .eq("id", body.id)
       .select("*")
       .single();
+    if (error && /duration|schema cache|does not exist/i.test(error.message)) {
+      const { duration: _d, ...withoutDuration } = update;
+      const retry = await db
+        .from("excluded_properties")
+        .update(withoutDuration)
+        .eq("id", body.id)
+        .select("*")
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json({ success: true, excludedProperty: data });
