@@ -814,14 +814,15 @@ export default function Page() {
     if (!res.ok) throw new Error(data.error || "Route update failed");
     if (Array.isArray(data.routes)) {
       setTechRoutes(data.routes);
-      // Auto-select techs that have stops
-      setSelectedRouteTechIds((prev) => {
-        const next = new Set(prev);
-        for (const r of data.routes as TechRouteBundle[]) {
-          if (r.stops.length > 0) next.add(r.techUserId);
-        }
-        return next;
-      });
+      // Only reveal the tech whose route was just edited — never unhide everyone.
+      const editedId = typeof body.techUserId === "string" ? body.techUserId : null;
+      if (editedId && (body.action === "add" || body.action === "auto_populate")) {
+        setSelectedRouteTechIds((prev) => {
+          const next = new Set(prev);
+          next.add(editedId);
+          return next;
+        });
+      }
     }
     await fetchOutages();
   }

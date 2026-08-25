@@ -94,7 +94,7 @@ export function rankCandidatesForTech<
   return orderNearestNeighbor(techLoc, picked).slice(0, maxStops);
 }
 
-function orderNearestNeighbor<T extends { lat: number; lng: number }>(
+export function orderNearestNeighbor<T extends { lat: number; lng: number }>(
   start: { lat: number; lng: number },
   stops: T[]
 ): T[] {
@@ -117,6 +117,38 @@ function orderNearestNeighbor<T extends { lat: number; lng: number }>(
     cur = next;
   }
   return ordered;
+}
+
+/**
+ * Insert a stop into an existing route in geographic driving order
+ * (nearest-neighbor from tech GPS / prior start), instead of always appending.
+ */
+export function insertStopInSpatialOrder<T extends { id: string; lat: number; lng: number }>(
+  start: { lat: number; lng: number } | null,
+  existing: T[],
+  incoming: T
+): T[] {
+  const withoutDup = existing.filter((s) => s.id !== incoming.id);
+  const pool = [...withoutDup, incoming];
+  if (pool.length <= 1) return pool;
+
+  if (start && Number.isFinite(start.lat) && Number.isFinite(start.lng)) {
+    return orderNearestNeighbor(start, pool);
+  }
+
+  // No tech GPS — seed from the stop closest to the new point, then NN the rest.
+  let seed = pool[0];
+  let best = Infinity;
+  for (const s of pool) {
+    if (s.id === incoming.id) continue;
+    const m = haversineMiles(incoming.lat, incoming.lng, s.lat, s.lng);
+    if (m < best) {
+      best = m;
+      seed = s;
+    }
+  }
+  const rest = pool.filter((s) => s.id !== seed.id);
+  return [seed, ...orderNearestNeighbor(seed, rest)];
 }
 
 export function defaultTruckColor(index: number): string {
