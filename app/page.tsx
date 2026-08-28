@@ -443,6 +443,20 @@ export default function Page() {
     }
   }, [token]);
 
+  const fetchTechRoutes = useCallback(async () => {
+    if (!tokenRef.current) return;
+    try {
+      const res = await fetch("/api/routing/tech-routes", {
+        headers: { Authorization: `Bearer ${tokenRef.current}` },
+      });
+      const data = await res.json();
+      if (!res.ok) return;
+      if (Array.isArray(data.routes)) setTechRoutes(data.routes);
+    } catch {
+      /* keep last routes */
+    }
+  }, []);
+
   const canPersistSources =
     user?.role === "office" || user?.role === "admin" || user?.role === "owner";
 
@@ -565,6 +579,26 @@ export default function Page() {
       clearInterval(id);
     };
   }, [user?.id, user?.role, token]);
+
+  // Tech routes — poll for all field/office roles (RoutingLogicPane is desktop-only).
+  useEffect(() => {
+    if (!token || !user) return;
+    if (!isOffice && user.role !== "tech") return;
+    fetchTechRoutes();
+    const id = setInterval(fetchTechRoutes, 45_000);
+    return () => clearInterval(id);
+  }, [token, user, isOffice, fetchTechRoutes]);
+
+  // Field techs always see their own truck-color route on the map.
+  useEffect(() => {
+    if (!user || user.role !== "tech") return;
+    setSelectedRouteTechIds((prev) => {
+      if (prev.has(user.id)) return prev;
+      const next = new Set(prev);
+      next.add(user.id);
+      return next;
+    });
+  }, [user?.id, user?.role]);
 
   // Load global app settings so every role sees current storm mode.
   useEffect(() => {
@@ -823,6 +857,8 @@ export default function Page() {
           return next;
         });
       }
+    } else {
+      await fetchTechRoutes();
     }
     await fetchOutages();
   }

@@ -14,9 +14,13 @@ import {
   type TechRouteBundle,
 } from "@/lib/tech-routes";
 import { haversineMiles } from "@/lib/priority";
-import { exceedsMapCustomerCap } from "@/lib/routing-sweep";
-import { isPlannedUtilityEvent, isValidMapCoordinate, parseRouteControl } from "@/lib/storm-outage";
-import { territoryCentroid, territoryFromRow } from "@/lib/territory-match";
+import {
+  isRoutingMapVisibleOutage,
+  type MapEligibilityContext,
+} from "@/lib/map-marker-eligibility";
+import { type ExcludedProperty } from "@/lib/excluded-properties";
+import { isValidMapCoordinate, parseRouteControl } from "@/lib/storm-outage";
+import { territoryCentroid, territoryFromRow, zoneTypeOf, type BoundaryZoneLike } from "@/lib/territory-match";
 
 function canManage(role: string) {
   return role === "office" || role === "admin" || role === "owner";
@@ -108,25 +112,40 @@ function assignmentNoteFor(args: {
   return "No eligible visible markers near this technician (planned/hidden/excluded/already claimed)";
 }
 
-function isMapVisibleOutage(o: {
-  lat?: number | null;
-  lng?: number | null;
-  customers?: number | null;
-  source?: string | null;
-  cause?: string | null;
-  outage_type?: string | null;
-  status?: string | null;
-  is_active?: boolean | null;
-  is_simulation?: boolean | null;
-}): boolean {
-  if (o.is_active === false) return false;
-  if (!isValidMapCoordinate(o.lat, o.lng)) return false;
-  if (o.status === "no_opportunity" || o.status === "completed") return false;
-  if (isPlannedUtilityEvent({ cause: o.cause, outageType: o.outage_type, source: o.source })) {
-    return false;
-  }
-  if (!o.is_simulation && exceedsMapCustomerCap(o.customers)) return false;
-  return true;
+async function loadMapEligibilityContext(db: Db): Promise<MapEligibilityContext> {
+  const [{ data: excludedRows }, { data: territoryRows }] = await Promise.all([
+    db
+      .from("excluded_properties")
+      .select("id, address, address_key, lat, lng, radius_meters, county_pin, is_active")
+      .eq("is_active", true),
+    db.from("territories").select("id, type, zip_codes, geometry"),
+  ]);
+
+  const excludedProperties = (excludedRows ?? []) as ExcludedProperty[];
+  const exclusionZones = (territoryRows ?? []).filter(
+    (z) => zoneTypeOf(z as BoundaryZoneLike) === "exclusion"
+  ) as BoundaryZoneLike[];
+
+  return { excludedProperties, exclusionZones };
+}
+
+async function purgeIneligibleRouteStops(
+  db: Db,
+  stops: Array<{ tech_user_id: string; outage_id: string }>,
+  outageMap: Map<string, { id: string }>
+) {
+  const stale = stops.filter((s) => !outageMap.has(String(s.outage_id)));
+  if (stale.length === 0) return;
+
+  await Promise.all(
+    stale.map((s) =>
+      db
+        .from("tech_route_stops")
+        .delete()
+        .eq("tech_user_id", s.tech_user_id)
+        .eq("outage_id", s.outage_id)
+    )
+  );
 }
 
 function techsWithOrigin<
@@ -161,6 +180,7 @@ async function loadRouteBundles(
   filterTechUserId?: string | null
 ): Promise<TechRouteBundle[]> {
   const fallbackControl = await loadRouteControlFallback(db);
+  const eligibilityCtx = await loadMapEligibilityContext(db);
   let techQuery = db
     .from("technicians")
     .select("user_id, status, current_lat, current_lng, map_color, route_control, territory_id, users(id, name)")
@@ -242,12 +262,16 @@ async function loadRouteBundles(
     const { data: outages } = await db
       .from("outages")
       .select(
-        "id, lat, lng, street_address, customers, source, status, cause, outage_type, customer_name, customer_phone, priority_score, is_active, is_simulation"
+        "id, lat, lng, street_address, customers, source, status, cause, outage_type, customer_name, customer_phone, priority_score, is_active, is_simulation, investigation_result"
       )
       .in("id", outageIds);
     for (const o of outages ?? []) {
-      if (!isMapVisibleOutage(o)) continue;
+      if (!isRoutingMapVisibleOutage(o, eligibilityCtx)) continue;
       outageMap.set(String(o.id), o);
+    }
+
+    if (stops?.length) {
+      await purgeIneligibleRouteStops(db, stops, outageMap);
     }
   }
 
@@ -524,8 +548,9 @@ export async function POST(req: Request) {
       const { data: existing } = await db.from("tech_route_stops").select("outage_id, tech_user_id");
       const claimed = new Set((existing ?? []).map((e) => String(e.outage_id)));
 
+      const autoEligibilityCtx = await loadMapEligibilityContext(db);
       const pool = (outages ?? []).filter(
-        (o) => isMapVisibleOutage(o) && !claimed.has(String(o.id))
+        (o) => isRoutingMapVisibleOutage(o, autoEligibilityCtx) && !claimed.has(String(o.id))
       );
 
       const sortedTechs = [...autoTechs].filter((t) => t.origin).sort((a, b) => {
@@ -596,12 +621,15 @@ export async function POST(req: Request) {
       const outageId = String(body.outageId || "");
       if (!outageId) return NextResponse.json({ error: "outageId required" }, { status: 400 });
 
+      const addEligibilityCtx = await loadMapEligibilityContext(db);
       const { data: target } = await db
         .from("outages")
-        .select("id, lat, lng, customers, source, status, cause, outage_type, is_active, is_simulation")
+        .select(
+          "id, lat, lng, street_address, customers, source, status, cause, outage_type, is_active, is_simulation, investigation_result"
+        )
         .eq("id", outageId)
         .maybeSingle();
-      if (target && !isMapVisibleOutage(target)) {
+      if (target && !isRoutingMapVisibleOutage(target, addEligibilityCtx)) {
         return NextResponse.json(
           { error: "That location is not an eligible map marker (planned, hidden, or excluded)" },
           { status: 400 }
