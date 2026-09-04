@@ -621,23 +621,101 @@ export async function POST(req: Request) {
       const outageId = String(body.outageId || "");
       if (!outageId) return NextResponse.json({ error: "outageId required" }, { status: 400 });
 
+      // Client may send lat/lng from the live map (ArcGIS dots often appear
+      // before the background upsert finishes — or DB coords can be stale/null).
+      const clientLat = body.lat != null ? Number(body.lat) : null;
+      const clientLng = body.lng != null ? Number(body.lng) : null;
+      const clientAddress =
+        typeof body.streetAddress === "string"
+          ? body.streetAddress
+          : typeof body.address === "string"
+            ? body.address
+            : null;
+      const clientSource =
+        typeof body.source === "string" && body.source.trim()
+          ? body.source.trim()
+          : "xcel";
+      const clientStatus =
+        typeof body.status === "string" && body.status.trim()
+          ? body.status.trim()
+          : "unvisited";
+      const clientCustomers = Math.max(1, Number(body.customers) || 1);
+
       const addEligibilityCtx = await loadMapEligibilityContext(db);
-      const { data: target } = await db
+      let { data: target } = await db
         .from("outages")
         .select(
           "id, lat, lng, street_address, customers, source, status, cause, outage_type, is_active, is_simulation, investigation_result"
         )
         .eq("id", outageId)
         .maybeSingle();
-      if (target && !isRoutingMapVisibleOutage(target, addEligibilityCtx)) {
+
+      // Ensure the DB row exists with usable coordinates when the map already shows the pin.
+      if (!target || !isValidMapCoordinate(target.lat, target.lng)) {
+        if (!isValidMapCoordinate(clientLat, clientLng)) {
+          return NextResponse.json(
+            {
+              error: target
+                ? `Outage ${outageId} is in the database but has no usable GPS coordinates. Re-open the map and try again.`
+                : `Outage ${outageId} is not saved yet and no map coordinates were sent — refresh the map and try again.`,
+            },
+            { status: 400 }
+          );
+        }
+
+        const upsertRow: Record<string, unknown> = {
+          id: outageId,
+          lat: clientLat,
+          lng: clientLng,
+          street_address: clientAddress || target?.street_address || null,
+          customers: target?.customers ?? clientCustomers,
+          source: target?.source || clientSource,
+          status: target?.status || clientStatus,
+          is_active: true,
+          last_updated_at: now,
+        };
+        if (!target) {
+          upsertRow.first_seen_at = now;
+        }
+
+        const { error: upsertErr } = await db.from("outages").upsert(upsertRow, {
+          onConflict: "id",
+          ignoreDuplicates: false,
+        });
+        if (upsertErr) {
+          return NextResponse.json(
+            { error: `Could not save outage for routing: ${upsertErr.message}` },
+            { status: 500 }
+          );
+        }
+
+        const reload = await db
+          .from("outages")
+          .select(
+            "id, lat, lng, street_address, customers, source, status, cause, outage_type, is_active, is_simulation, investigation_result"
+          )
+          .eq("id", outageId)
+          .maybeSingle();
+        target = reload.data;
+      }
+
+      if (!target) {
         return NextResponse.json(
-          { error: "That location is not an eligible map marker (planned, hidden, or excluded)" },
+          { error: `Outage ${outageId} not found — cannot add to route` },
           { status: 400 }
         );
       }
-      if (!target || !isValidMapCoordinate(target.lat, target.lng)) {
+      if (!isValidMapCoordinate(target.lat, target.lng)) {
         return NextResponse.json(
-          { error: "Outage not found or missing coordinates — cannot add to route" },
+          {
+            error: `Outage ${outageId} still has invalid coordinates after sync (lat: ${target.lat}, lng: ${target.lng})`,
+          },
+          { status: 400 }
+        );
+      }
+      if (!isRoutingMapVisibleOutage(target, addEligibilityCtx)) {
+        return NextResponse.json(
+          { error: "That location is not an eligible map marker (planned, hidden, or excluded)" },
           { status: 400 }
         );
       }
