@@ -806,16 +806,50 @@ export async function POST(req: Request) {
     }
 
     if (action === "clear") {
-      const { data: prior } = await db
+      const { data: prior, error: priorErr } = await db
         .from("tech_route_stops")
         .select("outage_id")
         .eq("tech_user_id", techUserId);
-      await db.from("tech_route_stops").delete().eq("tech_user_id", techUserId);
+      if (priorErr) {
+        return NextResponse.json({ error: priorErr.message }, { status: 500 });
+      }
+
+      const { error: delErr } = await db
+        .from("tech_route_stops")
+        .delete()
+        .eq("tech_user_id", techUserId);
+      if (delErr) {
+        return NextResponse.json(
+          { error: `Failed to clear route: ${delErr.message}` },
+          { status: 500 }
+        );
+      }
+
       for (const row of prior ?? []) {
         await mirrorAssignment(db, String(row.outage_id), null, null);
       }
+
+      // Confirm zero stops remain for this tech.
+      const { data: leftover, error: leftErr } = await db
+        .from("tech_route_stops")
+        .select("outage_id")
+        .eq("tech_user_id", techUserId);
+      if (leftErr) {
+        return NextResponse.json({ error: leftErr.message }, { status: 500 });
+      }
+      if ((leftover ?? []).length > 0) {
+        // Retry hard delete once.
+        await db.from("tech_route_stops").delete().eq("tech_user_id", techUserId);
+      }
+
       const routes = await loadRouteBundles(db, office ? null : techUserId);
-      return NextResponse.json({ success: true, routes });
+      const mine = routes.find((r) => r.techUserId === techUserId);
+      return NextResponse.json({
+        success: true,
+        routes,
+        cleared: true,
+        remainingStops: mine?.stops?.length ?? 0,
+      });
     }
 
     if (action === "reorder" || action === "set_stops") {
